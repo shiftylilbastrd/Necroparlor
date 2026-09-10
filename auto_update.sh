@@ -25,7 +25,14 @@ echo "Update found: ${BEFORE:0:7} -> ${AFTER:0:7}"
 # the restart commands below - better to bail out cleanly here than to
 # pull new code and then discover we can't restart the services to
 # actually run it (leaving files updated but the old code still live).
-if ! sudo -n true 2>/dev/null; then
+#
+# This checks for the SPECIFIC granted commands via `sudo -n -l` (list
+# mode - reports permissions without running anything), not a generic
+# `sudo -n true`. The sudoers setup deliberately only grants passwordless
+# access to these three exact systemctl commands, not arbitrary ones -
+# so testing with an unrelated command like `true` would always fail
+# even with a perfectly correct setup, since `true` was never granted.
+if ! sudo -n -l 2>/dev/null | grep -q "systemctl restart dermestid-climate.service"; then
     echo "ERROR: passwordless sudo isn't configured for the required systemctl commands."
     echo "See README.md 'Optional: automatic updates from GitHub' for the one-time visudo setup."
     exit 1
