@@ -55,12 +55,24 @@ fi
 echo "Restarting climate control..."
 sudo systemctl restart dermestid-climate.service
 
-echo "Restarting web dashboard..."
-sudo systemctl restart dermestid-web.service
-
 if systemctl is-enabled --quiet dermestid-sensorpush.service 2>/dev/null; then
     echo "Restarting SensorPush listener (currently enabled)..."
     sudo systemctl restart dermestid-sensorpush.service
 fi
+
+# Web dashboard restarts LAST, deliberately. When this script is
+# triggered from the dashboard's "Update now" button, it runs as a
+# child process of dermestid-web.service itself - and systemd's default
+# behavior when restarting a service is to kill its entire process
+# group (KillMode=control-group), not just the tracked main process.
+# The instant the line below tells systemd to restart the web service,
+# systemd kills THIS SCRIPT too, as collateral, before it can run
+# anything after it. Detaching this script from its parent Python
+# process (see webapp.py's /api/apply-update) protects against the
+# Flask process dying - it does NOT protect against systemd killing the
+# whole group on a service restart. So: everything else must happen
+# BEFORE this line, or it silently never runs.
+echo "Restarting web dashboard..."
+sudo systemctl restart dermestid-web.service
 
 echo "Update complete - now running $(git rev-parse --short HEAD)"
