@@ -94,12 +94,40 @@ def on_advertisement(device, advertisement_data):
     _last_reading_time = time.time()
 
 
+async def start_scanner_with_retry(scanner, max_attempts=5, retry_delay=5):
+    """BlueZ can get stuck reporting a scan as 'already in progress'
+    (org.bluez.Error.InProgress) if a previous process was killed
+    without cleanly stopping its scan first - which is exactly what can
+    happen after the watchdog below deliberately hard-exits rather than
+    risk hanging on a graceful shutdown. This stuck state lives in
+    bluetoothd itself (a separate system service), not in this process,
+    so simply restarting this script alone doesn't fix it - but BlueZ's
+    internal scan state typically does clear on its own within a few
+    seconds of the old D-Bus client disappearing, so a few retries
+    (with an explicit stop() attempt first, to help nudge it along)
+    usually recovers without needing an external Bluetooth service
+    restart at all."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await scanner.start()
+            return
+        except Exception as e:
+            logging.warning(f"scanner.start() failed (attempt {attempt}/{max_attempts}): {e}")
+            try:
+                await scanner.stop()
+            except Exception:
+                pass
+            if attempt < max_attempts:
+                await asyncio.sleep(retry_delay)
+    raise RuntimeError(f"Could not start BLE scan after {max_attempts} attempts")
+
+
 async def main():
     global _last_reading_time
     state.init_db()
     logging.info("Starting passive BLE scan for SensorPush sensors...")
     scanner = BleakScanner(detection_callback=on_advertisement)
-    await scanner.start()
+    await start_scanner_with_retry(scanner)
     _last_reading_time = time.time()  # grace period starts now, before any real reading exists yet
     try:
         while True:
