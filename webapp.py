@@ -13,6 +13,7 @@ import os
 import subprocess
 import threading
 import logging
+import fcntl
 
 from flask import Flask, jsonify, request, render_template
 
@@ -206,8 +207,23 @@ def _git_check_for_update():
     origin/main. Never pulls or restarts anything by itself - applying
     an update is a separate, explicit action (the timer or the
     dashboard button), both of which reuse the same tested
-    auto_update.sh rather than duplicating this logic."""
+    auto_update.sh rather than duplicating this logic.
+
+    Uses the same lockfile as auto_update.sh, non-blocking: if a manual
+    update is currently running, this just skips this one check and
+    tries again on the next tick, rather than risking two processes
+    trying to update the same git ref at the same time (a real error -
+    "cannot lock ref ... is at X but expected Y" - that happened in
+    practice when this background check and a manual run overlapped).
+    """
+    lock_path = os.path.join(state.BASE_DIR, ".git_update.lock")
+    lock_file = open(lock_path, "w")
     try:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            logging.info("Skipping this update check - auto_update.sh appears to be running")
+            return
         subprocess.run(["git", "fetch", "origin", "main", "--quiet"],
                         cwd=state.BASE_DIR, check=True, timeout=30, capture_output=True)
         local = subprocess.run(["git", "rev-parse", "HEAD"], cwd=state.BASE_DIR,
@@ -223,6 +239,9 @@ def _git_check_for_update():
         state.save_update_status(is_available, local[:7], remote[:7], remote_message)
     except Exception:
         logging.exception("Background update check failed")
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
 
 def update_checker_loop():

@@ -10,6 +10,23 @@
 set -e
 cd "$(dirname "$0")"
 
+# webapp.py runs its OWN periodic "git fetch" in the background
+# (update_checker_loop, on whatever interval the Config page is set to)
+# - completely independent of this script. If that background check and
+# a manual run of this script ever land at nearly the same moment, two
+# processes updating the same git ref concurrently produces a real git
+# error ("cannot lock ref ... is at X but expected Y"). This lock makes
+# the two mutually exclusive - webapp.py acquires the same lockfile
+# (non-blocking - it just skips that one check and tries again next
+# tick if this script is currently running) before doing its own fetch.
+LOCKFILE=".git_update.lock"
+exec 200>"$LOCKFILE"
+if ! flock -w 30 200; then
+    echo "ERROR: could not acquire the git update lock within 30s - the background"
+    echo "update checker may be stuck. Try again in a moment."
+    exit 1
+fi
+
 BEFORE=$(git rev-parse HEAD)
 git fetch origin main --quiet
 AFTER=$(git rev-parse origin/main)
