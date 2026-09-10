@@ -185,7 +185,7 @@ async function refreshStatus() {
   if (data.config.external_source === 'sensorpush') {
     if (data.ble_status) {
       const age = Math.round(data.ble_status.age_seconds);
-      let text = `SensorPush · seen ${age}s ago · rssi ${data.ble_status.rssi}dBm`;
+      let text = `SensorPush · seen ${age}s ago`;
       if (data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
         const battAge = Math.round(data.ble_status.battery_age_seconds / 3600);
         text += ` · batt ~${Math.round(data.ble_status.battery_pct)}% (${battAge}h ago)`;
