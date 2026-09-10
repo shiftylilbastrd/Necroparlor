@@ -51,9 +51,19 @@ logging.basicConfig(
 # advertisements after enough hours. The watchdog below exits the
 # process deliberately when this happens, so systemd's existing
 # Restart=on-failure brings it back up fresh.
-WATCHDOG_TIMEOUT = 600  # 10 minutes - readings normally arrive every
-                         # few seconds, so this is a generous margin that
-                         # won't false-trigger on ordinary signal dips
+#
+# Originally 600s (10 minutes), based on an assumption this would be a
+# rare, multi-hour event. Real-world evidence on this specific Pi shows
+# a much more frequent pattern instead: a clean ~10-minute stretch of
+# good readings, then a stall that a simple process restart reliably
+# clears - confirmed twice in the same session, each restart producing
+# another ~10 clean minutes before the next stall. Under a 10-minute
+# timeout, that meant roughly HALF the time was spent showing stale
+# data while waiting for the watchdog to notice. Shortened to 2 minutes:
+# still a huge multiple of the normal few-seconds-between-readings
+# cadence (won't false-trigger on ordinary signal dips), but cuts the
+# stale-data window dramatically for this observed stall pattern.
+WATCHDOG_TIMEOUT = 120  # 2 minutes
 
 _last_reading_time = None
 
@@ -131,7 +141,10 @@ async def main():
     _last_reading_time = time.time()  # grace period starts now, before any real reading exists yet
     try:
         while True:
-            await asyncio.sleep(60)
+            await asyncio.sleep(15)  # tightened from 60s to stay proportional
+                                      # to the shorter WATCHDOG_TIMEOUT above -
+                                      # detection lag is now at most ~15s past
+                                      # the threshold instead of up to 60s
             if time.time() - _last_reading_time > WATCHDOG_TIMEOUT:
                 logging.error(
                     f"No SensorPush reading decoded in over {WATCHDOG_TIMEOUT // 60} "
