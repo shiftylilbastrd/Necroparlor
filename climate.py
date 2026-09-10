@@ -48,6 +48,11 @@ logging.basicConfig(
 # These are intentionally NOT exposed to the web UI - they're the
 # guardrails, not the thing you tune day-to-day.
 LOOP_INTERVAL = 15                 # seconds between control cycles
+DHT_READ_GAP_SECONDS = 1.0         # gap between back-to-back DHT22 reads
+                                    # (internal + wired fallback) - a
+                                    # mitigation for possible interference
+                                    # between two timing-sensitive
+                                    # single-wire reads with no gap at all
 COOL_HYSTERESIS = 2.0
 HEAT_HYSTERESIS = 2.0
 HUMIDITY_HYSTERESIS = 3.0
@@ -395,6 +400,14 @@ def run_cycle():
         raw_internal_temp, raw_internal_humidity = read_internal_sht31_f()
     else:
         raw_internal_temp, raw_internal_humidity = read_temp_and_humidity_f(PIN_INTERNAL_TEMP)
+        # A short gap before reading the second DHT22 below (the wired
+        # external/fallback probe) - two of these timing-sensitive
+        # single-wire sensors read back-to-back, with no gap at all, is a
+        # plausible source of interference between the two reads. Only
+        # needed when the internal sensor is ALSO a DHT22 - the SHT31
+        # path above uses I2C, a completely different bus, so there's
+        # nothing to interfere with there.
+        time.sleep(DHT_READ_GAP_SECONDS)
 
     # Both external sources are read every cycle, regardless of which one
     # is actually "active" (drives control decisions) - the other is kept
