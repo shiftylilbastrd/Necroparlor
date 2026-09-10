@@ -22,6 +22,8 @@ import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import sys
+import time
 
 from bleak import BleakScanner
 from bluetooth_sensor_state_data import BluetoothServiceInfo
@@ -41,6 +43,20 @@ logging.basicConfig(
     ]
 )
 
+# If no SensorPush reading has actually been decoded in this long, assume
+# the BLE scan has silently stalled - a known real-world issue with
+# long-running BlueZ/bleak scans: the process stays alive and systemd
+# has no way to know anything's wrong (Restart=on-failure only triggers
+# on an actual exit), but the underlying scan just stops delivering
+# advertisements after enough hours. The watchdog below exits the
+# process deliberately when this happens, so systemd's existing
+# Restart=on-failure brings it back up fresh.
+WATCHDOG_TIMEOUT = 600  # 10 minutes - readings normally arrive every
+                         # few seconds, so this is a generous margin that
+                         # won't false-trigger on ordinary signal dips
+
+_last_reading_time = None
+
 # One decoder per BLE address - SensorPush's decoder needs to see
 # consecutive advertisements from the *same* device to track state
 # correctly, so these must not be shared across addresses.
@@ -48,6 +64,7 @@ _parsers = {}
 
 
 def on_advertisement(device, advertisement_data):
+    global _last_reading_time
     address = device.address
     if address not in _parsers:
         _parsers[address] = SensorPushBluetoothDeviceData()
@@ -74,16 +91,30 @@ def on_advertisement(device, advertisement_data):
     temp_f = temp_c * 9.0 / 5.0 + 32.0
     state.save_ble_reading(address, temp_f, humidity, advertisement_data.rssi)
     logging.info(f"{address}: {temp_f:.1f}F / {humidity:.1f}%RH (rssi {advertisement_data.rssi})")
+    _last_reading_time = time.time()
 
 
 async def main():
+    global _last_reading_time
     state.init_db()
     logging.info("Starting passive BLE scan for SensorPush sensors...")
     scanner = BleakScanner(detection_callback=on_advertisement)
     await scanner.start()
+    _last_reading_time = time.time()  # grace period starts now, before any real reading exists yet
     try:
         while True:
-            await asyncio.sleep(3600)
+            await asyncio.sleep(60)
+            if time.time() - _last_reading_time > WATCHDOG_TIMEOUT:
+                logging.error(
+                    f"No SensorPush reading decoded in over {WATCHDOG_TIMEOUT // 60} "
+                    "minutes - the BLE scan has likely silently stalled. Exiting "
+                    "immediately (not attempting a graceful scanner.stop() first, "
+                    "in case that itself is part of what's stuck) so systemd "
+                    "restarts this service with a fresh scan."
+                )
+                os._exit(1)  # hard exit - bypasses try/finally entirely,
+                              # guaranteed not to hang even if the
+                              # underlying BLE session is itself wedged
     finally:
         await scanner.stop()
 

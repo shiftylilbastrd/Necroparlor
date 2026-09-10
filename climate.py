@@ -239,17 +239,65 @@ def _plausible(value, low, high):
     return value is not None and low <= value <= high
 
 
+# Tracks provisional "maybe this is real, not a glitch" streaks per
+# metric (keyed by label). Without this, a rejected reading's reference
+# point (last_val) never updates - so a genuine, gradual, sustained
+# change gets rejected forever, since every future comparison measures
+# against an ever-more-stale frozen point that can never catch up. This
+# happened in practice: a real multi-hour temperature drift got
+# permanently locked out this way, triggering a full emergency shutdown
+# that then never recovered on its own.
+_pending_streaks = {}
+
+STREAK_CONFIRM_COUNT = 3            # consecutive self-consistent readings
+                                     # needed before accepting a big jump
+STREAK_CONSISTENCY_TOLERANCE = 2.0  # max spread allowed within a streak
+
+
 def validate_reading(new_val, last_val, max_delta, label):
-    """Reject physically-impossible DHT glitches: an implausible jump
+    """Reject physically-implausible DHT glitches: an implausible jump
     from the last known-good reading. (Absolute-range checks happen
-    before this is called.)"""
+    before this is called.)
+
+    A rejected reading isn't discarded and forgotten, though - if
+    several consecutive readings keep landing consistently close to
+    *each other* (even though they differ from the old last-good
+    value), that's strong evidence of a genuine, sustained change
+    rather than a one-off glitch, since a real sensor glitch is
+    typically a transient outlier that doesn't reliably repeat.  After
+    STREAK_CONFIRM_COUNT such consistent readings in a row (roughly
+    45-90s at the normal loop interval), the new value is accepted as
+    the new baseline, breaking the lockout.
+    """
     if new_val is None:
+        _pending_streaks.pop(label, None)
         return None
-    if last_val is not None and abs(new_val - last_val) > max_delta:
-        state.log_event("warning", f"{label} reading rejected: jumped from "
-                         f"{last_val:.1f} to {new_val:.1f} in one cycle")
-        return None
-    return new_val
+
+    if last_val is None or abs(new_val - last_val) <= max_delta:
+        _pending_streaks.pop(label, None)
+        return new_val
+
+    # Outside the plausible single-cycle range - track whether this
+    # keeps happening consistently before giving up on it as real.
+    pending_val, streak = _pending_streaks.get(label, (None, 0))
+    if pending_val is not None and abs(new_val - pending_val) <= STREAK_CONSISTENCY_TOLERANCE:
+        streak += 1
+    else:
+        streak = 1
+    _pending_streaks[label] = (new_val, streak)
+
+    if streak >= STREAK_CONFIRM_COUNT:
+        state.log_event("warning",
+                         f"{label} confirmed a sustained new reading ({new_val:.1f}, "
+                         f"was stuck comparing against {last_val:.1f}) after {streak} "
+                         "consistent cycles - accepting it as the new baseline")
+        _pending_streaks.pop(label, None)
+        return new_val
+
+    state.log_event("warning", f"{label} reading rejected: jumped from "
+                     f"{last_val:.1f} to {new_val:.1f} in one cycle "
+                     f"({streak}/{STREAK_CONFIRM_COUNT} consistent readings so far)")
+    return None
 
 
 def activate_cooling():
@@ -430,28 +478,46 @@ def run_cycle():
     external_temp = validate_reading(raw_external_temp, last_good_external_temp,
                                       MAX_DELTA_TEMP, "External temp")
 
-    if internal_temp is None or internal_humidity is None or external_temp is None:
+    # Only INTERNAL sensor loss is treated as critical enough to shut
+    # everything down - heating, dehumidifying, and the scheduled
+    # cleaning-mode ventilation are all driven purely by internal
+    # readings or a fixed timer, none of them need external_temp at all.
+    # Losing external_temp specifically is handled separately below: it
+    # only pauses the one decision that genuinely depends on it (whether
+    # venting to outside air would actually help cool things down),
+    # without stopping anything else.
+    if internal_temp is None or internal_humidity is None:
         if sensor_fail_since is None:
             sensor_fail_since = loop_start
+            # Only logged once per outage (here, on the first cycle) so
+            # it's actually visible on the dashboard without spamming
+            # it every 15s for a long outage - this line was previously
+            # logging.warning() only (file/journald), which is why a
+            # real hour-long outage never showed up on the dashboard at
+            # all until the eventual "critical" shutdown, itself easy
+            # to miss if it scrolled out of view.
+            state.log_event("warning", "Internal sensor reading unavailable - starting failsafe countdown")
         elapsed = loop_start - sensor_fail_since
-        logging.warning(f"Sensor read failed/rejected ({elapsed:.0f}s since last good reading)")
+        logging.warning(f"Critical (internal) sensor read failed/rejected ({elapsed:.0f}s since last good reading)")
         if elapsed > SENSOR_FAIL_TIMEOUT and not alarm_active:
             alarm_active = True
-            emergency_shutdown_outputs(f"No valid sensor readings for over {SENSOR_FAIL_TIMEOUT}s")
+            emergency_shutdown_outputs(f"No valid internal sensor readings for over {SENSOR_FAIL_TIMEOUT}s")
         time.sleep(LOOP_INTERVAL)
         return
 
-    # Good reading this cycle - clear failure/alarm state
+    # Good CRITICAL reading this cycle - clear failure/alarm state
     sensor_fail_since = None
     if alarm_active:
         state.log_event("info", "Sensor readings recovered, resuming normal control")
         alarm_active = False
     last_good_internal_temp = internal_temp
     last_good_internal_humidity = internal_humidity
-    last_good_external_temp = external_temp
+    if external_temp is not None:
+        last_good_external_temp = external_temp
 
+    ext_temp_str = f"{external_temp:.1f}F" if external_temp is not None else "--F"
     ext_hum_str = f"{external_humidity:.1f}%" if external_humidity is not None else "--%"
-    logging.info(f"External: {external_temp:.1f}F/{ext_hum_str} | "
+    logging.info(f"External: {ext_temp_str}/{ext_hum_str} | "
                  f"Internal: {internal_temp:.1f}F/{internal_humidity:.1f}% | Mode: {mode}")
 
     # === Scheduled ventilation cycle (cleaning mode only) ===
@@ -470,7 +536,16 @@ def run_cycle():
         vent_active = False
 
     # === Thermal cooling request (sticky, with hysteresis) ===
-    if internal_temp > HIGH_TEMP_F:
+    # This is the one decision that genuinely needs external_temp - can't
+    # safely tell whether venting to outside air would help without
+    # knowing how it compares to inside. Missing it pauses thermal
+    # cooling specifically; it does not affect heating, dehumidifying,
+    # or the scheduled ventilation cycle above, none of which depend on it.
+    if external_temp is None:
+        if thermal_cool_request:
+            logging.warning("External temp unavailable - pausing thermal cooling until it returns")
+        thermal_cool_request = False
+    elif internal_temp > HIGH_TEMP_F:
         if external_temp < internal_temp - COOL_HYSTERESIS:
             thermal_cool_request = True
         else:

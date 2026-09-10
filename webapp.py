@@ -226,17 +226,24 @@ def _git_check_for_update():
 
 
 def update_checker_loop():
-    """Background thread, started once when webapp.py starts. Re-reads
-    the configured interval every 30s (a short tick) rather than
-    sleeping for the full interval at once, so shortening the interval
-    via the Config page takes effect promptly instead of waiting out
-    whatever the old, longer interval happened to be."""
-    last_check = 0
+    """Background thread, started once when webapp.py starts. Checks
+    immediately on startup, explicitly (not relying on an implicit
+    zero-sentinel trick) - this matters because applying an update
+    restarts this very service, so an immediate check right on startup
+    is what makes the "update available" banner clear itself promptly
+    afterward, rather than waiting out however much of the old check
+    interval happened to remain. After that first check, re-reads the
+    configured interval every 30s (a short tick) rather than sleeping
+    for the full interval at once, so shortening the interval via the
+    Config page also takes effect promptly instead of waiting out
+    whatever the old, longer interval happened to be.
+    """
+    last_check = None
     while True:
         try:
             config = state.load_config()
             interval_seconds = config.get("update_check_interval_minutes", 15) * 60
-            if time.time() - last_check >= interval_seconds:
+            if last_check is None or time.time() - last_check >= interval_seconds:
                 _git_check_for_update()
                 last_check = time.time()
         except Exception:
