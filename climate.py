@@ -396,21 +396,36 @@ def run_cycle():
     else:
         raw_internal_temp, raw_internal_humidity = read_temp_and_humidity_f(PIN_INTERNAL_TEMP)
 
-    if config.get("external_source") == "sensorpush" and config.get("sensorpush_mac"):
-        # External reading comes from sensorpush_listener.py via the shared
-        # DB instead of a wired probe. Treat a missing/stale BLE reading
-        # exactly like a failed GPIO read - same validation and failsafe
-        # path below handles both. Humidity rides along for free here since
-        # SensorPush broadcasts it anyway - purely informational, see below.
+    # Both external sources are read every cycle, regardless of which one
+    # is actually "active" (drives control decisions) - the other is kept
+    # purely for dashboard visibility, so a dead fallback probe is
+    # noticed immediately rather than discovered mid-outage on the one
+    # you actually needed. The fallback reading never touches any
+    # control-critical state (last_good_*, the delta-glitch filter, the
+    # failsafe) - only basic plausibility bounds apply to it, since a
+    # single bad fallback reading isn't dangerous the way a bad ACTIVE
+    # reading would be, just cosmetically wrong for one cycle.
+    raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
+
+    raw_sensorpush_temp = raw_sensorpush_humidity = None
+    if config.get("sensorpush_mac"):
         ble_reading = state.get_ble_reading(config["sensorpush_mac"])
         if ble_reading and (loop_start - ble_reading["ts"]) <= SENSOR_FAIL_TIMEOUT:
-            raw_external_temp = ble_reading["temp_f"]
-            raw_external_humidity = ble_reading["humidity"]
-        else:
-            raw_external_temp = None
-            raw_external_humidity = None
+            raw_sensorpush_temp = ble_reading["temp_f"]
+            raw_sensorpush_humidity = ble_reading["humidity"]
+
+    if config.get("external_source") == "sensorpush" and config.get("sensorpush_mac"):
+        raw_external_temp, raw_external_humidity = raw_sensorpush_temp, raw_sensorpush_humidity
+        raw_fallback_temp, raw_fallback_humidity = raw_wired_temp, raw_wired_humidity
     else:
-        raw_external_temp, raw_external_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
+        raw_external_temp, raw_external_humidity = raw_wired_temp, raw_wired_humidity
+        raw_fallback_temp, raw_fallback_humidity = raw_sensorpush_temp, raw_sensorpush_humidity
+
+    if not _plausible(raw_fallback_temp, -40, 140):
+        raw_fallback_temp = None
+    if not _plausible(raw_fallback_humidity, 0, 100):
+        raw_fallback_humidity = None
+    fallback_temp, fallback_humidity = raw_fallback_temp, raw_fallback_humidity
 
     # Reject physically-impossible readings before delta-checking against history
     if not _plausible(raw_internal_temp, -40, 140):
@@ -633,7 +648,7 @@ def run_cycle():
     )
 
     state.log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
-                       fan_on, heater_on, humidity_on, vent_active)
+                       fan_on, heater_on, humidity_on, vent_active, fallback_temp, fallback_humidity)
 
     time.sleep(LOOP_INTERVAL)
 

@@ -251,10 +251,14 @@ def init_db():
 
 
 def _migrate_readings_columns(conn):
-    """Adds external_humidity to readings if this DB predates it."""
+    """Adds columns to readings for DBs that predate them."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(readings)").fetchall()}
     if "external_humidity" not in existing:
         conn.execute("ALTER TABLE readings ADD COLUMN external_humidity REAL")
+    if "fallback_external_temp" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN fallback_external_temp REAL")
+    if "fallback_external_humidity" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN fallback_external_humidity REAL")
 
 
 def _migrate_ble_readings_columns(conn):
@@ -327,14 +331,15 @@ def get_all_ble_readings():
 
 
 def log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
-                 fan, heater, dehumidifier, vent):
+                 fan, heater, dehumidifier, vent, fallback_external_temp=None, fallback_external_humidity=None):
     conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "fan, heater, dehumidifier, vent) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
-         int(fan), int(heater), int(dehumidifier), int(vent))
+         int(fan), int(heater), int(dehumidifier), int(vent), fallback_external_temp, fallback_external_humidity)
     )
     conn.commit()
     conn.close()
@@ -355,13 +360,14 @@ def get_latest_reading():
     conn = get_db()
     row = conn.execute(
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "fan, heater, dehumidifier, vent FROM readings ORDER BY ts DESC LIMIT 1"
+        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity "
+        "FROM readings ORDER BY ts DESC LIMIT 1"
     ).fetchone()
     conn.close()
     if not row:
         return None
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-            "fan", "heater", "dehumidifier", "vent"]
+            "fan", "heater", "dehumidifier", "vent", "fallback_external_temp", "fallback_external_humidity"]
     return dict(zip(keys, row))
 
 

@@ -70,6 +70,7 @@
     <div class="stat-value" id="statExternalTemp">--°F</div>
     <div class="stat-sub" id="statExternalHumidity">-- %RH</div>
     <div class="stat-sub" id="statExternalSource">--</div>
+    <div class="stat-sub" id="statFallback" style="margin-top:6px; display:none;"></div>
   </div>
   <div class="card">
     <h2>Outputs</h2>
@@ -198,6 +199,18 @@ async function refreshStatus() {
     }
   } else {
     sourceLabel.textContent = 'Wired probe (local GPIO)';
+  }
+
+  const fallbackEl = document.getElementById('statFallback');
+  const fallbackTemp = data.latest && data.latest.fallback_external_temp;
+  if (fallbackTemp !== null && fallbackTemp !== undefined) {
+    const fallbackLabel = data.config.external_source === 'sensorpush' ? 'Wired probe' : 'SensorPush';
+    const fallbackHum = data.latest.fallback_external_humidity;
+    const humStr = (fallbackHum !== null && fallbackHum !== undefined) ? `/${fallbackHum.toFixed(1)}%` : '';
+    fallbackEl.textContent = `Fallback (${fallbackLabel}, not active): ${fallbackTemp.toFixed(1)}°F${humStr}`;
+    fallbackEl.style.display = 'block';
+  } else {
+    fallbackEl.style.display = 'none';
   }
 }
 

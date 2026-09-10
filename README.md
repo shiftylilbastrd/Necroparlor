@@ -88,6 +88,8 @@ Requires Python 3.11+, which is the default on current Raspberry Pi OS (Bookworm
    ```
    `climate.py` re-reads `config.json` every cycle same as always, so it'll start pulling the external reading from the BLE listener within one 15s cycle of you saving the change — no restart needed. If you switch `external_source` back to `local_gpio`, it falls right back to the wired probe.
 
+**Both external sources are read every cycle, regardless of which one is active.** Whichever one isn't currently driving control decisions is shown on the dashboard's External tile as "Fallback (..., not active)" - purely for visibility, so a dead fallback probe (e.g. a wired probe kept connected as backup while SensorPush is the primary) is noticed the moment it stops working, not discovered mid-outage on the day you actually need it. The fallback reading never affects any control decision or the sensor-failure failsafe - a bad or missing fallback reading just shows as blank on the dashboard for that cycle.
+
 Things worth knowing:
 - **Range through metal ductwork is the main risk.** Test placement with `discover_sensorpush.py` running before you seal the sensor into the vent — ductwork can attenuate the signal more than open air.
 - **Advertisements can occasionally pause** until something (the SensorPush app, or another BLE connection) "wakes" the sensor — this is a known SensorPush quirk, not a bug in this integration. Losing the external reading alone no longer shuts anything down (see "Sensor-failure failsafe" below) - it just pauses thermal cooling specifically until a fresh reading comes back, while heating and dehumidifying keep running on internal data.
