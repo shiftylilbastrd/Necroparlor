@@ -8,40 +8,43 @@
 <div class="section-title">Setpoints</div>
 <div class="grid" id="setpointPanels"></div>
 
-<div class="section-title">Internal sensor source</div>
-<div class="card" style="max-width:420px;">
-  <div class="field">
-    <label>Source</label>
-    <select id="internalSourceSelect" onchange="saveInternalSource()">
-      <option value="dht22">Wired DHT22 / AM2302 (GPIO27)</option>
-      <option value="sht31">SHT31 (I2C) - adds condensation-recovery heater</option>
-    </select>
-  </div>
-  <div class="stat-sub" style="margin-top:6px;">
-    Switching here doesn't require a restart - climate.py picks it up within one control cycle. Only switch to SHT31 once it's actually wired to the I2C pins, or every cycle will read as a failed sensor.
-  </div>
-  <div class="save-msg" id="internalSourceMsg"></div>
-</div>
-
-<div class="section-title">External sensor source</div>
-<div class="card" style="max-width:420px;">
-  <div class="field">
-    <label>Source</label>
-    <select id="externalSourceSelect" onchange="onExternalSourceChange()">
-      <option value="local_gpio">Wired probe (local GPIO)</option>
-      <option value="sensorpush">SensorPush (Bluetooth)</option>
-    </select>
-  </div>
-  <div class="field" id="sensorpushMacField" style="display:none;">
-    <label>SensorPush BLE address</label>
-    <input type="text" id="sensorpushMacInput" placeholder="AA:BB:CC:DD:EE:FF">
-    <div class="stat-sub" style="margin-top:6px;">
-      Don't know the address? Run <code>python3 discover_sensorpush.py</code> on the Pi to find it.
+<div class="section-title">Sensor sources</div>
+<div class="grid">
+  <div class="card" style="max-width:420px;">
+    <h2>Internal</h2>
+    <div class="field">
+      <label>Source</label>
+      <select id="internalSourceSelect" onchange="saveInternalSource()">
+        <option value="dht22">Wired DHT22 / AM2302 (GPIO27)</option>
+        <option value="sht31">SHT31 (I2C) - adds condensation-recovery heater</option>
+      </select>
     </div>
-    <div class="stat-sub" id="sensorpushSignal" style="margin-top:6px;">Signal: --</div>
+    <div class="stat-sub" style="margin-top:6px;">
+      Switching here doesn't require a restart - climate.py picks it up within one control cycle. Only switch to SHT31 once it's actually wired to the I2C pins, or every cycle will read as a failed sensor.
+    </div>
+    <div class="save-msg" id="internalSourceMsg"></div>
   </div>
-  <button class="save-btn" onclick="saveExternalSource()">Save</button>
-  <div class="save-msg" id="externalSourceMsg"></div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>External</h2>
+    <div class="field">
+      <label>Source</label>
+      <select id="externalSourceSelect" onchange="onExternalSourceChange()">
+        <option value="local_gpio">Wired probe (local GPIO)</option>
+        <option value="sensorpush">SensorPush (Bluetooth)</option>
+      </select>
+    </div>
+    <div class="field" id="sensorpushMacField" style="display:none;">
+      <label>SensorPush BLE address</label>
+      <input type="text" id="sensorpushMacInput" placeholder="AA:BB:CC:DD:EE:FF">
+      <div class="stat-sub" style="margin-top:6px;">
+        Don't know the address? Run <code>python3 discover_sensorpush.py</code> on the Pi to find it.
+      </div>
+      <div class="stat-sub" id="sensorpushSignal" style="margin-top:6px;">Signal: --</div>
+    </div>
+    <button class="save-btn" onclick="saveExternalSource()">Save</button>
+    <div class="save-msg" id="externalSourceMsg"></div>
+  </div>
 </div>
 
 <div class="section-title">Software updates</div>
