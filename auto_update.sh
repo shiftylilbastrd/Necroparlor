@@ -21,23 +21,6 @@ fi
 
 echo "Update found: ${BEFORE:0:7} -> ${AFTER:0:7}"
 
-# Fail BEFORE touching any files if passwordless sudo isn't set up for
-# the restart commands below - better to bail out cleanly here than to
-# pull new code and then discover we can't restart the services to
-# actually run it (leaving files updated but the old code still live).
-#
-# This checks for the SPECIFIC granted commands via `sudo -n -l` (list
-# mode - reports permissions without running anything), not a generic
-# `sudo -n true`. The sudoers setup deliberately only grants passwordless
-# access to these three exact systemctl commands, not arbitrary ones -
-# so testing with an unrelated command like `true` would always fail
-# even with a perfectly correct setup, since `true` was never granted.
-if ! sudo -n -l 2>/dev/null | grep -q "systemctl restart dermestid-climate.service"; then
-    echo "ERROR: passwordless sudo isn't configured for the required systemctl commands."
-    echo "See README.md 'Optional: automatic updates from GitHub' for the one-time visudo setup."
-    exit 1
-fi
-
 # config.json is tracked in git but also gets rewritten by the dashboard
 # (setpoints, sensor source, etc.) - stash any such local changes before
 # pulling so they can't conflict, then restore them afterward.
@@ -60,11 +43,22 @@ if [ "$STASHED" = "1" ]; then
 fi
 
 echo "Restarting climate control..."
-sudo systemctl restart dermestid-climate.service
+if ! sudo -n systemctl restart dermestid-climate.service; then
+    echo "ERROR: passwordless sudo failed for dermestid-climate.service."
+    echo "The code has already been updated (git pull succeeded) - just needs a manual restart:"
+    echo "  sudo systemctl restart dermestid-climate.service dermestid-web.service dermestid-sensorpush.service"
+    echo "See README.md 'Optional: automatic updates from GitHub' for the one-time visudo setup to avoid this going forward."
+    exit 1
+fi
 
 if systemctl is-enabled --quiet dermestid-sensorpush.service 2>/dev/null; then
     echo "Restarting SensorPush listener (currently enabled)..."
-    sudo systemctl restart dermestid-sensorpush.service
+    if ! sudo -n systemctl restart dermestid-sensorpush.service; then
+        echo "ERROR: passwordless sudo failed for dermestid-sensorpush.service."
+        echo "(dermestid-climate.service was already restarted successfully above)"
+        echo "Run manually: sudo systemctl restart dermestid-sensorpush.service dermestid-web.service"
+        exit 1
+    fi
 fi
 
 # Web dashboard restarts LAST, deliberately. When this script is
@@ -80,6 +74,11 @@ fi
 # whole group on a service restart. So: everything else must happen
 # BEFORE this line, or it silently never runs.
 echo "Restarting web dashboard..."
-sudo systemctl restart dermestid-web.service
+if ! sudo -n systemctl restart dermestid-web.service; then
+    echo "ERROR: passwordless sudo failed for dermestid-web.service."
+    echo "(everything else above was already restarted successfully)"
+    echo "Run manually: sudo systemctl restart dermestid-web.service"
+    exit 1
+fi
 
 echo "Update complete - now running $(git rev-parse --short HEAD)"
