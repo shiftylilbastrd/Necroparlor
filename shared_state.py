@@ -20,10 +20,18 @@ import sqlite3
 import time
 import fcntl
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DB_PATH = os.path.join(BASE_DIR, "dermestid.db")
+
+# Used to anchor chart bucket boundaries to local midnight rather than
+# UTC midnight (see _local_utc_offset_seconds in get_history) - hardcoded
+# rather than reading the Pi's own system timezone, since that's one
+# fewer thing that has to be correctly configured for this to work right.
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 VALID_MODES = ("dormant", "ready", "cleaning")
 
@@ -343,32 +351,54 @@ def get_latest_reading():
     return dict(zip(keys, row))
 
 
+def _local_utc_offset_seconds():
+    """Current UTC offset for LOCAL_TZ, in seconds (negative for zones
+    west of UTC, e.g. -25200 for Pacific Daylight). Recomputed on every
+    call rather than cached, so it's automatically correct across DST
+    transitions without needing a service restart."""
+    return int(datetime.now(LOCAL_TZ).utcoffset().total_seconds())
+
+
 def get_history(hours):
     """Returns downsampled time-series points covering the last `hours`
-    hours, bucketed/averaged so a 30-day request doesn't ship hundreds
-    of thousands of rows to the browser. Each metric also carries its
-    min/max within the bucket, for a mean-with-band chart (like Home
-    Assistant's Statistics Graph card) - bands are naturally near-zero
-    width on short ranges (few raw readings per bucket) and widen on
-    longer ranges, exactly reflecting real variance, not a fabricated
-    effect."""
+    hours, bucketed/averaged so long ranges don't ship huge numbers of
+    rows to the browser. Each metric also carries its min/max within the
+    bucket, for a mean-with-band chart (like Home Assistant's Statistics
+    Graph card) - bands are naturally near-zero width when a bucket only
+    holds one raw reading and widen when it holds several, exactly
+    reflecting real variance, not a fabricated effect.
+
+    Bucket size is a fixed, human-meaningful interval per range tier
+    (matching the dashboard's four range buttons) rather than a sliding
+    point-count target - so the chart's grid lines land on predictable
+    boundaries (every 15 min, every hour, etc.) at every zoom level
+    instead of some arbitrary in-between spacing.
+
+    Boundaries are anchored to LOCAL midnight, not UTC midnight: readings
+    are stored as raw UTC epoch seconds, and naively flooring those to a
+    bucket size gives boundaries that land on UTC-clean-but-locally-odd
+    clock times (e.g. a 6h bucket edge at UTC midnight is 5pm the
+    previous day in Pacific time - not a clean local hour at all). Each
+    timestamp is shifted into local-equivalent seconds before bucketing,
+    then shifted back so the returned value is still a valid UTC epoch
+    the frontend can display correctly - the net effect is that an 8h
+    bucket's edges land on local 12am/6am/12pm/6pm rather than an arbitrary
+    UTC-derived local time.
+    """
     conn = get_db()
     since = time.time() - hours * 3600
     if hours <= 6:
-        # Fixed 15-minute buckets for short ranges. The dynamic formula
-        # below would compute ~15s buckets at 6h - matching the control
-        # loop's own sample interval exactly, so almost every bucket gets
-        # exactly one raw reading and the mean/min/max band collapses to
-        # nothing. 15-minute buckets guarantee real aggregation (mirrors
-        # Home Assistant's Statistics Graph card at Period: Hour-ish
-        # granularity for a short window).
-        bucket_seconds = 900
+        bucket_seconds = 15 * 60          # 6h view  -> 15-minute buckets
+    elif hours <= 24:
+        bucket_seconds = 60 * 60          # 24h view -> 1-hour buckets
+    elif hours <= 168:
+        bucket_seconds = 6 * 60 * 60       # 7d view  -> 6-hour buckets
     else:
-        target_points = 1500
-        bucket_seconds = max(15, int((hours * 3600) / target_points))
+        bucket_seconds = 24 * 60 * 60     # 30d view -> 1-day buckets
+    offset = _local_utc_offset_seconds()
     rows = conn.execute(
         """
-        SELECT CAST(ts / ? AS INTEGER) * ? AS bucket,
+        SELECT CAST((ts + ?) / ? AS INTEGER) * ? - ? AS bucket,
                AVG(internal_temp), MIN(internal_temp), MAX(internal_temp),
                AVG(internal_humidity), MIN(internal_humidity), MAX(internal_humidity),
                AVG(external_temp), MIN(external_temp), MAX(external_temp),
@@ -378,7 +408,7 @@ def get_history(hours):
         GROUP BY bucket
         ORDER BY bucket ASC
         """,
-        (bucket_seconds, bucket_seconds, since)
+        (offset, bucket_seconds, bucket_seconds, offset, since)
     ).fetchall()
     conn.close()
     return [

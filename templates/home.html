@@ -227,31 +227,48 @@ function bandDatasets(label, mean, min, max, colorHex) {
   ];
 }
 
+function timeScaleOptions(hours) {
+  // `unit` here only controls label TEXT formatting, not tick position -
+  // position is forced separately via ticks.source:'data' below. Verified
+  // with a real headless Chart.js render that stepSize alone is NOT
+  // reliable for this: Chart.js silently overrides it with its own
+  // "nicer" spacing (confirmed producing 5-hour ticks when 6 was
+  // requested) - ticks.source:'data' is what actually guarantees ticks
+  // only ever land on real data points, and autoSkip still thins them
+  // for readability without breaking that alignment.
+  if (hours <= 6) return { unit: 'minute', tooltipFormat: 'MMM d h:mm a', displayFormats: { minute: 'h:mm a' } };
+  if (hours <= 24) return { unit: 'hour', tooltipFormat: 'MMM d h:mm a', displayFormats: { hour: 'h a' } };
+  if (hours <= 168) return { unit: 'hour', tooltipFormat: 'MMM d h:mm a', displayFormats: { hour: 'MMM d, h a' } };
+  return { unit: 'day', tooltipFormat: 'MMM d', displayFormats: { day: 'MMM d' } };
+}
+
 async function refreshHistory() {
   const res = await fetch(`/api/history?hours=${currentRangeHours}`);
   const points = await res.json();
   const labels = points.map(p => new Date(p.ts * 1000));
+  const timeOptions = timeScaleOptions(currentRangeHours);
 
   const tempDatasets = [
     ...bandDatasets('Internal °F', points.map(p => p.internal_temp), points.map(p => p.internal_temp_min), points.map(p => p.internal_temp_max), '#4f8fd9'),
     ...bandDatasets('External °F', points.map(p => p.external_temp), points.map(p => p.external_temp_min), points.map(p => p.external_temp_max), '#d9a441')
   ];
-  updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined });
+  updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined }, timeOptions);
 
   const humidityDatasets = [
     ...bandDatasets('Internal %RH', points.map(p => p.internal_humidity), points.map(p => p.internal_humidity_min), points.map(p => p.internal_humidity_max), '#4f8fd9'),
     ...bandDatasets('External %RH', points.map(p => p.external_humidity), points.map(p => p.external_humidity_min), points.map(p => p.external_humidity_max), '#d9a441')
   ];
-  updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined });
+  updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);
 }
 
 const chartInstances = {};
 
-function updateChart(canvasId, instanceKey, labels, datasets, yRange) {
+function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOptions) {
   const existing = chartInstances[instanceKey];
   if (existing) {
     existing.data.labels = labels;
     datasets.forEach((d, i) => { existing.data.datasets[i].data = d.data; });
+    existing.options.scales.x.time = timeOptions;
     existing.update();
     return;
   }
@@ -271,8 +288,8 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange) {
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       scales: {
-        x: { type: 'time', time: { tooltipFormat: 'MMM d HH:mm' }, ticks: { color: '#93a0ab' }, grid: { color: '#2a323a' } },
-        y: { min: yRange.min, max: yRange.max, ticks: { color: '#93a0ab' }, grid: { color: '#2a323a' } }
+        x: { type: 'time', time: timeOptions, ticks: { source: 'data', color: '#93a0ab' }, grid: { color: '#2a323a' } },
+        y: { min: yRange.min, max: yRange.max, grace: 0, ticks: { color: '#93a0ab' }, grid: { color: '#2a323a' } }
       },
       plugins: {
         legend: { labels: { color: '#e7ecef', filter: (item, data) => !data.datasets[item.datasetIndex].isBand } },
