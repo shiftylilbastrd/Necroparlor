@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the SensorPush battery check daily
+
+[Timer]
+OnCalendar=daily
+# If the Pi was off/rebooting at the scheduled time, run as soon as it's back up
+Persistent=true
+# Spread load slightly if you ever run more than one of these
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

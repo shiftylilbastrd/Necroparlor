@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Config - Dermestid Enclosure{% endblock %}
+{% block content %}
+
+<h1>Configuration</h1>
+<div class="subtitle">Per-mode setpoints and sensor sources - changes apply within one control cycle</div>
+
+<div class="section-title">Setpoints</div>
+<div class="grid" id="setpointPanels"></div>
+
+<div class="section-title">Internal sensor source</div>
+<div class="card" style="max-width:420px;">
+  <div class="field">
+    <label>Source</label>
+    <select id="internalSourceSelect" onchange="saveInternalSource()">
+      <option value="dht22">Wired DHT22 / AM2302 (GPIO27)</option>
+      <option value="sht31">SHT31 (I2C) - adds condensation-recovery heater</option>
+    </select>
+  </div>
+  <div class="stat-sub" style="margin-top:6px;">
+    Switching here doesn't require a restart - climate.py picks it up within one control cycle. Only switch to SHT31 once it's actually wired to the I2C pins, or every cycle will read as a failed sensor.
+  </div>
+  <div class="save-msg" id="internalSourceMsg"></div>
+</div>
+
+<div class="section-title">External sensor source</div>
+<div class="card" style="max-width:420px;">
+  <div class="field">
+    <label>Source</label>
+    <select id="externalSourceSelect" onchange="onExternalSourceChange()">
+      <option value="local_gpio">Wired probe (local GPIO)</option>
+      <option value="sensorpush">SensorPush (Bluetooth)</option>
+    </select>
+  </div>
+  <div class="field" id="sensorpushMacField" style="display:none;">
+    <label>SensorPush BLE address</label>
+    <input type="text" id="sensorpushMacInput" placeholder="AA:BB:CC:DD:EE:FF">
+    <div class="stat-sub" style="margin-top:6px;">
+      Don't know the address? Run <code>python3 discover_sensorpush.py</code> on the Pi to find it.
+    </div>
+  </div>
+  <button class="save-btn" onclick="saveExternalSource()">Save</button>
+  <div class="save-msg" id="externalSourceMsg"></div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadConfig() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  renderSetpointPanels(data.config);
+  renderExternalSourceForm(data.config);
+  document.getElementById('internalSourceSelect').value = data.config.internal_source || 'dht22';
+}
+
+async function saveInternalSource() {
+  const source = document.getElementById('internalSourceSelect').value;
+  const res = await fetch('/api/internal-source', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('internalSourceMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
+
+function renderSetpointPanels(config) {
+  const container = document.getElementById('setpointPanels');
+  const modeLabels = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+  container.innerHTML = '';
+
+  Object.entries(config.modes).forEach(([mode, sp]) => {
+    const panel = document.createElement('div');
+    panel.className = 'card';
+    let extraFields = '';
+    if (mode === 'cleaning') {
+      extraFields = `
+        <div class="field">
+          <label>Ventilation interval (minutes)</label>
+          <input type="number" id="${mode}-vent_interval_minutes" value="${sp.vent_interval_minutes}">
+        </div>
+        <div class="field">
+          <label>Ventilation duration (minutes)</label>
+          <input type="number" id="${mode}-vent_duration_minutes" value="${sp.vent_duration_minutes}">
+        </div>`;
+    }
+    panel.innerHTML = `
+      <h2>${modeLabels[mode]}</h2>
+      <div class="field">
+        <label>Low temp °F (heater on below)</label>
+        <input type="number" step="0.5" id="${mode}-low_temp_f" value="${sp.low_temp_f}">
+      </div>
+      <div class="field">
+        <label>High temp °F (cooling on above)</label>
+        <input type="number" step="0.5" id="${mode}-high_temp_f" value="${sp.high_temp_f}">
+      </div>
+      <div class="field">
+        <label>Humidity setpoint %RH</label>
+        <input type="number" step="1" id="${mode}-humidity_setpoint" value="${sp.humidity_setpoint}">
+      </div>
+      ${extraFields}
+      <button class="save-btn" onclick="saveSetpoints('${mode}')">Save</button>
+      <div class="save-msg" id="${mode}-msg"></div>
+    `;
+    container.appendChild(panel);
+  });
+}
+
+async function saveSetpoints(mode) {
+  const body = {
+    mode: mode,
+    low_temp_f: parseFloat(document.getElementById(`${mode}-low_temp_f`).value),
+    high_temp_f: parseFloat(document.getElementById(`${mode}-high_temp_f`).value),
+    humidity_setpoint: parseFloat(document.getElementById(`${mode}-humidity_setpoint`).value),
+  };
+  if (mode === 'cleaning') {
+    body.vent_interval_minutes = parseInt(document.getElementById(`${mode}-vent_interval_minutes`).value, 10);
+    body.vent_duration_minutes = parseInt(document.getElementById(`${mode}-vent_duration_minutes`).value, 10);
+  }
+  const res = await fetch('/api/setpoints', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  const msg = document.getElementById(`${mode}-msg`);
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
+
+function renderExternalSourceForm(config) {
+  const select = document.getElementById('externalSourceSelect');
+  const macField = document.getElementById('sensorpushMacField');
+  const macInput = document.getElementById('sensorpushMacInput');
+  select.value = config.external_source || 'local_gpio';
+  if (config.sensorpush_mac) macInput.value = config.sensorpush_mac;
+  macField.style.display = select.value === 'sensorpush' ? 'block' : 'none';
+}
+
+function onExternalSourceChange() {
+  const select = document.getElementById('externalSourceSelect');
+  document.getElementById('sensorpushMacField').style.display =
+    select.value === 'sensorpush' ? 'block' : 'none';
+}
+
+async function saveExternalSource() {
+  const source = document.getElementById('externalSourceSelect').value;
+  const mac = document.getElementById('sensorpushMacInput').value.trim();
+  const res = await fetch('/api/external-source', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({source, sensorpush_mac: mac})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('externalSourceMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
+
+loadConfig();
+</script>
+{% endblock %}

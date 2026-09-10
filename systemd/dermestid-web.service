@@ -1,0 +1,14 @@
+[Unit]
+Description=Dermestid enclosure web dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/dermestid
+ExecStart=/usr/bin/python3 /home/pi/dermestid/webapp.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

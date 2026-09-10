@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Dermestid Enclosure{% endblock %}</title>
+{% block head_extra %}{% endblock %}
+<style>
+  :root {
+    --bg: #14181c;
+    --panel: #1d2329;
+    --panel-border: #2a323a;
+    --text: #e7ecef;
+    --text-dim: #93a0ab;
+    --accent: #4fb286;
+    --warn: #d9a441;
+    --danger: #d9534f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .page { max-width: 980px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px 0; }
+  .subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 16px; }
+
+  nav.topnav {
+    display: flex; gap: 4px; border-bottom: 1px solid var(--panel-border);
+    padding: 0 20px; background: var(--panel);
+  }
+  nav.topnav a {
+    display: block; padding: 14px 16px; color: var(--text-dim); text-decoration: none;
+    font-size: 0.9rem; font-weight: 600; border-bottom: 2px solid transparent;
+  }
+  nav.topnav a.active { color: var(--text); border-bottom-color: var(--accent); }
+  nav.topnav a:hover { color: var(--text); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card h2 {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin: 0 0 8px 0;
+  }
+  .stat-value { font-size: 1.9rem; font-weight: 600; }
+  .stat-sub { color: var(--text-dim); font-size: 0.85rem; margin-top: 2px; }
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 0.78rem; font-weight: 600; margin-left: 6px;
+  }
+  .pill.on { background: rgba(79,178,134,0.18); color: var(--accent); }
+  .pill.off { background: rgba(147,160,171,0.15); color: var(--text-dim); }
+  .banner {
+    display: none; background: rgba(217,83,79,0.15); border: 1px solid var(--danger);
+    color: #ffb3b0; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 0.9rem;
+  }
+  .section-title { font-size: 1rem; margin: 26px 0 10px 0; color: var(--text); }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 4px; }
+  .field input, .field select {
+    width: 100%; background: #10151a; border: 1px solid var(--panel-border);
+    border-radius: 6px; color: var(--text); padding: 7px 9px; font-size: 16px;
+  }
+  .save-btn {
+    margin-top: 6px; background: var(--accent); border: none; color: #0d1712;
+    font-weight: 600; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+  }
+  .save-msg { font-size: 0.8rem; margin-top: 6px; min-height: 1em; }
+  .save-msg.ok { color: var(--accent); }
+  .save-msg.err { color: var(--danger); }
+  .range-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .range-row button, .filter-row select, .filter-row button {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text-dim);
+    padding: 5px 11px; border-radius: 6px; font-size: 0.8rem; cursor: pointer;
+  }
+  .range-row button.active { color: var(--text); border-color: var(--accent); }
+  .chart-container { position: relative; height: 320px; width: 100%; }
+  .events { font-size: 0.85rem; }
+  .event-row { padding: 8px 0; border-bottom: 1px solid var(--panel-border); display: flex; gap: 12px; }
+  .event-row time { color: var(--text-dim); flex-shrink: 0; width: 130px; }
+  .event-row .level-tag {
+    flex-shrink: 0; width: 64px; text-transform: uppercase; font-size: 0.7rem;
+    font-weight: 700; letter-spacing: 0.03em;
+  }
+  .event-row.level-info .level-tag { color: var(--text-dim); }
+  .event-row.level-warning .level-tag { color: var(--warn); }
+  .event-row.level-error .level-tag, .event-row.level-critical .level-tag { color: var(--danger); }
+  .filter-row { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
+  .filter-row select { width: auto; }
+
+  /* --- Mobile (phones, narrow viewports) --- */
+  @media (max-width: 640px) {
+    .page { padding: 12px; }
+    h1 { font-size: 1.2rem; }
+    .stat-value { font-size: 1.6rem; }
+    nav.topnav { padding: 0; }
+    nav.topnav a { flex: 1; text-align: center; padding: 14px 8px; font-size: 0.85rem; }
+    .save-btn, .range-row button, .filter-row select, .filter-row button {
+      padding: 10px 14px; font-size: 0.85rem;
+    }
+    .range-row { flex-wrap: wrap; }
+    .range-row button { flex: 1; min-width: 70px; }
+    .chart-container { height: 240px; }
+  }
+</style>
+</head>
+<body>
+<nav class="topnav">
+  <a href="/" class="{{ 'active' if active_page == 'home' }}">Home</a>
+  <a href="/logs" class="{{ 'active' if active_page == 'logs' }}">Logs</a>
+  <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
+</nav>
+<div class="page">
+{% block content %}{% endblock %}
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

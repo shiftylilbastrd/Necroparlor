@@ -1,0 +1,9 @@
+[Unit]
+Description=Dermestid enclosure SensorPush battery check
+After=bluetooth.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/dermestid
+ExecStart=/usr/bin/python3 /home/pi/dermestid/sensorpush_battery.py
