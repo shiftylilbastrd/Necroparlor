@@ -98,7 +98,12 @@ def validate_external_source(source, sensorpush_mac):
     if source not in ("local_gpio", "sensorpush"):
         return None, None, "source must be 'local_gpio' or 'sensorpush'"
     if source == "local_gpio":
-        return source, None, None
+        # Preserve whatever MAC was already configured, even though it's
+        # not actively used while local_gpio is selected - this used to
+        # unconditionally wipe it to None, meaning switching to the wired
+        # probe even briefly (e.g. for a quick test) permanently lost the
+        # SensorPush address, forcing a full re-discovery to switch back.
+        return source, (sensorpush_mac or None), None
     if not sensorpush_mac or not MAC_ADDRESS_RE.match(sensorpush_mac):
         return None, None, "sensorpush_mac must look like AA:BB:CC:DD:EE:FF"
     return source, sensorpush_mac.upper(), None
