@@ -138,6 +138,59 @@ tail -f /home/pi/dermestid/logs/climate.log
 
 The unit files assume the folder is at `/home/pi/dermestid` and the user is `pi` — edit `WorkingDirectory`/`ExecStart`/`User` if yours differs.
 
+## Optional: update notifications + one-click apply
+
+By default, getting a code change onto the Pi means `git pull` + restarting the affected service by hand every time. This project can now tell you when an update is waiting and apply it with one click, instead.
+
+**Checking for updates works out of the box, no setup needed.** `webapp.py` runs a background check every 15 minutes by default (configurable on the Config page, 1–1440 minutes) — read-only, it only compares your local commit to GitHub's, never pulls or restarts anything by itself. When it finds something new, a banner appears at the top of every page (Home, Logs, Config) linking to the Config page, which also shows the specific commit message and an **"Update now"** button.
+
+**Actually applying an update — either via that button, or the fully-hands-off timer below — needs a one-time permission setup**, since both ultimately restart services without anyone there to type a password:
+
+```bash
+sudo visudo -f /etc/sudoers.d/dermestid
+```
+
+Paste this in, save, and exit:
+```
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-climate.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-web.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-sensorpush.service
+```
+
+(Run `which systemctl` first and double-check it matches `/usr/bin/systemctl` — if your system has it somewhere else, use that exact path instead, since `sudoers` rules must match exactly.)
+
+```bash
+chmod +x auto_update.sh
+```
+
+That's it for the button — the Config page's "Update now" runs `auto_update.sh` for you (as a detached background process, so it survives the web service restarting itself partway through — genuinely tested, not just assumed to work).
+
+**If you'd rather it apply automatically with no click at all**, there's still the fully-hands-off timer option:
+
+```bash
+sudo cp systemd/dermestid-autoupdate.service systemd/dermestid-autoupdate.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dermestid-autoupdate.timer
+```
+
+This runs the same `auto_update.sh` every 5 minutes on its own — no banner needed, no button to click, it just happens. Check it's working:
+```bash
+systemctl list-timers dermestid-autoupdate.timer
+journalctl -u dermestid-autoupdate.service -n 20
+```
+
+Or trigger it once immediately:
+```bash
+sudo systemctl start dermestid-autoupdate.service
+journalctl -u dermestid-autoupdate.service -n 20
+```
+
+A few things worth knowing, whichever way you apply an update:
+- If you've customized settings through the dashboard (setpoints, sensor source), `config.json` has local changes that aren't committed to git. The script stashes those before pulling and restores them right after, so they survive an update — this is tested, not just assumed. If an incoming update ever touches the exact same part of `config.json` your local changes touched, the automatic restore can fail; the script logs a clear warning if that happens, and `git stash list` on the Pi will have your changes waiting to be sorted out by hand.
+- Before touching any files, the script verifies passwordless sudo actually works and bails out cleanly with a clear error if it doesn't — rather than pulling new code and then discovering it can't restart the services to run it, leaving you in a half-updated state.
+- Anything pushed to your GitHub repo can end up running on the Pi (within the check interval, or on your next button click). Since only your own GitHub account can push to it, that's the same level of trust as "I trust my own account," but worth being aware of.
+- Restarting `dermestid-climate.service` briefly interrupts climate control for a couple of seconds each time an update actually lands - not meaningfully different from restarting it by hand, just automatic now.
+
 ## What changed from your original script
 
 **Safety fixes:**

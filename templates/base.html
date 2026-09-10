@@ -69,6 +69,11 @@
     display: none; background: rgba(217,83,79,0.15); border: 1px solid var(--danger);
     color: #ffb3b0; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 0.9rem;
   }
+  .update-banner {
+    display: none; background: rgba(79,178,134,0.15); border: 1px solid var(--accent);
+    color: #b8f0d9; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 0.9rem;
+  }
+  .update-banner a { color: #b8f0d9; font-weight: 600; }
   .section-title { font-size: 1rem; margin: 26px 0 10px 0; color: var(--text); }
   .field { margin-bottom: 10px; }
   .field label { display: block; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 4px; }
@@ -126,8 +131,32 @@
   <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
 </nav>
 <div class="page">
+<div class="update-banner" id="globalUpdateBanner">
+  🔄 An update is available<span id="globalUpdateDetail"></span> - <a href="/config">go to Config to apply it</a>.
+</div>
 {% block content %}{% endblock %}
 </div>
 {% block scripts %}{% endblock %}
+<script>
+// Runs on every page (outside the overridable scripts block) - polls
+// for an available update and shows a banner if one's found, regardless
+// of which page you're currently on.
+async function checkGlobalUpdateBanner() {
+  try {
+    const res = await fetch('/api/update-status');
+    const data = await res.json();
+    const banner = document.getElementById('globalUpdateBanner');
+    const detail = document.getElementById('globalUpdateDetail');
+    if (data.status && data.status.is_available) {
+      detail.textContent = data.status.remote_message ? `: "${data.status.remote_message}"` : '';
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (e) { /* status endpoint not reachable - fail quietly, try again next tick */ }
+}
+checkGlobalUpdateBanner();
+setInterval(checkGlobalUpdateBanner, 60000);
+</script>
 </body>
 </html>

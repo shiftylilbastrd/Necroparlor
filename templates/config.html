@@ -44,6 +44,20 @@
   <div class="save-msg" id="externalSourceMsg"></div>
 </div>
 
+<div class="section-title">Software updates</div>
+<div class="card" style="max-width:420px;">
+  <div class="field">
+    <label>Check for updates every (minutes)</label>
+    <input type="number" id="updateIntervalInput" min="1" max="1440">
+  </div>
+  <button class="save-btn" onclick="saveUpdateInterval()">Save interval</button>
+  <div class="save-msg" id="updateIntervalMsg"></div>
+
+  <div class="stat-sub" id="updateStatusText" style="margin-top:14px;">Checking...</div>
+  <button class="save-btn" id="applyUpdateBtn" onclick="applyUpdate()" style="margin-top:10px; display:none;">Update now</button>
+  <div class="save-msg" id="applyUpdateMsg"></div>
+</div>
+
 {% endblock %}
 {% block scripts %}
 <script>
@@ -197,5 +211,68 @@ async function saveExternalSource() {
 }
 
 loadConfig();
+
+async function loadUpdateStatus() {
+  const res = await fetch('/api/update-status');
+  const data = await res.json();
+  document.getElementById('updateIntervalInput').value = data.check_interval_minutes;
+  renderUpdateStatus(data.status);
+}
+
+function renderUpdateStatus(status) {
+  const text = document.getElementById('updateStatusText');
+  const btn = document.getElementById('applyUpdateBtn');
+  if (!status || !status.checked_at) {
+    text.textContent = 'No check has run yet - first check happens shortly after the web service starts.';
+    btn.style.display = 'none';
+    return;
+  }
+  const checkedAgo = Math.round((Date.now() / 1000 - status.checked_at) / 60);
+  const agoText = checkedAgo < 1 ? 'just now' : `${checkedAgo}m ago`;
+  if (status.is_available) {
+    const msgPart = status.remote_message ? `: "${status.remote_message}"` : '';
+    text.textContent = `Update available${msgPart} (checked ${agoText})`;
+    btn.style.display = 'inline-block';
+  } else {
+    text.textContent = `Up to date (checked ${agoText})`;
+    btn.style.display = 'none';
+  }
+}
+
+async function saveUpdateInterval() {
+  const minutes = parseInt(document.getElementById('updateIntervalInput').value, 10);
+  const res = await fetch('/api/update-check-interval', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({minutes})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('updateIntervalMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
+
+async function applyUpdate() {
+  const btn = document.getElementById('applyUpdateBtn');
+  const msg = document.getElementById('applyUpdateMsg');
+  btn.disabled = true;
+  msg.textContent = 'Applying update - this page will stop responding for a few seconds while services restart, then reload automatically.';
+  msg.className = 'save-msg';
+  try {
+    await fetch('/api/apply-update', { method: 'POST' });
+  } catch (e) {
+    // The web service can restart before this request's response makes
+    // it back - that looks like a network error in the browser but
+    // isn't actually a failure, so it's deliberately not surfaced as one.
+  }
+  setTimeout(() => { window.location.reload(); }, 8000);
+}
+
+loadUpdateStatus();
+setInterval(loadUpdateStatus, 30000);
 </script>
 {% endblock %}

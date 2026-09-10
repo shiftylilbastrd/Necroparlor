@@ -40,6 +40,10 @@ VALID_MODES = ("dormant", "ready", "cleaning")
 # verify against species-specific guidance and adjust from here.
 DEFAULT_CONFIG = {
     "current_mode": "ready",
+    # How often webapp.py checks GitHub for a new commit (read-only -
+    # just updates the "update available" status, doesn't pull or
+    # restart anything by itself). Minutes.
+    "update_check_interval_minutes": 15,
     # Where climate.py gets the *internal* reading from:
     #   "dht22"  - wired DHT22/AM2302 probe on PIN_INTERNAL_TEMP (default -
     #              what's actually on hand)
@@ -230,6 +234,16 @@ def init_db():
             id INTEGER PRIMARY KEY CHECK (id = 1),
             is_open INTEGER,
             ts REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS update_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            is_available INTEGER,
+            local_commit TEXT,
+            remote_commit TEXT,
+            remote_message TEXT,
+            checked_at REAL
         )
     """)
     conn.commit()
@@ -444,6 +458,46 @@ def get_door_state():
     if not row:
         return None
     return {"is_open": bool(row[0]), "ts": row[1]}
+
+
+def save_update_status(is_available, local_commit, remote_commit, remote_message):
+    """Called by webapp.py's background update-checker thread after every
+    GitHub check (read-only - this never pulls or restarts anything by
+    itself, just records what it found)."""
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO update_state (id, is_available, local_commit, remote_commit, remote_message, checked_at) "
+        "VALUES (1, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET is_available=excluded.is_available, "
+        "local_commit=excluded.local_commit, remote_commit=excluded.remote_commit, "
+        "remote_message=excluded.remote_message, checked_at=excluded.checked_at",
+        (int(is_available), local_commit, remote_commit, remote_message, time.time())
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_update_status():
+    conn = get_db()
+    row = conn.execute(
+        "SELECT is_available, local_commit, remote_commit, remote_message, checked_at FROM update_state WHERE id = 1"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"is_available": bool(row[0]), "local_commit": row[1], "remote_commit": row[2],
+            "remote_message": row[3], "checked_at": row[4]}
+
+
+def validate_update_interval(minutes):
+    """Returns (minutes, None) on success or (None, error) on failure."""
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return None, "interval must be a whole number of minutes"
+    if not (1 <= minutes <= 1440):
+        return None, "interval must be between 1 and 1440 minutes"
+    return minutes, None
 
 
 def get_recent_events(limit=50, level=None, before_ts=None):

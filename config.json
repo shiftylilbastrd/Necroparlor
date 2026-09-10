@@ -1,8 +1,9 @@
 {
   "current_mode": "ready",
+  "update_check_interval_minutes": 15,
   "internal_source": "dht22",
-  "external_source": "sensorpush",
-  "sensorpush_mac": "AA:BB:CC:DD:EE:01",
+  "external_source": "local_gpio",
+  "sensorpush_mac": null,
   "modes": {
     "dormant": {
       "low_temp_f": 55.0,
