@@ -158,7 +158,9 @@ async function refreshStatus() {
   if (data.latest) {
     document.getElementById('statInternalTemp').textContent = data.latest.internal_temp.toFixed(1) + '°F';
     document.getElementById('statInternalHumidity').textContent = data.latest.internal_humidity.toFixed(1) + ' %RH';
-    document.getElementById('statExternalTemp').textContent = data.latest.external_temp.toFixed(1) + '°F';
+    document.getElementById('statExternalTemp').textContent =
+      (data.latest.external_temp !== null && data.latest.external_temp !== undefined)
+        ? data.latest.external_temp.toFixed(1) + '°F' : '--°F';
     document.getElementById('statExternalHumidity').textContent =
       (data.latest.external_humidity !== null && data.latest.external_humidity !== undefined)
         ? data.latest.external_humidity.toFixed(1) + ' %RH' : '-- %RH';
