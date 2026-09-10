@@ -488,8 +488,18 @@ def run_cycle():
     elif internal_temp > LOW_TEMP_F + HEAT_HYSTERESIS:
         heat_request = False
 
-    # Mutual exclusion: never run the heater and the fan/vent at once
-    if cooling_needed and heat_request:
+    # Mutual exclusion applies to genuine THERMAL cooling only - running
+    # the heater while actively venting hot air out would be directly
+    # self-defeating (heating air that's about to be pushed back
+    # outside). The scheduled cleaning-mode ventilation cycle is
+    # different: it's not temperature-driven at all, it fires on a fixed
+    # schedule purely to flush air quality regardless of what the
+    # temperature is doing. Blocking heat for that too would let a
+    # routine air-quality flush cause a real temperature dip that has
+    # nothing to do with why the fan turned on - so it's intentionally
+    # excluded here even though vent_active still drives the fan/servo
+    # itself (via cooling_needed below), unchanged.
+    if thermal_cool_request and heat_request:
         logging.warning("Heat and cool both requested this cycle - prioritizing cooling")
         heat_request = False
 
