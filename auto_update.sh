@@ -63,17 +63,17 @@ echo "Restarting climate control..."
 if ! sudo -n systemctl restart dermestid-climate.service; then
     echo "ERROR: passwordless sudo failed for dermestid-climate.service."
     echo "The code has already been updated (git pull succeeded) - just needs a manual restart:"
-    echo "  sudo systemctl restart dermestid-climate.service dermestid-web.service dermestid-sensorpush.service"
+    echo "  sudo systemctl restart dermestid-climate.service dermestid-web.service dermestid-ble.service"
     echo "See README.md 'Optional: automatic updates from GitHub' for the one-time visudo setup to avoid this going forward."
     exit 1
 fi
 
-if systemctl is-enabled --quiet dermestid-sensorpush.service 2>/dev/null; then
-    echo "Restarting SensorPush listener (currently enabled)..."
-    if ! sudo -n systemctl restart dermestid-sensorpush.service; then
-        echo "ERROR: passwordless sudo failed for dermestid-sensorpush.service."
+if systemctl is-enabled --quiet dermestid-ble.service 2>/dev/null; then
+    echo "Restarting BLE sensor listener (currently enabled)..."
+    if ! sudo -n systemctl restart dermestid-ble.service; then
+        echo "ERROR: passwordless sudo failed for dermestid-ble.service."
         echo "(dermestid-climate.service was already restarted successfully above)"
-        echo "Run manually: sudo systemctl restart dermestid-sensorpush.service dermestid-web.service"
+        echo "Run manually: sudo systemctl restart dermestid-ble.service dermestid-web.service"
         exit 1
     fi
 fi

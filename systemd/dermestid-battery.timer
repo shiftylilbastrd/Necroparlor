@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the SensorPush battery check daily
+Description=Run the BLE sensor battery check daily (currently SensorPush-HT1-specific)
 
 [Timer]
 OnCalendar=daily

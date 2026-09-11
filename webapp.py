@@ -49,8 +49,8 @@ def api_status():
     stale = bool(latest) and (time.time() - latest["ts"]) > 90
 
     ble_status = None
-    if config.get("sensorpush_mac"):
-        ble = state.get_ble_reading(config["sensorpush_mac"])
+    if config.get("ble_mac"):
+        ble = state.get_ble_reading(config["ble_mac"])
         if ble:
             ble_status = {
                 "temp_f": ble["temp_f"],
@@ -76,34 +76,49 @@ def api_status():
 
 @app.route("/api/ble-sensors")
 def api_ble_sensors():
-    """All SensorPush addresses currently being heard, for picking which
-    one to wire in as the external sensor."""
+    """All BLE addresses currently being heard, for picking which one
+    to wire in as the external sensor."""
     return jsonify(state.get_all_ble_readings())
 
 
-@app.route("/api/sensorpush-mac", methods=["POST"])
-def api_set_sensorpush_mac():
-    """Sets which physical SensorPush unit to listen for. Not a source
-    toggle - external sensor failover is automatic (see climate.py) -
-    this just identifies which BLE address is the right one, useful if
-    more than one SensorPush unit is nearby."""
+@app.route("/api/ble-sensor-types")
+def api_ble_sensor_types():
+    """The supported BLE sensor brand registry, for populating the
+    Config page's brand dropdown."""
+    return jsonify({key: info["label"] for key, info in state.BLE_SENSOR_LIBRARIES.items()})
+
+
+@app.route("/api/ble-mac", methods=["POST"])
+def api_set_ble_mac():
+    """Sets which physical BLE unit to listen for, and which brand's
+    decoder to use. Not a source toggle - external sensor failover is
+    automatic (see climate.py) - this just identifies which BLE address
+    is the right one (useful if more than one matching unit is nearby)
+    and which library decodes its advertisements. Changing the brand
+    requires restarting ble_listener.py to take effect (it's read once
+    at startup, not re-checked every cycle)."""
     body = request.get_json(force=True, silent=True) or {}
-    mac, error = state.validate_sensorpush_mac(body.get("sensorpush_mac"))
+    mac, error = state.validate_ble_mac(body.get("ble_mac"))
+    if error:
+        return jsonify({"error": error}), 400
+    sensor_type, error = state.validate_ble_sensor_type(body.get("ble_sensor_type", "sensorpush"))
     if error:
         return jsonify({"error": error}), 400
     config = state.load_config()
-    config["sensorpush_mac"] = mac
+    config["ble_mac"] = mac
+    config["ble_sensor_type"] = sensor_type
     state.save_config(config)
-    state.log_event("info", f"SensorPush address {'set to ' + mac if mac else 'cleared'}")
+    state.log_event("info", f"BLE sensor address {'set to ' + mac if mac else 'cleared'} "
+                             f"(brand: {state.BLE_SENSOR_LIBRARIES[sensor_type]['label']})")
     return jsonify(config)
 
 
 @app.route("/api/calibration", methods=["POST"])
 def api_set_calibration():
     """Saves per-sensor calibration offsets. Tied to physical sensor
-    identity (internal/sensorpush/wired), not the dynamic active/
+    identity (internal/ble/wired), not the dynamic active/
     fallback role, since which physical sensor plays which role can
-    swap automatically during a SensorPush outage."""
+    swap automatically during a BLE sensor outage."""
     body = request.get_json(force=True, silent=True) or {}
     cleaned, error = state.validate_calibration(body)
     if error:

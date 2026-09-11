@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""
+One-shot battery check for a SensorPush HT1 external sensor,
+specifically - NOT genericized like ble_listener.py, because it can't
+be the same way.
+
+ble_listener.py's passive decoding is genuinely brand-agnostic (a
+shared interface many BLE sensor brands implement identically), but
+this script solves a different, SensorPush-HT1-specific problem:
+battery level isn't in that device's passive advertisement at all, so
+this connects briefly, reads a proprietary GATT characteristic, computes
+voltage and an approximate percentage, then disconnects immediately.
+The GATT characteristic UUID and voltage formula below are reverse-
+engineered specifically for the HT1's firmware - they will not work
+for a different brand, and there's no equivalent "registry" for this
+the way there is for the passive listener, since each brand's active-
+connection battery protocol (if it even needs one) is its own
+proprietary thing.
+
+Many other brands don't need this at all - their passive advertisement
+already includes battery, which ble_listener.py now saves for free
+when present (see its on_advertisement()). This script only matters
+if you're using a brand whose passive ad omits battery info the way
+SensorPush's does.
+
+Meant to run periodically (see systemd/dermestid-battery.timer -
+daily by default), NOT continuously: the HT1 allows only one BLE
+connection at a time, so holding one open would block the SensorPush
+phone app (if you also use it) from ever connecting.
+
+If a check fails - e.g. the phone app happened to be connected at the
+same moment - it's logged as a warning and simply retried at the next
+scheduled run. No connection means no reading, not a crash.
+
+GATT characteristic and voltage formula are from the community's
+reverse-engineered HT1 protocol documentation (MIT licensed):
+https://github.com/wxfield/ha-sensorpush-ht1
+"""
+import asyncio
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+import struct
+
+from bleak import BleakClient
+
+import shared_state as state
+
+LOG_DIR = os.path.join(state.BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        RotatingFileHandler(os.path.join(LOG_DIR, "battery.log"),
+                             maxBytes=500_000, backupCount=2),
+        logging.StreamHandler()
+    ]
+)
+
+BATTERY_CHAR_UUID = "ef090007-11d6-42ba-93b8-9dd7ec090aa9"
+CONNECT_TIMEOUT_SECONDS = 30
+RETRY_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 10
+
+# CR2 lithium coin cell discharge curve, per the HT1 protocol docs:
+# roughly 3.1V fresh, 2.1V empty. This is a linear approximation good
+# enough for a "getting low, plan a swap" signal - not a precise gauge.
+BATTERY_FULL_V = 3.1
+BATTERY_EMPTY_V = 2.1
+LOW_BATTERY_PCT = 15
+
+
+def voltage_to_percent(voltage):
+    pct = (voltage - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V) * 100.0
+    return max(0.0, min(100.0, round(pct, 1)))
+
+
+async def read_battery_voltage(address):
+    async with BleakClient(address, timeout=CONNECT_TIMEOUT_SECONDS) as client:
+        raw = await client.read_gatt_char(BATTERY_CHAR_UUID)
+        adc_raw, _die_temp_raw = struct.unpack("<HH", raw)
+        return (adc_raw & 0x7FFF) * 3.6 / 1024
+
+
+async def check_with_retries(address):
+    last_error = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return await asyncio.wait_for(read_battery_voltage(address), timeout=CONNECT_TIMEOUT_SECONDS)
+        except Exception as exc:
+            last_error = exc
+            logging.warning(f"Attempt {attempt}/{RETRY_ATTEMPTS} failed for {address}: {exc}")
+            if attempt < RETRY_ATTEMPTS:
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+    raise last_error
+
+
+async def main():
+    config = state.load_config()
+    if not config.get("ble_mac"):
+        # External source selection is automatic now (see climate.py) -
+        # the BLE sensor isn't always "the active one" at any given
+        # moment, but as long as an address is configured, its battery
+        # is still worth checking daily regardless of whether it
+        # happens to be the currently-active reading or on standby.
+        logging.info("No BLE sensor address configured - nothing to check.")
+        return
+
+    sensor_type = config.get("ble_sensor_type", "sensorpush")
+    if sensor_type != "sensorpush":
+        # This script's GATT characteristic and voltage formula are
+        # SensorPush-HT1-specific (see the module docstring) - running
+        # it against a different brand's device would just time out or
+        # read garbage, not a real check. Most other brands include
+        # battery directly in the passive advertisement instead, which
+        # ble_listener.py already saves for free - check the Logs page
+        # or Data page to see if that's already covering it before
+        # assuming you need an equivalent script for your brand.
+        logging.info(f"ble_sensor_type is '{sensor_type}', not 'sensorpush' - "
+                     "this SensorPush-specific battery check doesn't apply, skipping.")
+        return
+
+    address = config["ble_mac"]
+    logging.info(f"Checking battery for {address}...")
+    try:
+        voltage = await check_with_retries(address)
+    except Exception:
+        logging.exception(f"Could not read battery from {address} after {RETRY_ATTEMPTS} attempts")
+        state.log_event("warning",
+                         f"SensorPush battery check failed for {address} - will retry next scheduled run")
+        return
+
+    pct = voltage_to_percent(voltage)
+    state.save_ble_battery(address, pct, voltage)
+
+    if pct <= LOW_BATTERY_PCT:
+        state.log_event("warning", f"SensorPush battery low: ~{pct:.0f}% ({voltage:.2f}V) - plan a swap soon")
+    else:
+        state.log_event("info", f"SensorPush battery check: ~{pct:.0f}% ({voltage:.2f}V)")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

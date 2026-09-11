@@ -442,7 +442,7 @@ def run_cycle():
 
     # Both external sources are read every cycle. Which one is "active"
     # (drives control decisions) is decided automatically here, not by a
-    # manual config toggle: SensorPush is used whenever it's reported
+    # manual config toggle: the BLE sensor is used whenever it's reported
     # within SENSOR_FAIL_TIMEOUT (the same freshness window the failsafe
     # already uses elsewhere), and the wired probe is used automatically
     # otherwise - no manual switch, no missed data while nobody's
@@ -457,22 +457,22 @@ def run_cycle():
     raw_wired_temp = apply_offset(raw_wired_temp, calib.get("wired_temp_offset", 0.0))
     raw_wired_humidity = apply_offset(raw_wired_humidity, calib.get("wired_humidity_offset", 0.0))
 
-    raw_sensorpush_temp = raw_sensorpush_humidity = None
-    sensorpush_fresh = False
-    if config.get("sensorpush_mac"):
-        ble_reading = state.get_ble_reading(config["sensorpush_mac"])
+    raw_ble_temp = raw_ble_humidity = None
+    ble_fresh = False
+    if config.get("ble_mac"):
+        ble_reading = state.get_ble_reading(config["ble_mac"])
         if ble_reading and (loop_start - ble_reading["ts"]) <= SENSOR_FAIL_TIMEOUT:
-            raw_sensorpush_temp = apply_offset(ble_reading["temp_f"], calib.get("sensorpush_temp_offset", 0.0))
-            raw_sensorpush_humidity = apply_offset(ble_reading["humidity"], calib.get("sensorpush_humidity_offset", 0.0))
-            sensorpush_fresh = True
+            raw_ble_temp = apply_offset(ble_reading["temp_f"], calib.get("ble_temp_offset", 0.0))
+            raw_ble_humidity = apply_offset(ble_reading["humidity"], calib.get("ble_humidity_offset", 0.0))
+            ble_fresh = True
 
-    if sensorpush_fresh:
-        raw_external_temp, raw_external_humidity = raw_sensorpush_temp, raw_sensorpush_humidity
+    if ble_fresh:
+        raw_external_temp, raw_external_humidity = raw_ble_temp, raw_ble_humidity
         raw_fallback_temp, raw_fallback_humidity = raw_wired_temp, raw_wired_humidity
-        active_external_source = "sensorpush"
+        active_external_source = "ble"
     else:
         raw_external_temp, raw_external_humidity = raw_wired_temp, raw_wired_humidity
-        raw_fallback_temp, raw_fallback_humidity = raw_sensorpush_temp, raw_sensorpush_humidity
+        raw_fallback_temp, raw_fallback_humidity = raw_ble_temp, raw_ble_humidity
         active_external_source = "local_gpio"
 
     # Log the transition itself (once, not every cycle) - automatic
@@ -481,9 +481,9 @@ def run_cycle():
     global last_active_external_source
     if last_active_external_source is not None and active_external_source != last_active_external_source:
         if active_external_source == "local_gpio":
-            state.log_event("warning", "Automatically failed over to wired probe (SensorPush stale)")
+            state.log_event("warning", "Automatically failed over to wired probe (BLE sensor stale)")
         else:
-            state.log_event("info", "SensorPush recovered, resuming as primary external sensor")
+            state.log_event("info", "BLE sensor recovered, resuming as primary external sensor")
     last_active_external_source = active_external_source
 
     if not _plausible(raw_fallback_temp, -40, 140):

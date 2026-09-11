@@ -99,7 +99,7 @@ function fanState(fanOn, ventOn) {
   return `<span class="fan-state off" title="Off">○</span>`;
 }
 function srcAbbrev(src) {
-  if (src === 'sensorpush') return 'SP';
+  if (src === 'ble' || src === 'sensorpush') return 'BLE';  // 'sensorpush' is the old stored value, for historical rows
   if (src === 'local_gpio') return 'Wired';
   return '<span class="null-cell">--</span>';
 }

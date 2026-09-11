@@ -50,24 +50,28 @@ DEFAULT_CONFIG = {
     #   "sht31"  - I2C sensor with condensation-recovery heater support
     "internal_source": "dht22",
     # External (outside-air) reading: automatic failover, not a manual
-    # choice. climate.py always reads both the wired probe and
-    # SensorPush every cycle and uses whichever is fresher - SensorPush
+    # choice. climate.py always reads both the wired probe and a BLE
+    # sensor every cycle and uses whichever is fresher - the BLE sensor
     # if it's reported within SENSOR_FAIL_TIMEOUT, otherwise the wired
-    # probe. sensorpush_mac identifies *which* of possibly several
-    # SensorPush units to listen for; it's not a mode toggle.
-    "sensorpush_mac": None,
+    # probe. ble_mac identifies *which* physical BLE unit to listen for
+    # (useful if more than one is nearby); ble_sensor_type identifies
+    # *which brand's* decoder to use, since different brands broadcast
+    # different, incompatible advertisement formats - see
+    # BLE_SENSOR_LIBRARIES below. Neither is a mode toggle.
+    "ble_mac": None,
+    "ble_sensor_type": "sensorpush",
     # Per-sensor calibration offsets, added to the raw reading before any
     # validation/control logic sees it - tied to the physical sensor
-    # (internal/sensorpush/wired), NOT to "active"/"fallback", since
-    # which physical sensor plays which role can swap automatically
-    # during a SensorPush outage. An offset has to follow the actual
-    # hardware it corrects for, not whatever label it's currently
-    # wearing on the dashboard.
+    # (internal/ble/wired), NOT to "active"/"fallback", since which
+    # physical sensor plays which role can swap automatically during a
+    # BLE sensor outage. An offset has to follow the actual hardware it
+    # corrects for, not whatever label it's currently wearing on the
+    # dashboard.
     "calibration": {
         "internal_temp_offset": 0.0,
         "internal_humidity_offset": 0.0,
-        "sensorpush_temp_offset": 0.0,
-        "sensorpush_humidity_offset": 0.0,
+        "ble_temp_offset": 0.0,
+        "ble_humidity_offset": 0.0,
         "wired_temp_offset": 0.0,
         "wired_humidity_offset": 0.0,
     },
@@ -107,24 +111,58 @@ VENT_DURATION_BOUNDS = (1, 60)    # minutes
 
 MAC_ADDRESS_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 
+# Registry of supported BLE sensor brands for the passive listener
+# (ble_listener.py). Each entry names a PyPI package and the class
+# within it that decodes that brand's advertisement format - all of
+# these share the same interface (a BluetoothData subclass with a
+# .update(service_info) method returning .entity_values), since
+# they're siblings in the same open-source ecosystem Home Assistant
+# uses for its native Bluetooth integrations. Adding a new brand is
+# usually just: pip install <package>, then one line here.
+#
+# Confidence varies by entry - "sensorpush", "inkbird", and "govee"
+# were directly confirmed against real source/usage examples; others
+# follow the same well-established naming convention across this
+# ecosystem but weren't individually verified. If a brand's class name
+# has changed or is different than listed, ble_listener.py will fail
+# with a clear ImportError naming the exact package/class it tried,
+# not a silent failure - check that brand's PyPI page if so.
+BLE_SENSOR_LIBRARIES = {
+    "sensorpush": {"package": "sensorpush_ble", "class": "SensorPushBluetoothDeviceData", "label": "SensorPush"},
+    "govee": {"package": "govee_ble", "class": "GoveeBluetoothDeviceData", "label": "Govee"},
+    "inkbird": {"package": "inkbird_ble", "class": "INKBIRDBluetoothDeviceData", "label": "INKBIRD"},
+    "xiaomi": {"package": "xiaomi_ble", "class": "XiaomiBluetoothDeviceData", "label": "Xiaomi"},
+    "ruuvitag": {"package": "ruuvitag_ble", "class": "RuuviTagBluetoothDeviceData", "label": "RuuviTag"},
+}
 
-def validate_sensorpush_mac(sensorpush_mac):
-    """Validates a SensorPush BLE address for saving - identifies which
+
+def validate_ble_mac(ble_mac):
+    """Validates a BLE sensor address for saving - identifies which
     physical unit to listen for, not a mode toggle (external source
-    selection is now automatic failover, not manual). Returns (mac, None)
+    selection is automatic failover, not manual). Returns (mac, None)
     on success or (None, error) on failure. An empty value is allowed -
-    it just means no SensorPush unit is configured, so climate.py always
+    it just means no BLE sensor is configured, so climate.py always
     uses the wired probe until one is set."""
-    if not sensorpush_mac:
+    if not ble_mac:
         return None, None
-    if not MAC_ADDRESS_RE.match(sensorpush_mac):
-        return None, "sensorpush_mac must look like AA:BB:CC:DD:EE:FF"
-    return sensorpush_mac.upper(), None
+    if not MAC_ADDRESS_RE.match(ble_mac):
+        return None, "ble_mac must look like AA:BB:CC:DD:EE:FF"
+    return ble_mac.upper(), None
+
+
+def validate_ble_sensor_type(sensor_type):
+    """Validates a BLE sensor brand selection against the supported
+    registry above. Returns (sensor_type, None) on success or
+    (None, error) on failure."""
+    if sensor_type not in BLE_SENSOR_LIBRARIES:
+        return None, f"ble_sensor_type must be one of {sorted(BLE_SENSOR_LIBRARIES)}"
+    return sensor_type, None
+
 
 
 CALIBRATION_KEYS = (
     "internal_temp_offset", "internal_humidity_offset",
-    "sensorpush_temp_offset", "sensorpush_humidity_offset",
+    "ble_temp_offset", "ble_humidity_offset",
     "wired_temp_offset", "wired_humidity_offset",
 )
 
@@ -171,6 +209,23 @@ def load_config():
             data = json.load(f)
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+    # One-time migration from the old SensorPush-specific key names to
+    # the new brand-agnostic ones (sensorpush_mac -> ble_mac,
+    # sensorpush_*_offset -> ble_*_offset). Without this, upgrading past
+    # that rename would silently reset an already-configured MAC address
+    # and calibration offsets back to their defaults on the very next
+    # load - the data wouldn't actually be gone, just sitting under a
+    # key nothing reads anymore. Naturally completes itself on the next
+    # save (of anything), since it rewrites `data` in place before the
+    # merge below.
+    if "sensorpush_mac" in data and "ble_mac" not in data:
+        data["ble_mac"] = data.pop("sensorpush_mac")
+    if "calibration" in data:
+        cal = data["calibration"]
+        if "sensorpush_temp_offset" in cal and "ble_temp_offset" not in cal:
+            cal["ble_temp_offset"] = cal.pop("sensorpush_temp_offset")
+        if "sensorpush_humidity_offset" in cal and "ble_humidity_offset" not in cal:
+            cal["ble_humidity_offset"] = cal.pop("sensorpush_humidity_offset")
     # Backfill any keys/modes added in later versions of this script so
     # an old config.json on disk doesn't crash a newer climate.py.
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -320,7 +375,7 @@ def _migrate_ble_readings_columns(conn):
 
 
 def save_ble_reading(address, temp_f, humidity, rssi):
-    """Called by sensorpush_listener.py for every decoded advertisement it
+    """Called by ble_listener.py for every decoded advertisement it
     sees, keyed by BLE address so multiple sensors can be tracked at once
     even though only one is currently wired into the control loop. Only
     touches the passive-advertisement columns - leaves battery fields
@@ -337,8 +392,9 @@ def save_ble_reading(address, temp_f, humidity, rssi):
 
 
 def save_ble_battery(address, battery_pct, battery_voltage):
-    """Called by sensorpush_battery.py after its periodic active-connection
-    battery check. Only touches the battery columns - leaves whatever
+    """Called by ble_battery.py after its periodic active-connection
+    battery check (currently only implemented for SensorPush's HT1 -
+    see that file). Only touches the battery columns - leaves whatever
     temp/humidity/rssi the passive listener last wrote alone."""
     conn = get_db()
     conn.execute(
@@ -366,8 +422,8 @@ def get_ble_reading(address):
 
 
 def get_all_ble_readings():
-    """Every SensorPush device currently being heard, regardless of which
-    one (if any) is wired into the control loop - useful for the discovery
+    """Every BLE sensor currently being heard, regardless of which one
+    (if any) is wired into the control loop - useful for the discovery
     helper and for a future multi-sensor dashboard."""
     conn = get_db()
     rows = conn.execute(

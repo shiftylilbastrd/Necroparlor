@@ -7,9 +7,9 @@ Files:
 - `shared_state.py` — shared config + SQLite helpers used by both of the above. Must live in the same folder as them.
 - `templates/` — the dashboard's pages: `base.html` (shared nav/layout), `home.html` (live status + chart + mode), `logs.html` (event log), `data.html` (raw readings table), `config.html` (setpoints + sensor source).
 - `config.json` — current mode + per-mode setpoints. Auto-created if missing; edit by hand or through the dashboard.
-- `sensorpush_listener.py` — optional background service that listens for SensorPush BLE sensors and feeds one of them into `climate.py` as the external reading, instead of a wired probe. Has a self-watchdog: BLE scans can silently stall after many hours of continuous operation without crashing (a known real-world BlueZ/bleak issue) - if 10 minutes pass with no reading actually decoded, it exits deliberately so systemd's `Restart=on-failure` brings it back up fresh rather than sitting there doing nothing indefinitely.
-- `sensorpush_battery.py` — optional one-shot script, run daily by a systemd timer, that briefly connects to the external SensorPush sensor to check its battery level (battery isn't in the passive broadcast).
-- `discover_sensorpush.py` — one-time helper to find your SensorPush sensors' BLE addresses.
+- `ble_listener.py` — optional background service that listens for a BLE sensor (brand selected via `config.json`'s `ble_sensor_type` - SensorPush, Govee, INKBIRD, Xiaomi, and RuuviTag are supported out of the box, see `shared_state.BLE_SENSOR_LIBRARIES`) and feeds it into `climate.py` as the external reading, instead of a wired probe. Has a self-watchdog: BLE scans can silently stall after many hours of continuous operation without crashing (a known real-world BlueZ/bleak issue) - if 2 minutes pass with no reading actually decoded, it exits deliberately so systemd's `Restart=on-failure` brings it back up fresh rather than sitting there doing nothing indefinitely.
+- `ble_battery.py` — optional one-shot script, run daily by a systemd timer, that briefly connects to check battery level for sensors whose passive broadcast doesn't include it. Currently only implemented for SensorPush's HT1 specifically (see the file's own docstring for why this one, unlike the listener, can't be made brand-generic the same way) - skips itself cleanly if a different brand is configured. Many other brands include battery directly in their passive advertisement instead, which `ble_listener.py` already saves for free when present - check the Data page before assuming you need an equivalent for your brand.
+- `discover_ble_sensor.py` — one-time helper to find your BLE sensors' addresses (whichever brand is configured).
 - `systemd/*.service`, `systemd/*.timer` — units so everything starts on boot, restarts if it crashes, and the battery check runs on schedule.
 
 ## Install
@@ -62,40 +62,45 @@ Then visit `http://<pi-ip-address>:8080` from any phone/laptop on your LAN. **Th
 
 ## Sensor calibration
 
-Each physical sensor - internal, SensorPush, and the wired probe - has its own temperature and humidity offset on the Config page, added to the raw reading before anything else (validation, control decisions, display) sees it. Useful for correcting a cheap sensor that's reading consistently a degree or two off against a known-good reference thermometer.
+Each physical sensor - internal, BLE, and the wired probe - has its own temperature and humidity offset on the Config page, added to the raw reading before anything else (validation, control decisions, display) sees it. Useful for correcting a cheap sensor that's reading consistently a degree or two off against a known-good reference thermometer.
 
-Offsets are tied to the *physical sensor*, not to "active"/"fallback" - since which physical sensor is currently active can change automatically (see below), an offset has to follow the actual hardware it corrects for, not whichever label that hardware happens to be wearing on the dashboard at the moment. Verified this specifically: forced a failover so the wired probe became the active "External" reading, and confirmed its own offset (not SensorPush's) still applied correctly.
+Offsets are tied to the *physical sensor*, not to "active"/"fallback" - since which physical sensor is currently active can change automatically (see below), an offset has to follow the actual hardware it corrects for, not whichever label that hardware happens to be wearing on the dashboard at the moment. Verified this specifically: forced a failover so the wired probe became the active "External" reading, and confirmed its own offset (not the BLE sensor's) still applied correctly.
 
-## External reading: SensorPush with automatic wired-probe failover
+## External reading: a BLE sensor with automatic wired-probe failover
 
-The external (outside-air) reading comes from two sensors working together, not a manual choice: a SensorPush BLE sensor as the primary, and a wired DHT22/AM2302 probe on GPIO4 as an always-connected fallback. `climate.py` reads both every single cycle and automatically uses whichever one is actually fresh - SensorPush whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s, the same window the sensor-failure failsafe uses elsewhere), the wired probe automatically otherwise. There's no source toggle to remember to flip - if SensorPush drops out, control keeps running on the wired probe with zero action needed, and control switches back the moment SensorPush recovers.
+The external (outside-air) reading comes from two sensors working together, not a manual choice: a BLE sensor as the primary, and a wired DHT22/AM2302 probe on GPIO4 as an always-connected fallback. `climate.py` reads both every single cycle and automatically uses whichever one is actually fresh - the BLE sensor whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s, the same window the sensor-failure failsafe uses elsewhere), the wired probe automatically otherwise. There's no source toggle to remember to flip - if the BLE sensor drops out, control keeps running on the wired probe with zero action needed, and control switches back the moment it recovers.
 
-SensorPush requires no gateway, hub, or extra hardware - the Pi's onboard Bluetooth reads it directly via entirely passive listening (no pairing, no connection), so it doesn't touch the sensor's battery budget.
+**Supported BLE sensor brands** (`ble_listener.py`'s decoder, selected via `config.json`'s `ble_sensor_type`): SensorPush, Govee, INKBIRD, Xiaomi, and RuuviTag are supported out of the box - see `shared_state.BLE_SENSOR_LIBRARIES` for the exact package/class each one uses. All of them are passive listening (no pairing, no connection, no gateway or hub needed), so none of them touch the sensor's own battery budget beyond what it already spends broadcasting.
+
+Adding a brand that isn't in that list yet is usually small, not a rewrite: most popular consumer BLE temp/humidity sensors are siblings in the same open-source ecosystem Home Assistant uses for its native Bluetooth integrations (look for a `<brand>-ble` package on PyPI, e.g. `qingping-ble`, `thermopro-ble`, `bthome-ble`) and share an identical decode interface - typically just one new entry in `BLE_SENSOR_LIBRARIES` plus `pip install`ing that package. A brand with no such package is real, harder work (reverse-engineering its raw advertisement bytes yourself via `bleak`).
 
 ```bash
 pip3 install sensorpush-ble bleak --break-system-packages
 ```
 
+(Swap `sensorpush-ble` for whichever brand's package you're actually using - e.g. `govee-ble`, `inkbird-ble`.)
+
 Requires Python 3.11+, which is the default on current Raspberry Pi OS (Bookworm).
 
-1. **Find your sensor's BLE address.** All SensorPush HT1 units broadcast under the same generic name ("s"), so the only way to tell three of them apart is by address:
+1. **Find your sensor's BLE address.** Many BLE sensors broadcast under the same generic name for every unit of that model, so the only way to tell multiple units apart is by address:
    ```bash
-   python3 discover_sensorpush.py
+   python3 discover_ble_sensor.py
    ```
    Warm the one you want in your hand and watch which address's temperature climbs, then note that address (looks like `AA:BB:CC:DD:EE:FF`). Ctrl+C to stop.
 
-2. **Set it on the dashboard** (Config page's External card - just the address field, no source to pick), or by hand-editing `config.json`:
+2. **Set it on the dashboard** (Config page's External card - address field plus a brand dropdown), or by hand-editing `config.json`:
    ```json
-   "sensorpush_mac": "AA:BB:CC:DD:EE:FF"
+   "ble_mac": "AA:BB:CC:DD:EE:FF",
+   "ble_sensor_type": "sensorpush"
    ```
-   This only identifies *which* physical unit to listen for - useful if you ever swap in a different SensorPush - it isn't a mode switch. Automatic failover works with or without an address set (with none set, it's just always the wired probe).
+   `ble_mac` only identifies *which* physical unit to listen for - useful if you ever swap in a different unit of the same brand - it isn't a mode switch. `ble_sensor_type` selects which brand's decoder to use; changing it requires restarting `ble_listener.py` (it's read once at startup, not re-checked every cycle, since a brand swap is a deliberate hardware change). Automatic failover works with or without a BLE sensor configured at all (with none set, it's just always the wired probe).
 
 3. **Run the listener** alongside the other two processes:
    ```bash
-   python3 sensorpush_listener.py
+   python3 ble_listener.py
    ```
 
-**Whichever sensor isn't currently active gets its own dedicated "Fallback" tile on the dashboard** - purely for visibility, so a dead wired probe is noticed the moment it stops working, not discovered mid-SensorPush-outage on the day it's actually needed. The backup reading never affects any control decision or the sensor-failure failsafe - a bad or missing backup reading just shows as blank on the dashboard for that cycle. It also appears as its own line on the Temperature and Humidity history charts (labeled "Fallback °F"/"Fallback %RH") - hidden automatically whenever there's no backup data available, so it doesn't clutter the legend with an empty series.
+**Whichever sensor isn't currently active gets its own dedicated "Fallback" tile on the dashboard** - purely for visibility, so a dead wired probe is noticed the moment it stops working, not discovered mid-outage on the day it's actually needed. The backup reading never affects any control decision or the sensor-failure failsafe - a bad or missing backup reading just shows as blank on the dashboard for that cycle. It also appears as its own line on the Temperature and Humidity history charts (labeled "Fallback °F"/"Fallback %RH") - hidden automatically whenever there's no backup data available, so it doesn't clutter the legend with an empty series.
 
 Every tile (Internal, External, Fallback) shows an "Updated: Xs/Xm/Xh ago" line - specifically when *that* metric last had a genuinely valid reading, not just when the page last polled the server. A tile's own value can go stale for several cycles (a failed read, a source that's currently on standby) while everything else keeps updating normally - this is what makes that visible at a glance instead of only being detectable by digging through the Logs page.
 
@@ -106,13 +111,15 @@ Every automatic failover is logged (both directions - failing over and recoverin
 A raw readings table (`/data`), one row per control cycle, every column exactly as stored - internal/external/fallback temp and humidity, which external source was active, and each output's on/off state. Unlike the home page's charts (which average into buckets so long ranges don't ship huge amounts of data to the browser), this shows the literal, unaveraged value from each individual cycle - useful for the kind of close diagnosis a chart can visually smooth over, like tracing exactly which cycle a bad reading first appeared in. Same "load more" pagination as the Logs page.
 
 Things worth knowing:
-- **Range through metal ductwork is the main risk.** Test placement with `discover_sensorpush.py` running before you seal the sensor into the vent — ductwork can attenuate the signal more than open air.
-- **Advertisements can occasionally pause** until something (the SensorPush app, or another BLE connection) "wakes" the sensor — this is a known SensorPush quirk, not a bug in this integration. This is exactly the situation automatic failover exists for: the wired probe takes over the instant SensorPush goes stale, and losing the external reading entirely (both sensors down) still doesn't shut anything down (see "Sensor-failure failsafe" below) - it just pauses thermal cooling specifically until a fresh reading comes back from either one, while heating and dehumidifying keep running on internal data.
+- **Range through metal ductwork is the main risk.** Test placement with `discover_ble_sensor.py` running before you seal the sensor into the vent — ductwork can attenuate the signal more than open air.
+- **Advertisements can occasionally pause** until something "wakes" the sensor (a known quirk of at least SensorPush's specifically - the companion app, or another BLE connection, can trigger this; may or may not apply to other brands). This is exactly the situation automatic failover exists for: the wired probe takes over the instant the BLE sensor goes stale, and losing the external reading entirely (both sensors down) still doesn't shut anything down (see "Sensor-failure failsafe" below) - it just pauses thermal cooling specifically until a fresh reading comes back from either one, while heating and dehumidifying keep running on internal data.
 - The old wired external-probe wiring (`PIN_EXTERNAL_TEMP`, GPIO4) is left intact and unused in this mode, so you can switch back any time without touching hardware.
 
-### Battery level (daily check)
+### Battery level (daily check, SensorPush HT1 specifically)
 
-Battery level isn't in the passive advertisement — SensorPush only exposes it over a brief active Bluetooth connection. `sensorpush_battery.py` does exactly that, once a day by default, then disconnects immediately:
+This part is genuinely brand-specific, not generic like the listener - see `ble_battery.py`'s own docstring for why. Battery level isn't in SensorPush's passive advertisement - it only exposes that over a brief active Bluetooth connection, using a proprietary GATT characteristic reverse-engineered specifically for the HT1's firmware. `ble_battery.py` does exactly that, once a day by default, then disconnects immediately - and skips itself cleanly (logging why) if `ble_sensor_type` isn't set to `"sensorpush"`.
+
+Many other brands include battery directly in their passive advertisement instead - `ble_listener.py` already saves that for free when present, no separate script needed. Check the Data page before assuming you need an equivalent for your brand.
 
 ```bash
 sudo cp systemd/dermestid-battery.service systemd/dermestid-battery.timer /etc/systemd/system/
@@ -123,10 +130,10 @@ sudo systemctl enable --now dermestid-battery.timer
 Check it ran, or run it once by hand to test:
 ```bash
 systemctl list-timers dermestid-battery.timer
-python3 sensorpush_battery.py
+python3 ble_battery.py
 ```
 
-The result (percentage, voltage, and how long ago it was checked) shows up on the dashboard next to the external sensor's temperature, and a warning event is logged if the battery drops to 15% or below. The check is a no-op if `sensorpush_mac` isn't set, so it's safe to enable even before you've configured an address - it checks the battery whenever an address is set, regardless of whether SensorPush happens to be the currently-active reading or on standby.
+The result (percentage, voltage, and how long ago it was checked) shows up on the dashboard next to the external sensor's temperature, and a warning event is logged if the battery drops to 15% or below. The check is a no-op if `ble_mac` isn't set, so it's safe to enable even before you've configured an address - it checks the battery whenever an address is set and the brand is SensorPush, regardless of whether it happens to be the currently-active reading or on standby.
 
 A couple of things worth knowing:
 - The HT1 only accepts **one** BLE connection at a time. If the SensorPush phone app happens to be connected right when the daily check runs, that check simply fails and retries the next day — no crash, just a logged warning.
@@ -140,8 +147,8 @@ sudo cp systemd/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dermestid-climate.service
 sudo systemctl enable --now dermestid-web.service
-# only if you're using a SensorPush external sensor:
-sudo systemctl enable --now dermestid-sensorpush.service
+# only if you're using a BLE external sensor:
+sudo systemctl enable --now dermestid-ble.service
 # optional daily battery check, see below:
 sudo systemctl enable --now dermestid-battery.timer
 ```
@@ -171,7 +178,7 @@ Paste this in, save, and exit:
 ```
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-climate.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-web.service
-pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-sensorpush.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-ble.service
 ```
 
 (Run `which systemctl` first and double-check it matches `/usr/bin/systemctl` — if your system has it somewhere else, use that exact path instead, since `sudoers` rules must match exactly.)
@@ -212,7 +219,7 @@ A few things worth knowing, whichever way you apply an update:
 
 **Safety fixes:**
 - **Sensor sanity checking** — readings outside a physically-possible range, or that jump more than `MAX_DELTA_TEMP`/`MAX_DELTA_HUMIDITY` from the last good reading in one cycle, are now rejected as DHT glitches instead of trusted.
-- **Sensor-failure failsafe** — this only applies to the *internal* sensor (temp or humidity): if no valid internal reading comes in for `SENSOR_FAIL_TIMEOUT` (90s), everything (heater, fan, dehumidifier) is forced off and an alarm event is logged, instead of leaving outputs in whatever state they were last in. Every control decision fundamentally depends on internal readings, so there's no safe degraded mode there. The *external* sensor is different: losing it doesn't stop the internal-only decisions (heating, dehumidifying, the scheduled cleaning-mode vent) since none of them need it - it only pauses thermal cooling specifically, since that's the one decision that genuinely can't be made safely without knowing whether outside air would actually help (running the fan blind could just import hotter air). This matters in practice if you keep a wired probe connected as a manual fallback for SensorPush: a garage-placed wired sensor being less accurate than true outdoor air is a fine tradeoff for a fallback role, since the system only needs the rough direction ("meaningfully cooler out or not") to make safe cooling decisions.
+- **Sensor-failure failsafe** — this only applies to the *internal* sensor (temp or humidity): if no valid internal reading comes in for `SENSOR_FAIL_TIMEOUT` (90s), everything (heater, fan, dehumidifier) is forced off and an alarm event is logged, instead of leaving outputs in whatever state they were last in. Every control decision fundamentally depends on internal readings, so there's no safe degraded mode there. The *external* sensor is different: losing it doesn't stop the internal-only decisions (heating, dehumidifying, the scheduled cleaning-mode vent) since none of them need it - it only pauses thermal cooling specifically, since that's the one decision that genuinely can't be made safely without knowing whether outside air would actually help (running the fan blind could just import hotter air). This matters in practice with the wired probe as the automatic fallback for the BLE sensor: a garage-placed wired sensor being less accurate than true outdoor air is a fine tradeoff for a fallback role, since the system only needs the rough direction ("meaningfully cooler out or not") to make safe cooling decisions.
 - **Glitch-vs-real-change recovery** — the anti-glitch filter (rejects a reading that jumps too far from the last accepted one) has a self-recovery mechanism: if several consecutive rejected readings keep landing consistently close to *each other*, even though they all differ from the old accepted value, that's treated as a genuine sustained change (real drift) rather than sensor noise, and gets accepted as the new baseline after a few consistent readings in a row. Without this, a real gradual temperature change that happened to exceed the per-cycle jump limit would get compared forever against an ever-more-stale frozen reference point and never be accepted again - which is exactly what happened once in practice before this was added, triggering a real emergency shutdown that then never recovered on its own until the service was restarted.
 - **DHT22 read retries** — each individual DHT22 read (internal or wired external/fallback probe) gets up to 3 attempts with a short pause between them before giving up for that cycle. DHT sensors fail an occasional single read as a matter of course - a timing-sensitive single-wire bit-banged protocol, not a robust checksummed bus - and this is exactly why the old, now-archived Adafruit_DHT library built retries in by default; the newer CircuitPython library this project uses does not, so it's handled explicitly here. This meaningfully cuts down how often "Internal sensor reading unavailable" shows up in the logs from ordinary sensor flakiness, not a real sustained problem - measured against a simulated 35% single-attempt failure rate, retries cut the fraction of cycles that fail outright from about 37% to under 5%.
 - **Heater runtime cutoff** — the heater can no longer run continuously for more than `HEATER_MAX_ON_SECONDS` (20 min) without reaching setpoint; it cuts off, logs a warning, and locks out for 5 minutes before it's allowed to retry. Same pattern applied to the fan for motor protection.
@@ -234,10 +241,11 @@ A few things worth knowing, whichever way you apply an update:
 
 The default numbers are a reasonable starting point, not a substitute for your own care-sheet — dermestid tolerances vary a bit by species and colony size, so watch how yours responds over the first week or two and tune from the dashboard.
 
-**Web dashboard — three pages**
+**Web dashboard — four pages**
 - **Home** (`/`) — purely informational: live internal/external temp, humidity, relay states (refreshing every 5s), a mode dropdown (Dormant/Ready/Cleaning), and the history graph (6h/24h/7d/30d) of internal temp, external temp, and humidity, downsampled server-side so long ranges stay fast.
 - **Logs** (`/logs`) — the full event log (mode changes, relay on/off, warnings, alarms) with a level filter (info/warning/error/critical) and a "Load more" button for paging further back. Auto-refreshes only while you're on the newest page, so paging back doesn't get yanked out from under you.
-**Config** (`/config`) — per-mode setpoint editing (with server-side range/sanity validation — e.g. it won't let you set low temp ≥ high temp, or a vent duration longer than the interval), the internal sensor source switch (DHT22 vs SHT31), and the external sensor source switch (wired probe vs SensorPush).
+- **Data** (`/data`) — raw readings table, one row per control cycle, every column exactly as stored - see "Data page" above.
+- **Config** (`/config`) — per-mode setpoint editing (with server-side range/sanity validation — e.g. it won't let you set low temp ≥ high temp, or a vent duration longer than the interval), the internal sensor source switch (DHT22 vs SHT31), per-sensor calibration offsets, and the BLE sensor's address/brand (external source failover itself is automatic, not a manual switch - see "External reading" above).
 
 All three share the same `/api/*` endpoints as before; `/api/events` now also accepts `level` and `before` query params for the logs page's filtering and pagination.
 
@@ -249,7 +257,7 @@ If you're running the SHT31: it's a genuine upgrade — tighter accuracy (±0.2�
 
 `climate.py` watches for internal humidity pegged at or above 99% for more than a minute (SHT31 mode only — this check is skipped entirely on DHT22, which has no heater to pulse) and, when it sees that, pulses the SHT31's heater for 10 seconds (rate-limited to once per 10 minutes) rather than just reporting garbage until it dries out on its own. This check runs on the raw reading *before* the delta-glitch filter, deliberately — a real condensation event can jump straight to ~100% faster than the filter's normal tolerance, and if the recovery logic only looked at filtered readings, a real condensation event would look identical to a dead sensor and slide straight into the emergency-shutdown failsafe instead of ever getting a chance to dry out. The delta-filtered value is still the only thing the actual heat/cool/dehumidify decisions act on, so control quality isn't affected — only the recovery trigger sees the raw value.
 
-The external probe fallback (`local_gpio` mode, wired DHT22/AM2302 on GPIO4) is untouched and still available if you ever switch off SensorPush.
+The external probe fallback (`local_gpio` mode, wired DHT22/AM2302 on GPIO4) is untouched and still available if you ever stop using a BLE sensor.
 
 ## Tuning knobs that stay hardcoded (on purpose)
 
