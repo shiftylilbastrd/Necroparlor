@@ -130,7 +130,14 @@ function renderSetpointPanels(config) {
   const modeLabels = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
   container.innerHTML = '';
 
-  Object.entries(config.modes).forEach(([mode, sp]) => {
+  // Explicit left-to-right order, not however the object's keys happen
+  // to be ordered (JSON serialization doesn't reliably preserve
+  // insertion order across the round trip, so relying on it silently
+  // produces whatever order the JSON came back in - alphabetical
+  // ordering has shown up in practice, which isn't the intended layout).
+  const MODE_ORDER = ['dormant', 'ready', 'cleaning'];
+  MODE_ORDER.filter(mode => config.modes[mode]).forEach(mode => {
+    const sp = config.modes[mode];
     const panel = document.createElement('div');
     panel.className = 'card';
     let extraFields = '';

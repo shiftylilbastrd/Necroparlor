@@ -363,6 +363,36 @@ def log_event(level, message):
     getattr(logging, level.lower(), logging.info)(message)
 
 
+def get_last_valid_timestamps():
+    """For each tile's metric, when did it last actually have a valid
+    (non-null) reading - not just when the most recent row was written.
+    A tile's value can go null for a cycle or several (a failed read, a
+    stale external source) while the row itself keeps getting written -
+    this is what lets the dashboard show a genuine per-tile 'last
+    updated' time instead of implying every tile refreshed just because
+    /api/status was polled again.
+
+    Limited to the last 24h so this stays a cheap, fast query regardless
+    of how large the readings table eventually grows - a metric with no
+    valid reading in the last 24h is already extremely stale, so there's
+    no need to scan further back to say so.
+    """
+    conn = get_db()
+    since = time.time() - 86400
+    row = conn.execute(
+        """
+        SELECT MAX(CASE WHEN internal_temp IS NOT NULL THEN ts END),
+               MAX(CASE WHEN external_temp IS NOT NULL THEN ts END),
+               MAX(CASE WHEN fallback_external_temp IS NOT NULL THEN ts END)
+        FROM readings
+        WHERE ts >= ?
+        """,
+        (since,)
+    ).fetchone()
+    conn.close()
+    return {"internal": row[0], "external": row[1], "fallback": row[2]}
+
+
 def get_latest_reading():
     conn = get_db()
     row = conn.execute(

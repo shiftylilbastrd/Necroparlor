@@ -62,8 +62,11 @@ def api_status():
     if door:
         door_status = {"is_open": door["is_open"], "age_seconds": time.time() - door["ts"]}
 
+    last_valid = state.get_last_valid_timestamps()
+
     return jsonify({"config": config, "latest": latest, "stale": stale,
-                     "ble_status": ble_status, "door_status": door_status})
+                     "ble_status": ble_status, "door_status": door_status,
+                     "last_valid_timestamps": last_valid})
 
 
 @app.route("/api/ble-sensors")

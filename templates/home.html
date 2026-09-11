@@ -64,13 +64,21 @@
     <h2>Internal</h2>
     <div class="stat-value" id="statInternalTemp">--°F</div>
     <div class="stat-sub" id="statInternalHumidity">-- %RH</div>
+    <div class="stat-sub" id="statInternalUpdated" style="margin-top:6px;">Updated: --</div>
   </div>
   <div class="card">
     <h2>External</h2>
     <div class="stat-value" id="statExternalTemp">--°F</div>
     <div class="stat-sub" id="statExternalHumidity">-- %RH</div>
     <div class="stat-sub" id="statExternalSource">--</div>
-    <div class="stat-sub" id="statFallback" style="margin-top:6px; display:none;"></div>
+    <div class="stat-sub" id="statExternalUpdated" style="margin-top:6px;">Updated: --</div>
+  </div>
+  <div class="card">
+    <h2>Fallback</h2>
+    <div class="stat-value" id="statFallbackTemp">--°F</div>
+    <div class="stat-sub" id="statFallbackHumidity">-- %RH</div>
+    <div class="stat-sub" id="statFallbackSource">--</div>
+    <div class="stat-sub" id="statFallbackUpdated" style="margin-top:6px;">Updated: --</div>
   </div>
   <div class="card">
     <h2>Outputs</h2>
@@ -103,6 +111,13 @@ const MODE_NAMES = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
 
 function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+function fmtAgo(ts) {
+  if (ts === null || ts === undefined) return 'never';
+  const secs = Math.round(Date.now() / 1000 - ts);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  return `${Math.round(secs / 3600)}h ago`;
 }
 function pillEl(id, on, onLabel, offLabel) {
   const el = document.getElementById(id);
@@ -155,16 +170,29 @@ async function refreshStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
   document.getElementById('staleBanner').style.display = data.stale ? 'block' : 'none';
+  const lastValid = data.last_valid_timestamps || {};
 
   if (data.latest) {
     document.getElementById('statInternalTemp').textContent = data.latest.internal_temp.toFixed(1) + '°F';
     document.getElementById('statInternalHumidity').textContent = data.latest.internal_humidity.toFixed(1) + ' %RH';
+    document.getElementById('statInternalUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.internal);
+
     document.getElementById('statExternalTemp').textContent =
       (data.latest.external_temp !== null && data.latest.external_temp !== undefined)
         ? data.latest.external_temp.toFixed(1) + '°F' : '--°F';
     document.getElementById('statExternalHumidity').textContent =
       (data.latest.external_humidity !== null && data.latest.external_humidity !== undefined)
         ? data.latest.external_humidity.toFixed(1) + ' %RH' : '-- %RH';
+    document.getElementById('statExternalUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.external);
+
+    document.getElementById('statFallbackTemp').textContent =
+      (data.latest.fallback_external_temp !== null && data.latest.fallback_external_temp !== undefined)
+        ? data.latest.fallback_external_temp.toFixed(1) + '°F' : '--°F';
+    document.getElementById('statFallbackHumidity').textContent =
+      (data.latest.fallback_external_humidity !== null && data.latest.fallback_external_humidity !== undefined)
+        ? data.latest.fallback_external_humidity.toFixed(1) + ' %RH' : '-- %RH';
+    document.getElementById('statFallbackUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.fallback);
+
     document.getElementById('lastUpdateLine').textContent = 'Last update: ' + fmtTime(data.latest.ts);
     pillEl('pillFan', !!data.latest.fan, 'ON', 'OFF');
     pillEl('pillHeater', !!data.latest.heater, 'ON', 'OFF');
@@ -204,16 +232,13 @@ async function refreshStatus() {
     sourceLabel.textContent = '--';
   }
 
-  const fallbackEl = document.getElementById('statFallback');
-  const fallbackTemp = data.latest && data.latest.fallback_external_temp;
-  if (fallbackTemp !== null && fallbackTemp !== undefined) {
-    const fallbackLabel = activeSource === 'sensorpush' ? 'Wired probe' : 'SensorPush';
-    const fallbackHum = data.latest.fallback_external_humidity;
-    const humStr = (fallbackHum !== null && fallbackHum !== undefined) ? `/${fallbackHum.toFixed(1)}%` : '';
-    fallbackEl.textContent = `Backup (${fallbackLabel}, on standby): ${fallbackTemp.toFixed(1)}°F${humStr}`;
-    fallbackEl.style.display = 'block';
+  const fallbackSourceLabel = document.getElementById('statFallbackSource');
+  if (activeSource === 'sensorpush') {
+    fallbackSourceLabel.textContent = 'Wired probe (on standby)';
+  } else if (activeSource === 'local_gpio') {
+    fallbackSourceLabel.textContent = 'SensorPush (on standby)';
   } else {
-    fallbackEl.style.display = 'none';
+    fallbackSourceLabel.textContent = '--';
   }
 }
 

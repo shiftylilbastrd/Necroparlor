@@ -89,7 +89,9 @@ Requires Python 3.11+, which is the default on current Raspberry Pi OS (Bookworm
    python3 sensorpush_listener.py
    ```
 
-**Whichever sensor isn't currently active is shown on the dashboard's External tile as "Backup (..., on standby)"** - purely for visibility, so a dead wired probe is noticed the moment it stops working, not discovered mid-SensorPush-outage on the day it's actually needed. The backup reading never affects any control decision or the sensor-failure failsafe - a bad or missing backup reading just shows as blank on the dashboard for that cycle. It also appears as its own line on the Temperature and Humidity history charts (labeled "Fallback °F"/"Fallback %RH") - hidden automatically whenever there's no backup data available, so it doesn't clutter the legend with an empty series.
+**Whichever sensor isn't currently active gets its own dedicated "Fallback" tile on the dashboard** - purely for visibility, so a dead wired probe is noticed the moment it stops working, not discovered mid-SensorPush-outage on the day it's actually needed. The backup reading never affects any control decision or the sensor-failure failsafe - a bad or missing backup reading just shows as blank on the dashboard for that cycle. It also appears as its own line on the Temperature and Humidity history charts (labeled "Fallback °F"/"Fallback %RH") - hidden automatically whenever there's no backup data available, so it doesn't clutter the legend with an empty series.
+
+Every tile (Internal, External, Fallback) shows an "Updated: Xs/Xm/Xh ago" line - specifically when *that* metric last had a genuinely valid reading, not just when the page last polled the server. A tile's own value can go stale for several cycles (a failed read, a source that's currently on standby) while everything else keeps updating normally - this is what makes that visible at a glance instead of only being detectable by digging through the Logs page.
 
 Every automatic failover is logged (both directions - failing over and recovering) so it's visible on the Logs page, not silent just because nothing needs manual switching anymore.
 
