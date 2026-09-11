@@ -280,6 +280,13 @@ STREAK_CONFIRM_COUNT = 3            # consecutive self-consistent readings
 STREAK_CONSISTENCY_TOLERANCE = 2.0  # max spread allowed within a streak
 
 
+def apply_offset(value, offset):
+    """Applies a calibration offset to a raw reading. A failed read (None)
+    has nothing to correct, so it passes through unchanged rather than
+    becoming a meaningless 'offset applied to nothing'."""
+    return value + offset if value is not None else None
+
+
 def validate_reading(new_val, last_val, max_delta, label):
     """Reject physically-implausible DHT glitches: an implausible jump
     from the last known-good reading. (Absolute-range checks happen
@@ -417,6 +424,7 @@ def run_cycle():
     HUMIDITY_SETPOINT = setpoints["humidity_setpoint"]
 
     internal_source = config.get("internal_source", "dht22")
+    calib = config.get("calibration", {})
     if internal_source == "sht31":
         raw_internal_temp, raw_internal_humidity = read_internal_sht31_f()
     else:
@@ -429,6 +437,8 @@ def run_cycle():
         # path above uses I2C, a completely different bus, so there's
         # nothing to interfere with there.
         time.sleep(DHT_READ_GAP_SECONDS)
+    raw_internal_temp = apply_offset(raw_internal_temp, calib.get("internal_temp_offset", 0.0))
+    raw_internal_humidity = apply_offset(raw_internal_humidity, calib.get("internal_humidity_offset", 0.0))
 
     # Both external sources are read every cycle. Which one is "active"
     # (drives control decisions) is decided automatically here, not by a
@@ -444,14 +454,16 @@ def run_cycle():
     # the way a bad ACTIVE reading would be, just cosmetically wrong for
     # one cycle.
     raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
+    raw_wired_temp = apply_offset(raw_wired_temp, calib.get("wired_temp_offset", 0.0))
+    raw_wired_humidity = apply_offset(raw_wired_humidity, calib.get("wired_humidity_offset", 0.0))
 
     raw_sensorpush_temp = raw_sensorpush_humidity = None
     sensorpush_fresh = False
     if config.get("sensorpush_mac"):
         ble_reading = state.get_ble_reading(config["sensorpush_mac"])
         if ble_reading and (loop_start - ble_reading["ts"]) <= SENSOR_FAIL_TIMEOUT:
-            raw_sensorpush_temp = ble_reading["temp_f"]
-            raw_sensorpush_humidity = ble_reading["humidity"]
+            raw_sensorpush_temp = apply_offset(ble_reading["temp_f"], calib.get("sensorpush_temp_offset", 0.0))
+            raw_sensorpush_humidity = apply_offset(ble_reading["humidity"], calib.get("sensorpush_humidity_offset", 0.0))
             sensorpush_fresh = True
 
     if sensorpush_fresh:

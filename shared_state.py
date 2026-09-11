@@ -56,6 +56,21 @@ DEFAULT_CONFIG = {
     # probe. sensorpush_mac identifies *which* of possibly several
     # SensorPush units to listen for; it's not a mode toggle.
     "sensorpush_mac": None,
+    # Per-sensor calibration offsets, added to the raw reading before any
+    # validation/control logic sees it - tied to the physical sensor
+    # (internal/sensorpush/wired), NOT to "active"/"fallback", since
+    # which physical sensor plays which role can swap automatically
+    # during a SensorPush outage. An offset has to follow the actual
+    # hardware it corrects for, not whatever label it's currently
+    # wearing on the dashboard.
+    "calibration": {
+        "internal_temp_offset": 0.0,
+        "internal_humidity_offset": 0.0,
+        "sensorpush_temp_offset": 0.0,
+        "sensorpush_humidity_offset": 0.0,
+        "wired_temp_offset": 0.0,
+        "wired_humidity_offset": 0.0,
+    },
     "modes": {
         "dormant": {
             # Cold enough to slow metabolism way down (less feeding,
@@ -107,6 +122,34 @@ def validate_sensorpush_mac(sensorpush_mac):
     return sensorpush_mac.upper(), None
 
 
+CALIBRATION_KEYS = (
+    "internal_temp_offset", "internal_humidity_offset",
+    "sensorpush_temp_offset", "sensorpush_humidity_offset",
+    "wired_temp_offset", "wired_humidity_offset",
+)
+
+
+def validate_calibration(values):
+    """Validates a full set of calibration offsets for saving. `values`
+    should have all six CALIBRATION_KEYS. Returns (cleaned_dict, None) on
+    success or (None, error) on failure. Offsets are bounded to +/-20 -
+    generous for genuine sensor calibration (a cheap sensor reading more
+    than 20 degrees or 20%RH off is broken, not just uncalibrated) while
+    still catching an obviously wrong entry (a stray extra digit, a
+    misplaced decimal point) before it quietly corrupts every reading
+    from that sensor."""
+    cleaned = {}
+    for key in CALIBRATION_KEYS:
+        try:
+            v = float(values.get(key, 0.0))
+        except (TypeError, ValueError):
+            return None, f"{key} must be a number"
+        if not (-20 <= v <= 20):
+            return None, f"{key} must be between -20 and 20"
+        cleaned[key] = v
+    return cleaned, None
+
+
 def _atomic_write(path, data_str):
     tmp_path = path + ".tmp"
     with open(tmp_path, "w") as f:
@@ -131,9 +174,10 @@ def load_config():
     # Backfill any keys/modes added in later versions of this script so
     # an old config.json on disk doesn't crash a newer climate.py.
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
-    merged.update({k: v for k, v in data.items() if k != "modes"})
+    merged.update({k: v for k, v in data.items() if k not in ("modes", "calibration")})
     for mode_name, defaults in DEFAULT_CONFIG["modes"].items():
         merged["modes"][mode_name] = {**defaults, **data.get("modes", {}).get(mode_name, {})}
+    merged["calibration"] = {**DEFAULT_CONFIG["calibration"], **data.get("calibration", {})}
     return merged
 
 

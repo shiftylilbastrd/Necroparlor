@@ -93,6 +93,23 @@ def api_set_sensorpush_mac():
     return jsonify(config)
 
 
+@app.route("/api/calibration", methods=["POST"])
+def api_set_calibration():
+    """Saves per-sensor calibration offsets. Tied to physical sensor
+    identity (internal/sensorpush/wired), not the dynamic active/
+    fallback role, since which physical sensor plays which role can
+    swap automatically during a SensorPush outage."""
+    body = request.get_json(force=True, silent=True) or {}
+    cleaned, error = state.validate_calibration(body)
+    if error:
+        return jsonify({"error": error}), 400
+    config = state.load_config()
+    config["calibration"] = cleaned
+    state.save_config(config)
+    state.log_event("info", "Sensor calibration offsets updated")
+    return jsonify(config)
+
+
 @app.route("/api/internal-source", methods=["POST"])
 def api_set_internal_source():
     body = request.get_json(force=True, silent=True) or {}

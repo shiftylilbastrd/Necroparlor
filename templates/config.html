@@ -19,27 +19,55 @@
         <option value="sht31">SHT31 (I2C) - adds condensation-recovery heater</option>
       </select>
     </div>
-    <div class="stat-sub" style="margin-top:6px;">
-      Switching here doesn't require a restart - climate.py picks it up within one control cycle. Only switch to SHT31 once it's actually wired to the I2C pins, or every cycle will read as a failed sensor.
-    </div>
+    <div class="stat-sub" style="margin-top:6px;">Applies within one cycle - only switch to SHT31 once it's actually wired.</div>
     <div class="save-msg" id="internalSourceMsg"></div>
+    <div class="field" style="margin-top:14px;">
+      <label>Calibration offset (temp °F / humidity %RH)</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" step="0.1" id="calInternalTemp" style="width:50%;" placeholder="0.0">
+        <input type="number" step="0.1" id="calInternalHumidity" style="width:50%;" placeholder="0.0">
+      </div>
+    </div>
+    <button class="save-btn" style="margin-top:8px;" onclick="saveCalibration('calMsgInternal')">Save offsets</button>
+    <div class="save-msg" id="calMsgInternal"></div>
   </div>
 
   <div class="card" style="max-width:420px;">
     <h2>External</h2>
-    <div class="stat-sub" style="margin-bottom:10px;">
-      Automatic failover - SensorPush is used whenever it's reporting fresh data; the wired probe (GPIO4) takes over automatically the moment it isn't, and hands back the moment it recovers. Nothing to switch manually.
-    </div>
+    <div class="stat-sub" style="margin-bottom:10px;">SensorPush primary, wired probe (GPIO4) as automatic backup - nothing to switch manually.</div>
     <div class="field">
       <label>SensorPush BLE address</label>
       <input type="text" id="sensorpushMacInput" placeholder="AA:BB:CC:DD:EE:FF">
       <div class="stat-sub" style="margin-top:6px;">
-        Identifies which physical unit to listen for - doesn't need to change unless you swap in a different SensorPush. Don't know the address? Run <code>python3 discover_sensorpush.py</code> on the Pi to find it.
+        Run <code>python3 discover_sensorpush.py</code> on the Pi to find it.
       </div>
       <div class="stat-sub" id="sensorpushSignal" style="margin-top:6px;">Signal: --</div>
     </div>
     <button class="save-btn" onclick="saveSensorpushMac()">Save</button>
     <div class="save-msg" id="sensorpushMacMsg"></div>
+    <div class="field" style="margin-top:14px;">
+      <label>Calibration offset (temp °F / humidity %RH)</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" step="0.1" id="calSensorpushTemp" style="width:50%;" placeholder="0.0">
+        <input type="number" step="0.1" id="calSensorpushHumidity" style="width:50%;" placeholder="0.0">
+      </div>
+    </div>
+    <button class="save-btn" style="margin-top:8px;" onclick="saveCalibration('calMsgSensorpush')">Save offsets</button>
+    <div class="save-msg" id="calMsgSensorpush"></div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Fallback</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">The wired probe (GPIO4) - automatic backup for SensorPush, shown here for its own calibration.</div>
+    <div class="field">
+      <label>Calibration offset (temp °F / humidity %RH)</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" step="0.1" id="calWiredTemp" style="width:50%;" placeholder="0.0">
+        <input type="number" step="0.1" id="calWiredHumidity" style="width:50%;" placeholder="0.0">
+      </div>
+    </div>
+    <button class="save-btn" style="margin-top:8px;" onclick="saveCalibration('calMsgWired')">Save offsets</button>
+    <div class="save-msg" id="calMsgWired"></div>
   </div>
 </div>
 
@@ -66,7 +94,38 @@ async function loadConfig() {
   renderSetpointPanels(data.config);
   document.getElementById('sensorpushMacInput').value = data.config.sensorpush_mac || '';
   document.getElementById('internalSourceSelect').value = data.config.internal_source || 'dht22';
+  const cal = data.config.calibration || {};
+  document.getElementById('calInternalTemp').value = cal.internal_temp_offset ?? 0;
+  document.getElementById('calInternalHumidity').value = cal.internal_humidity_offset ?? 0;
+  document.getElementById('calSensorpushTemp').value = cal.sensorpush_temp_offset ?? 0;
+  document.getElementById('calSensorpushHumidity').value = cal.sensorpush_humidity_offset ?? 0;
+  document.getElementById('calWiredTemp').value = cal.wired_temp_offset ?? 0;
+  document.getElementById('calWiredHumidity').value = cal.wired_humidity_offset ?? 0;
   updateSignalDisplay(data);
+}
+
+async function saveCalibration(msgId) {
+  const body = {
+    internal_temp_offset: document.getElementById('calInternalTemp').value,
+    internal_humidity_offset: document.getElementById('calInternalHumidity').value,
+    sensorpush_temp_offset: document.getElementById('calSensorpushTemp').value,
+    sensorpush_humidity_offset: document.getElementById('calSensorpushHumidity').value,
+    wired_temp_offset: document.getElementById('calWiredTemp').value,
+    wired_humidity_offset: document.getElementById('calWiredHumidity').value,
+  };
+  const res = await fetch('/api/calibration', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  const msg = document.getElementById(msgId);
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
 }
 
 function updateSignalDisplay(data) {

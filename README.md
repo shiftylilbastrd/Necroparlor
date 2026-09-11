@@ -60,6 +60,12 @@ python3 webapp.py       # in another
 
 Then visit `http://<pi-ip-address>:8080` from any phone/laptop on your LAN. **There's no login on this dashboard** — it's fine on your home network, but don't port-forward it to the internet.
 
+## Sensor calibration
+
+Each physical sensor - internal, SensorPush, and the wired probe - has its own temperature and humidity offset on the Config page, added to the raw reading before anything else (validation, control decisions, display) sees it. Useful for correcting a cheap sensor that's reading consistently a degree or two off against a known-good reference thermometer.
+
+Offsets are tied to the *physical sensor*, not to "active"/"fallback" - since which physical sensor is currently active can change automatically (see below), an offset has to follow the actual hardware it corrects for, not whichever label that hardware happens to be wearing on the dashboard at the moment. Verified this specifically: forced a failover so the wired probe became the active "External" reading, and confirmed its own offset (not SensorPush's) still applied correctly.
+
 ## External reading: SensorPush with automatic wired-probe failover
 
 The external (outside-air) reading comes from two sensors working together, not a manual choice: a SensorPush BLE sensor as the primary, and a wired DHT22/AM2302 probe on GPIO4 as an always-connected fallback. `climate.py` reads both every single cycle and automatically uses whichever one is actually fresh - SensorPush whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s, the same window the sensor-failure failsafe uses elsewhere), the wired probe automatically otherwise. There's no source toggle to remember to flip - if SensorPush drops out, control keeps running on the wired probe with zero action needed, and control switches back the moment SensorPush recovers.
