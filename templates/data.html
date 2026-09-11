@@ -3,14 +3,22 @@
 {% block head_extra %}
 <style>
   .table-wrap { overflow-x: auto; border: 1px solid var(--panel-border); border-radius: 10px; }
-  table.data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
-  table.data-table th, table.data-table td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--panel-border); }
-  table.data-table th:first-child, table.data-table td:first-child { text-align: left; }
+  table.data-table { border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
+  table.data-table th, table.data-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--panel-border); }
+  table.data-table th:first-child, table.data-table td:first-child,
+  table.data-table th:nth-child(2), table.data-table td:nth-child(2) { text-align: left; }
   table.data-table th { color: var(--text-dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
   table.data-table td.null-cell { color: var(--text-dim); }
   table.data-table tr:last-child td { border-bottom: none; }
-  .out-flag { display: inline-block; width: 18px; text-align: center; }
-  .out-flag.on { color: var(--accent); font-weight: 700; }
+  /* Time and Mode keep normal horizontal headers - their data is wide
+     regardless of header orientation, so rotating those specifically
+     wouldn't narrow the column at all. Every other header rotates
+     vertical, since those columns' data (a short number, a single
+     flag) is much narrower than the label describing it - the column
+     width should follow the short data, not the long label. */
+  th.rot { writing-mode: vertical-rl; transform: rotate(180deg); vertical-align: bottom; height: 92px; padding: 8px 4px; text-align: left; }
+  .out-flag { display: inline-block; font-size: 0.95rem; }
+  .out-flag.on { color: var(--accent); }
   .out-flag.off { color: var(--text-dim); opacity: 0.4; }
 </style>
 {% endblock %}
@@ -29,17 +37,17 @@
       <tr>
         <th>Time</th>
         <th>Mode</th>
-        <th>Internal °F</th>
-        <th>Internal %RH</th>
-        <th>External °F</th>
-        <th>External %RH</th>
-        <th>Fallback °F</th>
-        <th>Fallback %RH</th>
-        <th>Active src</th>
-        <th>Fan</th>
-        <th>Heat</th>
-        <th>Dehum</th>
-        <th>Vent</th>
+        <th class="rot">Internal °F</th>
+        <th class="rot">Internal %RH</th>
+        <th class="rot">External °F</th>
+        <th class="rot">External %RH</th>
+        <th class="rot">Fallback °F</th>
+        <th class="rot">Fallback %RH</th>
+        <th class="rot">Active source</th>
+        <th class="rot">Fan</th>
+        <th class="rot">Heat</th>
+        <th class="rot">Dehum</th>
+        <th class="rot">Vent</th>
       </tr>
     </thead>
     <tbody id="dataRows"></tbody>
@@ -66,6 +74,11 @@ function num(v, digits) {
 function flag(on) {
   return `<span class="out-flag ${on ? 'on' : 'off'}">${on ? '●' : '○'}</span>`;
 }
+function srcAbbrev(src) {
+  if (src === 'sensorpush') return 'SP';
+  if (src === 'local_gpio') return 'Wired';
+  return '<span class="null-cell">--</span>';
+}
 
 function renderRows(rows, append) {
   const tbody = document.getElementById('dataRows');
@@ -79,7 +92,7 @@ function renderRows(rows, append) {
       <td>${num(r.external_humidity, 1)}</td>
       <td>${num(r.fallback_external_temp, 1)}</td>
       <td>${num(r.fallback_external_humidity, 1)}</td>
-      <td>${r.active_external_source || '<span class="null-cell">--</span>'}</td>
+      <td>${srcAbbrev(r.active_external_source)}</td>
       <td>${flag(!!r.fan)}</td>
       <td>${flag(!!r.heater)}</td>
       <td>${flag(!!r.dehumidifier)}</td>
