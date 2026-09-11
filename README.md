@@ -5,7 +5,7 @@ Files:
 - `climate.py` — main control loop (heater, fan/vent servo, dehumidifier, door light). Run this on the Pi at all times.
 - `webapp.py` — local Flask dashboard: view live readings/history, switch modes, edit setpoints.
 - `shared_state.py` — shared config + SQLite helpers used by both of the above. Must live in the same folder as them.
-- `templates/` — the dashboard's pages: `base.html` (shared nav/layout), `home.html` (live status + chart + mode), `logs.html` (event log), `config.html` (setpoints + sensor source).
+- `templates/` — the dashboard's pages: `base.html` (shared nav/layout), `home.html` (live status + chart + mode), `logs.html` (event log), `data.html` (raw readings table), `config.html` (setpoints + sensor source).
 - `config.json` — current mode + per-mode setpoints. Auto-created if missing; edit by hand or through the dashboard.
 - `sensorpush_listener.py` — optional background service that listens for SensorPush BLE sensors and feeds one of them into `climate.py` as the external reading, instead of a wired probe. Has a self-watchdog: BLE scans can silently stall after many hours of continuous operation without crashing (a known real-world BlueZ/bleak issue) - if 10 minutes pass with no reading actually decoded, it exits deliberately so systemd's `Restart=on-failure` brings it back up fresh rather than sitting there doing nothing indefinitely.
 - `sensorpush_battery.py` — optional one-shot script, run daily by a systemd timer, that briefly connects to the external SensorPush sensor to check its battery level (battery isn't in the passive broadcast).
@@ -100,6 +100,10 @@ Requires Python 3.11+, which is the default on current Raspberry Pi OS (Bookworm
 Every tile (Internal, External, Fallback) shows an "Updated: Xs/Xm/Xh ago" line - specifically when *that* metric last had a genuinely valid reading, not just when the page last polled the server. A tile's own value can go stale for several cycles (a failed read, a source that's currently on standby) while everything else keeps updating normally - this is what makes that visible at a glance instead of only being detectable by digging through the Logs page.
 
 Every automatic failover is logged (both directions - failing over and recovering) so it's visible on the Logs page, not silent just because nothing needs manual switching anymore.
+
+## Data page
+
+A raw readings table (`/data`), one row per control cycle, every column exactly as stored - internal/external/fallback temp and humidity, which external source was active, and each output's on/off state. Unlike the home page's charts (which average into buckets so long ranges don't ship huge amounts of data to the browser), this shows the literal, unaveraged value from each individual cycle - useful for the kind of close diagnosis a chart can visually smooth over, like tracing exactly which cycle a bad reading first appeared in. Same "load more" pagination as the Logs page.
 
 Things worth knowing:
 - **Range through metal ductwork is the main risk.** Test placement with `discover_sensorpush.py` running before you seal the sensor into the vent — ductwork can attenuate the signal more than open air.

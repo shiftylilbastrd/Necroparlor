@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Data - Dermestid Enclosure{% endblock %}
+{% block head_extra %}
+<style>
+  .table-wrap { overflow-x: auto; border: 1px solid var(--panel-border); border-radius: 10px; }
+  table.data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
+  table.data-table th, table.data-table td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--panel-border); }
+  table.data-table th:first-child, table.data-table td:first-child { text-align: left; }
+  table.data-table th { color: var(--text-dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  table.data-table td.null-cell { color: var(--text-dim); }
+  table.data-table tr:last-child td { border-bottom: none; }
+  .out-flag { display: inline-block; width: 18px; text-align: center; }
+  .out-flag.on { color: var(--accent); font-weight: 700; }
+  .out-flag.off { color: var(--text-dim); opacity: 0.4; }
+</style>
+{% endblock %}
+{% block content %}
+
+<h1>Data</h1>
+<div class="subtitle">Raw readings, one row per control cycle - every column exactly as stored, newest first</div>
+
+<div class="filter-row">
+  <button onclick="resetAndLoad()">Refresh</button>
+</div>
+
+<div class="table-wrap">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Mode</th>
+        <th>Internal °F</th>
+        <th>Internal %RH</th>
+        <th>External °F</th>
+        <th>External %RH</th>
+        <th>Fallback °F</th>
+        <th>Fallback %RH</th>
+        <th>Active src</th>
+        <th>Fan</th>
+        <th>Heat</th>
+        <th>Dehum</th>
+        <th>Vent</th>
+      </tr>
+    </thead>
+    <tbody id="dataRows"></tbody>
+  </table>
+</div>
+<div style="text-align:center; margin-top:14px;">
+  <button id="loadMoreBtn" onclick="loadMore()">Load more</button>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const PAGE_SIZE = 50;
+let oldestLoadedTs = null;
+
+function fmtDateTime(ts) {
+  return new Date(ts * 1000).toLocaleString([], {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+function num(v, digits) {
+  return (v === null || v === undefined) ? '<span class="null-cell">--</span>' : v.toFixed(digits);
+}
+function flag(on) {
+  return `<span class="out-flag ${on ? 'on' : 'off'}">${on ? '●' : '○'}</span>`;
+}
+
+function renderRows(rows, append) {
+  const tbody = document.getElementById('dataRows');
+  const html = rows.map(r => `
+    <tr>
+      <td>${fmtDateTime(r.ts)}</td>
+      <td>${r.mode}</td>
+      <td>${num(r.internal_temp, 1)}</td>
+      <td>${num(r.internal_humidity, 1)}</td>
+      <td>${num(r.external_temp, 1)}</td>
+      <td>${num(r.external_humidity, 1)}</td>
+      <td>${num(r.fallback_external_temp, 1)}</td>
+      <td>${num(r.fallback_external_humidity, 1)}</td>
+      <td>${r.active_external_source || '<span class="null-cell">--</span>'}</td>
+      <td>${flag(!!r.fan)}</td>
+      <td>${flag(!!r.heater)}</td>
+      <td>${flag(!!r.dehumidifier)}</td>
+      <td>${flag(!!r.vent)}</td>
+    </tr>
+  `).join('');
+  if (append) {
+    tbody.insertAdjacentHTML('beforeend', html);
+  } else {
+    tbody.innerHTML = html || '<tr><td colspan="13" class="stat-sub">No data yet</td></tr>';
+  }
+  if (rows.length > 0) {
+    oldestLoadedTs = rows[rows.length - 1].ts;
+  }
+  document.getElementById('loadMoreBtn').style.display = rows.length < PAGE_SIZE ? 'none' : 'inline-block';
+}
+
+async function fetchRows(beforeTs) {
+  let url = `/api/readings-table?limit=${PAGE_SIZE}`;
+  if (beforeTs) url += `&before=${beforeTs}`;
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function resetAndLoad() {
+  oldestLoadedTs = null;
+  const rows = await fetchRows(null);
+  renderRows(rows, false);
+}
+
+async function loadMore() {
+  const rows = await fetchRows(oldestLoadedTs);
+  renderRows(rows, true);
+}
+
+resetAndLoad();
+</script>
+{% endblock %}

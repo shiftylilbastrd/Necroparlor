@@ -592,6 +592,33 @@ def validate_update_interval(minutes):
     return minutes, None
 
 
+def get_readings_table(limit=50, before_ts=None):
+    """Raw, un-bucketed readings rows for the Data page - every column,
+    newest first, same before_ts cursor-pagination pattern as
+    get_recent_events(). Unlike get_history() (which averages into
+    buckets for charting), this returns exactly what's in the database
+    row by row - useful for the kind of close diagnosis a chart can
+    smooth over, like spotting a specific cycle's raw value."""
+    conn = get_db()
+    query = (
+        "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
+        "fallback_external_temp, fallback_external_humidity, active_external_source, "
+        "fan, heater, dehumidifier, vent FROM readings WHERE 1=1"
+    )
+    params = []
+    if before_ts:
+        query += " AND ts < ?"
+        params.append(before_ts)
+    query += " ORDER BY ts DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
+            "fallback_external_temp", "fallback_external_humidity", "active_external_source",
+            "fan", "heater", "dehumidifier", "vent"]
+    return [dict(zip(keys, r)) for r in rows]
+
+
 def get_recent_events(limit=50, level=None, before_ts=None):
     """level: optional exact-match filter ('info'/'warning'/'error'/'critical').
     before_ts: optional epoch timestamp - only events strictly older than this,

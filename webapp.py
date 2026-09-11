@@ -32,6 +32,11 @@ def logs_page():
     return render_template("logs.html", active_page="logs")
 
 
+@app.route("/data")
+def data_page():
+    return render_template("data.html", active_page="data")
+
+
 @app.route("/config")
 def config_page():
     return render_template("config.html", active_page="config")
@@ -138,6 +143,13 @@ def api_events():
     if level not in (None, "info", "warning", "error", "critical"):
         return jsonify({"error": "level must be one of info/warning/error/critical"}), 400
     return jsonify(state.get_recent_events(limit=limit, level=level, before_ts=before))
+
+
+@app.route("/api/readings-table")
+def api_readings_table():
+    limit = request.args.get("limit", default=50, type=int)
+    before = request.args.get("before", default=None, type=float)
+    return jsonify(state.get_readings_table(limit=limit, before_ts=before))
 
 
 @app.route("/api/mode", methods=["POST"])
