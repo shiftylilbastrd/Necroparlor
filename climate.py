@@ -53,6 +53,10 @@ DHT_READ_GAP_SECONDS = 1.0         # gap between back-to-back DHT22 reads
                                     # mitigation for possible interference
                                     # between two timing-sensitive
                                     # single-wire reads with no gap at all
+DHT_READ_RETRIES = 3               # attempts per DHT22 read before giving
+                                    # up for this cycle - smooths over
+                                    # ordinary single-attempt flakiness
+DHT_READ_RETRY_DELAY_SECONDS = 0.5 # pause between retry attempts
 COOL_HYSTERESIS = 2.0
 HEAT_HYSTERESIS = 2.0
 HUMIDITY_HYSTERESIS = 3.0
@@ -206,22 +210,38 @@ def read_temp_and_humidity_f(pin):
     Adafruit_DHT's build-time Pi-detection code is also just broken on
     newer OS releases (it fails to install outright on Raspberry Pi OS
     Trixie), so there's no path back to it anyway.
+
+    Retries a couple of times within this single call before giving up.
+    DHT sensors fail an occasional individual read attempt as a matter
+    of course - it's a timing-sensitive single-wire bit-banged protocol,
+    not a robust checksummed bus like I2C, and even a healthy sensor can
+    see the odd "no response"/"checksum did not validate" error. The old
+    Adafruit_DHT library actually built retries in by default
+    (read_retry()) for exactly this reason - the newer CircuitPython
+    library this project uses does not, so it's worth doing here
+    explicitly rather than treating every single failed attempt as a
+    real sensor problem. Real-world evidence: dozens of "internal sensor
+    unavailable" failsafe-countdown starts in one evening, each
+    recovering within a cycle or two - consistent with ordinary
+    single-attempt DHT flakiness, not a genuine sustained failure.
     """
-    try:
-        device = _get_dht_device(pin)
-        temp_c = device.temperature
-        humidity = device.humidity
-    except RuntimeError:
-        # DHT sensors fail an occasional read as a matter of course -
-        # timing-sensitive protocol, checksum mismatches happen. The
-        # library raises RuntimeError for exactly this ("no response",
-        # "checksum did not validate", "unplausible data", etc.) - treat
-        # it exactly like any other failed read; the existing
-        # validation/retry/failsafe pipeline already handles it.
-        return None, None
-    if temp_c is None or humidity is None:
-        return None, None
-    return temp_c * 9.0 / 5.0 + 32.0, humidity
+    for attempt in range(DHT_READ_RETRIES):
+        try:
+            device = _get_dht_device(pin)
+            temp_c = device.temperature
+            humidity = device.humidity
+        except RuntimeError:
+            if attempt < DHT_READ_RETRIES - 1:
+                time.sleep(DHT_READ_RETRY_DELAY_SECONDS)
+                continue
+            return None, None
+        if temp_c is None or humidity is None:
+            if attempt < DHT_READ_RETRIES - 1:
+                time.sleep(DHT_READ_RETRY_DELAY_SECONDS)
+                continue
+            return None, None
+        return temp_c * 9.0 / 5.0 + 32.0, humidity
+    return None, None
 
 
 def read_internal_sht31_f():
