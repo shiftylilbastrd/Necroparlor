@@ -11,7 +11,7 @@
     display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px;
     font-weight: 700; font-size: 0.9rem; border: 1px solid var(--panel-border); flex-shrink: 0;
   }
-  .door-badge.open { background: rgba(217,164,65,0.15); color: var(--warn); border-color: rgba(217,164,65,0.45); }
+  .door-badge.open { background: rgba(217,83,79,0.15); color: var(--danger); border-color: rgba(217,83,79,0.45); }
   .door-badge.closed { background: rgba(79,178,134,0.12); color: var(--accent); border-color: rgba(79,178,134,0.35); }
   .output-badge.on { background: rgba(79,178,134,0.15); color: var(--accent); border-color: rgba(79,178,134,0.45); }
   .output-badge.off { background: rgba(147,160,171,0.08); color: var(--text-dim); border-color: var(--panel-border); }
@@ -47,9 +47,9 @@
   <h1>🪲 Dermestid Enclosure</h1>
   <div class="status-badges">
     <div class="door-badge closed" id="doorBadge">🚪 <span id="doorBadgeLabel">--</span></div>
-    <div class="output-badge off" id="fanBadge"><span class="badge-icon" id="fanIcon">🌀</span> <span id="fanBadgeLabel">Fan OFF</span></div>
-    <div class="output-badge off" id="heaterBadge"><span class="badge-icon" id="heaterIcon">🔥</span> <span id="heaterBadgeLabel">Heater OFF</span></div>
-    <div class="output-badge off" id="dehumBadge"><span class="badge-icon" id="dehumIcon">💧</span> <span id="dehumBadgeLabel">Dehum OFF</span></div>
+    <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon">🌀</span> Fan</div>
+    <div class="output-badge off" id="heaterBadge" title="Heater"><span class="badge-icon" id="heaterIcon">🔥</span> Heater</div>
+    <div class="output-badge off" id="dehumBadge" title="Dehumidifier"><span class="badge-icon" id="dehumIcon">💧</span> Dehum</div>
   </div>
   <div class="mode-dropdown" id="modeDropdownWrapper">
     <button id="modeTrigger" type="button" onclick="toggleModeDropdown()">
@@ -88,7 +88,11 @@
         <div class="stat-sub" id="statExternalHumidity">-- %RH</div>
         <div class="stat-sub" id="statExternalUpdated" style="margin-top:6px;">Updated: --</div>
       </div>
-      <div class="tile-side stat-sub" id="statExternalBattery"></div>
+      <div class="tile-side" id="statExternalBatteryWrap" style="display:none;">
+        <div class="stat-sub" style="font-weight:600;">Battery</div>
+        <div class="stat-sub" id="statExternalBatteryPct">--</div>
+        <div class="stat-sub" id="statExternalBatteryAge">--</div>
+      </div>
     </div>
   </div>
   <div class="card">
@@ -201,9 +205,9 @@ async function refreshStatus() {
     document.getElementById('statFallbackUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.fallback);
 
     document.getElementById('lastUpdateLine').textContent = 'Last update: ' + fmtTime(data.latest.ts);
-    outputBadge('fanBadge', 'fanIcon', 'fanBadgeLabel', !!data.latest.fan, 'Fan', true);
-    outputBadge('heaterBadge', 'heaterIcon', 'heaterBadgeLabel', !!data.latest.heater, 'Heater', false);
-    outputBadge('dehumBadge', 'dehumIcon', 'dehumBadgeLabel', !!data.latest.dehumidifier, 'Dehum', false);
+    outputBadge('fanBadge', 'fanIcon', !!data.latest.fan, true);
+    outputBadge('heaterBadge', 'heaterIcon', !!data.latest.heater, false);
+    outputBadge('dehumBadge', 'dehumIcon', !!data.latest.dehumidifier, false);
   }
 
   updateModeUI(data.config.current_mode);
@@ -219,20 +223,20 @@ async function refreshStatus() {
     doorLabel.textContent = 'unknown';
   }
 
-  const batteryEl = document.getElementById('statExternalBattery');
+  const batteryWrap = document.getElementById('statExternalBatteryWrap');
   if (data.ble_status && data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
-    batteryEl.textContent = `${Math.round(data.ble_status.battery_pct)}% · ${fmtDuration(data.ble_status.battery_age_seconds)}`;
+    batteryWrap.style.display = 'block';
+    document.getElementById('statExternalBatteryPct').textContent = `${Math.round(data.ble_status.battery_pct)}%`;
+    document.getElementById('statExternalBatteryAge').textContent = fmtDuration(data.ble_status.battery_age_seconds);
   } else {
-    batteryEl.textContent = '';
+    batteryWrap.style.display = 'none';
   }
 }
 
-function outputBadge(badgeId, iconId, labelId, on, name, spins) {
+function outputBadge(badgeId, iconId, on, spins) {
   const badge = document.getElementById(badgeId);
   const icon = document.getElementById(iconId);
-  const label = document.getElementById(labelId);
   badge.className = 'output-badge ' + (on ? 'on' : 'off');
-  label.textContent = `${name} ${on ? 'ON' : 'OFF'}`;
   icon.classList.toggle('spin', on && spins);
 }
 
