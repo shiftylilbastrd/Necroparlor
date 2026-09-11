@@ -185,29 +185,32 @@ async function refreshStatus() {
   }
 
   const sourceLabel = document.getElementById('statExternalSource');
-  if (data.config.external_source === 'sensorpush') {
+  const activeSource = data.latest && data.latest.active_external_source;
+  if (activeSource === 'sensorpush') {
     if (data.ble_status) {
       const age = Math.round(data.ble_status.age_seconds);
-      let text = `SensorPush · seen ${age}s ago`;
+      let text = `SensorPush (auto) · seen ${age}s ago`;
       if (data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
         const battAge = Math.round(data.ble_status.battery_age_seconds / 3600);
         text += ` · batt ~${Math.round(data.ble_status.battery_pct)}% (${battAge}h ago)`;
       }
       sourceLabel.textContent = text;
     } else {
-      sourceLabel.textContent = 'SensorPush · no reading yet';
+      sourceLabel.textContent = 'SensorPush (auto) · no reading yet';
     }
+  } else if (activeSource === 'local_gpio') {
+    sourceLabel.textContent = 'Wired probe (auto-failover)';
   } else {
-    sourceLabel.textContent = 'Wired probe (local GPIO)';
+    sourceLabel.textContent = '--';
   }
 
   const fallbackEl = document.getElementById('statFallback');
   const fallbackTemp = data.latest && data.latest.fallback_external_temp;
   if (fallbackTemp !== null && fallbackTemp !== undefined) {
-    const fallbackLabel = data.config.external_source === 'sensorpush' ? 'Wired probe' : 'SensorPush';
+    const fallbackLabel = activeSource === 'sensorpush' ? 'Wired probe' : 'SensorPush';
     const fallbackHum = data.latest.fallback_external_humidity;
     const humStr = (fallbackHum !== null && fallbackHum !== undefined) ? `/${fallbackHum.toFixed(1)}%` : '';
-    fallbackEl.textContent = `Fallback (${fallbackLabel}, not active): ${fallbackTemp.toFixed(1)}°F${humStr}`;
+    fallbackEl.textContent = `Backup (${fallbackLabel}, on standby): ${fallbackTemp.toFixed(1)}°F${humStr}`;
     fallbackEl.style.display = 'block';
   } else {
     fallbackEl.style.display = 'none';
@@ -263,16 +266,27 @@ async function refreshHistory() {
   const labels = points.map(p => new Date(p.ts * 1000));
   const timeOptions = timeScaleOptions(currentRangeHours);
 
+  // Only show the fallback series if there's actually any fallback data
+  // in this range - otherwise it'd just be a permanently-empty legend
+  // entry cluttering the chart whenever no fallback source is configured.
+  const hasFallback = points.some(p => p.fallback_external_temp !== null && p.fallback_external_temp !== undefined);
+
   const tempDatasets = [
     ...bandDatasets('Internal °F', points.map(p => p.internal_temp), points.map(p => p.internal_temp_min), points.map(p => p.internal_temp_max), '#4f8fd9'),
     ...bandDatasets('External °F', points.map(p => p.external_temp), points.map(p => p.external_temp_min), points.map(p => p.external_temp_max), '#d9a441')
   ];
+  if (hasFallback) {
+    tempDatasets.push(...bandDatasets('Fallback °F', points.map(p => p.fallback_external_temp), points.map(p => p.fallback_external_temp_min), points.map(p => p.fallback_external_temp_max), '#93a0ab'));
+  }
   updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined }, timeOptions);
 
   const humidityDatasets = [
     ...bandDatasets('Internal %RH', points.map(p => p.internal_humidity), points.map(p => p.internal_humidity_min), points.map(p => p.internal_humidity_max), '#4f8fd9'),
     ...bandDatasets('External %RH', points.map(p => p.external_humidity), points.map(p => p.external_humidity_min), points.map(p => p.external_humidity_max), '#d9a441')
   ];
+  if (hasFallback) {
+    humidityDatasets.push(...bandDatasets('Fallback %RH', points.map(p => p.fallback_external_humidity), points.map(p => p.fallback_external_humidity_min), points.map(p => p.fallback_external_humidity_max), '#93a0ab'));
+  }
   updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);
 }
 
@@ -280,12 +294,22 @@ const chartInstances = {};
 
 function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOptions) {
   const existing = chartInstances[instanceKey];
-  if (existing) {
+  if (existing && existing.data.datasets.length === datasets.length) {
     existing.data.labels = labels;
     datasets.forEach((d, i) => { existing.data.datasets[i].data = d.data; });
     existing.options.scales.x.time = timeOptions;
     existing.update();
     return;
+  }
+  if (existing) {
+    // Dataset count changed since this chart was created (e.g. the
+    // fallback series just appeared or disappeared) - the fast in-place
+    // update above only works when the count matches, since it maps
+    // data onto existing dataset objects by index. Rebuilding from
+    // scratch here is simpler and safer than trying to patch Chart.js's
+    // internal dataset list to add/remove one .
+    existing.destroy();
+    delete chartInstances[instanceKey];
   }
 
   if (typeof Chart === 'undefined') {

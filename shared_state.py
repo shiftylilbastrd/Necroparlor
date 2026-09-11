@@ -49,11 +49,12 @@ DEFAULT_CONFIG = {
     #              what's actually on hand)
     #   "sht31"  - I2C sensor with condensation-recovery heater support
     "internal_source": "dht22",
-    # Where climate.py gets the *external* (outside-air) reading from:
-    #   "local_gpio"  - wired DHT/AM2302 probe on PIN_EXTERNAL_TEMP (default)
-    #   "sensorpush"  - passive BLE listener (see sensorpush_listener.py),
-    #                   keyed by the sensor's BLE address below
-    "external_source": "local_gpio",
+    # External (outside-air) reading: automatic failover, not a manual
+    # choice. climate.py always reads both the wired probe and
+    # SensorPush every cycle and uses whichever is fresher - SensorPush
+    # if it's reported within SENSOR_FAIL_TIMEOUT, otherwise the wired
+    # probe. sensorpush_mac identifies *which* of possibly several
+    # SensorPush units to listen for; it's not a mode toggle.
     "sensorpush_mac": None,
     "modes": {
         "dormant": {
@@ -92,21 +93,18 @@ VENT_DURATION_BOUNDS = (1, 60)    # minutes
 MAC_ADDRESS_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 
 
-def validate_external_source(source, sensorpush_mac):
-    """Validate a request to switch where the external reading comes from.
-    Returns (source, mac, None) on success or (None, None, error) on failure."""
-    if source not in ("local_gpio", "sensorpush"):
-        return None, None, "source must be 'local_gpio' or 'sensorpush'"
-    if source == "local_gpio":
-        # Preserve whatever MAC was already configured, even though it's
-        # not actively used while local_gpio is selected - this used to
-        # unconditionally wipe it to None, meaning switching to the wired
-        # probe even briefly (e.g. for a quick test) permanently lost the
-        # SensorPush address, forcing a full re-discovery to switch back.
-        return source, (sensorpush_mac or None), None
-    if not sensorpush_mac or not MAC_ADDRESS_RE.match(sensorpush_mac):
-        return None, None, "sensorpush_mac must look like AA:BB:CC:DD:EE:FF"
-    return source, sensorpush_mac.upper(), None
+def validate_sensorpush_mac(sensorpush_mac):
+    """Validates a SensorPush BLE address for saving - identifies which
+    physical unit to listen for, not a mode toggle (external source
+    selection is now automatic failover, not manual). Returns (mac, None)
+    on success or (None, error) on failure. An empty value is allowed -
+    it just means no SensorPush unit is configured, so climate.py always
+    uses the wired probe until one is set."""
+    if not sensorpush_mac:
+        return None, None
+    if not MAC_ADDRESS_RE.match(sensorpush_mac):
+        return None, "sensorpush_mac must look like AA:BB:CC:DD:EE:FF"
+    return sensorpush_mac.upper(), None
 
 
 def _atomic_write(path, data_str):
@@ -264,6 +262,8 @@ def _migrate_readings_columns(conn):
         conn.execute("ALTER TABLE readings ADD COLUMN fallback_external_temp REAL")
     if "fallback_external_humidity" not in existing:
         conn.execute("ALTER TABLE readings ADD COLUMN fallback_external_humidity REAL")
+    if "active_external_source" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN active_external_source TEXT")
 
 
 def _migrate_ble_readings_columns(conn):
@@ -336,15 +336,17 @@ def get_all_ble_readings():
 
 
 def log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
-                 fan, heater, dehumidifier, vent, fallback_external_temp=None, fallback_external_humidity=None):
+                 fan, heater, dehumidifier, vent, fallback_external_temp=None, fallback_external_humidity=None,
+                 active_external_source=None):
     conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity, "
+        "active_external_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
-         int(fan), int(heater), int(dehumidifier), int(vent), fallback_external_temp, fallback_external_humidity)
+         int(fan), int(heater), int(dehumidifier), int(vent), fallback_external_temp, fallback_external_humidity,
+         active_external_source)
     )
     conn.commit()
     conn.close()
@@ -365,14 +367,15 @@ def get_latest_reading():
     conn = get_db()
     row = conn.execute(
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity "
-        "FROM readings ORDER BY ts DESC LIMIT 1"
+        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity, "
+        "active_external_source FROM readings ORDER BY ts DESC LIMIT 1"
     ).fetchone()
     conn.close()
     if not row:
         return None
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-            "fan", "heater", "dehumidifier", "vent", "fallback_external_temp", "fallback_external_humidity"]
+            "fan", "heater", "dehumidifier", "vent", "fallback_external_temp", "fallback_external_humidity",
+            "active_external_source"]
     return dict(zip(keys, row))
 
 
@@ -427,7 +430,9 @@ def get_history(hours):
                AVG(internal_temp), MIN(internal_temp), MAX(internal_temp),
                AVG(internal_humidity), MIN(internal_humidity), MAX(internal_humidity),
                AVG(external_temp), MIN(external_temp), MAX(external_temp),
-               AVG(external_humidity), MIN(external_humidity), MAX(external_humidity)
+               AVG(external_humidity), MIN(external_humidity), MAX(external_humidity),
+               AVG(fallback_external_temp), MIN(fallback_external_temp), MAX(fallback_external_temp),
+               AVG(fallback_external_humidity), MIN(fallback_external_humidity), MAX(fallback_external_humidity)
         FROM readings
         WHERE ts >= ?
         GROUP BY bucket
@@ -443,6 +448,8 @@ def get_history(hours):
             "internal_humidity": r[4], "internal_humidity_min": r[5], "internal_humidity_max": r[6],
             "external_temp": r[7], "external_temp_min": r[8], "external_temp_max": r[9],
             "external_humidity": r[10], "external_humidity_min": r[11], "external_humidity_max": r[12],
+            "fallback_external_temp": r[13], "fallback_external_temp_min": r[14], "fallback_external_temp_max": r[15],
+            "fallback_external_humidity": r[16], "fallback_external_humidity_min": r[17], "fallback_external_humidity_max": r[18],
         }
         for r in rows
     ]

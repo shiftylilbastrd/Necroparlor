@@ -146,6 +146,7 @@ last_good_internal_temp = None
 last_good_internal_humidity = None
 last_good_external_temp = None
 last_good_external_humidity = None
+last_active_external_source = None  # tracks automatic failover transitions
 sensor_fail_since = None
 alarm_active = False
 
@@ -409,30 +410,49 @@ def run_cycle():
         # nothing to interfere with there.
         time.sleep(DHT_READ_GAP_SECONDS)
 
-    # Both external sources are read every cycle, regardless of which one
-    # is actually "active" (drives control decisions) - the other is kept
-    # purely for dashboard visibility, so a dead fallback probe is
-    # noticed immediately rather than discovered mid-outage on the one
-    # you actually needed. The fallback reading never touches any
-    # control-critical state (last_good_*, the delta-glitch filter, the
-    # failsafe) - only basic plausibility bounds apply to it, since a
-    # single bad fallback reading isn't dangerous the way a bad ACTIVE
-    # reading would be, just cosmetically wrong for one cycle.
+    # Both external sources are read every cycle. Which one is "active"
+    # (drives control decisions) is decided automatically here, not by a
+    # manual config toggle: SensorPush is used whenever it's reported
+    # within SENSOR_FAIL_TIMEOUT (the same freshness window the failsafe
+    # already uses elsewhere), and the wired probe is used automatically
+    # otherwise - no manual switch, no missed data while nobody's
+    # watching the dashboard. Whichever one ISN'T currently active is
+    # kept as the fallback for visibility, same as before. The fallback
+    # reading never touches any control-critical state (last_good_*, the
+    # delta-glitch filter, the failsafe) - only basic plausibility bounds
+    # apply to it, since a single bad fallback reading isn't dangerous
+    # the way a bad ACTIVE reading would be, just cosmetically wrong for
+    # one cycle.
     raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
 
     raw_sensorpush_temp = raw_sensorpush_humidity = None
+    sensorpush_fresh = False
     if config.get("sensorpush_mac"):
         ble_reading = state.get_ble_reading(config["sensorpush_mac"])
         if ble_reading and (loop_start - ble_reading["ts"]) <= SENSOR_FAIL_TIMEOUT:
             raw_sensorpush_temp = ble_reading["temp_f"]
             raw_sensorpush_humidity = ble_reading["humidity"]
+            sensorpush_fresh = True
 
-    if config.get("external_source") == "sensorpush" and config.get("sensorpush_mac"):
+    if sensorpush_fresh:
         raw_external_temp, raw_external_humidity = raw_sensorpush_temp, raw_sensorpush_humidity
         raw_fallback_temp, raw_fallback_humidity = raw_wired_temp, raw_wired_humidity
+        active_external_source = "sensorpush"
     else:
         raw_external_temp, raw_external_humidity = raw_wired_temp, raw_wired_humidity
         raw_fallback_temp, raw_fallback_humidity = raw_sensorpush_temp, raw_sensorpush_humidity
+        active_external_source = "local_gpio"
+
+    # Log the transition itself (once, not every cycle) - automatic
+    # failover should still be genuinely visible on the Logs page, not
+    # silent just because nobody has to click a switch for it anymore.
+    global last_active_external_source
+    if last_active_external_source is not None and active_external_source != last_active_external_source:
+        if active_external_source == "local_gpio":
+            state.log_event("warning", "Automatically failed over to wired probe (SensorPush stale)")
+        else:
+            state.log_event("info", "SensorPush recovered, resuming as primary external sensor")
+    last_active_external_source = active_external_source
 
     if not _plausible(raw_fallback_temp, -40, 140):
         raw_fallback_temp = None
@@ -661,7 +681,8 @@ def run_cycle():
     )
 
     state.log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
-                       fan_on, heater_on, humidity_on, vent_active, fallback_temp, fallback_humidity)
+                       fan_on, heater_on, humidity_on, vent_active, fallback_temp, fallback_humidity,
+                       active_external_source)
 
     time.sleep(LOOP_INTERVAL)
 

@@ -83,8 +83,13 @@ async def check_with_retries(address):
 
 async def main():
     config = state.load_config()
-    if config.get("external_source") != "sensorpush" or not config.get("sensorpush_mac"):
-        logging.info("External source is not set to SensorPush - nothing to check.")
+    if not config.get("sensorpush_mac"):
+        # External source selection is automatic now (see climate.py) -
+        # SensorPush isn't always "the active one" at any given moment,
+        # but as long as an address is configured, its battery is still
+        # worth checking daily regardless of whether it happens to be
+        # the currently-active reading or on standby right now.
+        logging.info("No SensorPush address configured - nothing to check.")
         return
 
     address = config["sensorpush_mac"]

@@ -60,9 +60,11 @@ python3 webapp.py       # in another
 
 Then visit `http://<pi-ip-address>:8080` from any phone/laptop on your LAN. **There's no login on this dashboard** — it's fine on your home network, but don't port-forward it to the internet.
 
-## Optional: external reading over Bluetooth (SensorPush)
+## External reading: SensorPush with automatic wired-probe failover
 
-If your external probe is a SensorPush HT1/HT.w/HTP.xw sensor instead of a wired DHT/AM2302, the Pi's onboard Bluetooth can read it directly — no gateway, hub, or extra hardware needed. This is entirely passive listening (no pairing, no connection), so it doesn't touch the sensor's battery budget.
+The external (outside-air) reading comes from two sensors working together, not a manual choice: a SensorPush BLE sensor as the primary, and a wired DHT22/AM2302 probe on GPIO4 as an always-connected fallback. `climate.py` reads both every single cycle and automatically uses whichever one is actually fresh - SensorPush whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s, the same window the sensor-failure failsafe uses elsewhere), the wired probe automatically otherwise. There's no source toggle to remember to flip - if SensorPush drops out, control keeps running on the wired probe with zero action needed, and control switches back the moment SensorPush recovers.
+
+SensorPush requires no gateway, hub, or extra hardware - the Pi's onboard Bluetooth reads it directly via entirely passive listening (no pairing, no connection), so it doesn't touch the sensor's battery budget.
 
 ```bash
 pip3 install sensorpush-ble bleak --break-system-packages
@@ -76,23 +78,24 @@ Requires Python 3.11+, which is the default on current Raspberry Pi OS (Bookworm
    ```
    Warm the one you want in your hand and watch which address's temperature climbs, then note that address (looks like `AA:BB:CC:DD:EE:FF`). Ctrl+C to stop.
 
-2. **Point `climate.py` at it**, either from the dashboard (new "External sensor source" panel — pick SensorPush, paste the address, Save) or by hand-editing `config.json`:
+2. **Set it on the dashboard** (Config page's External card - just the address field, no source to pick), or by hand-editing `config.json`:
    ```json
-   "external_source": "sensorpush",
    "sensorpush_mac": "AA:BB:CC:DD:EE:FF"
    ```
+   This only identifies *which* physical unit to listen for - useful if you ever swap in a different SensorPush - it isn't a mode switch. Automatic failover works with or without an address set (with none set, it's just always the wired probe).
 
 3. **Run the listener** alongside the other two processes:
    ```bash
    python3 sensorpush_listener.py
    ```
-   `climate.py` re-reads `config.json` every cycle same as always, so it'll start pulling the external reading from the BLE listener within one 15s cycle of you saving the change — no restart needed. If you switch `external_source` back to `local_gpio`, it falls right back to the wired probe.
 
-**Both external sources are read every cycle, regardless of which one is active.** Whichever one isn't currently driving control decisions is shown on the dashboard's External tile as "Fallback (..., not active)" - purely for visibility, so a dead fallback probe (e.g. a wired probe kept connected as backup while SensorPush is the primary) is noticed the moment it stops working, not discovered mid-outage on the day you actually need it. The fallback reading never affects any control decision or the sensor-failure failsafe - a bad or missing fallback reading just shows as blank on the dashboard for that cycle.
+**Whichever sensor isn't currently active is shown on the dashboard's External tile as "Backup (..., on standby)"** - purely for visibility, so a dead wired probe is noticed the moment it stops working, not discovered mid-SensorPush-outage on the day it's actually needed. The backup reading never affects any control decision or the sensor-failure failsafe - a bad or missing backup reading just shows as blank on the dashboard for that cycle. It also appears as its own line on the Temperature and Humidity history charts (labeled "Fallback °F"/"Fallback %RH") - hidden automatically whenever there's no backup data available, so it doesn't clutter the legend with an empty series.
+
+Every automatic failover is logged (both directions - failing over and recovering) so it's visible on the Logs page, not silent just because nothing needs manual switching anymore.
 
 Things worth knowing:
 - **Range through metal ductwork is the main risk.** Test placement with `discover_sensorpush.py` running before you seal the sensor into the vent — ductwork can attenuate the signal more than open air.
-- **Advertisements can occasionally pause** until something (the SensorPush app, or another BLE connection) "wakes" the sensor — this is a known SensorPush quirk, not a bug in this integration. Losing the external reading alone no longer shuts anything down (see "Sensor-failure failsafe" below) - it just pauses thermal cooling specifically until a fresh reading comes back, while heating and dehumidifying keep running on internal data.
+- **Advertisements can occasionally pause** until something (the SensorPush app, or another BLE connection) "wakes" the sensor — this is a known SensorPush quirk, not a bug in this integration. This is exactly the situation automatic failover exists for: the wired probe takes over the instant SensorPush goes stale, and losing the external reading entirely (both sensors down) still doesn't shut anything down (see "Sensor-failure failsafe" below) - it just pauses thermal cooling specifically until a fresh reading comes back from either one, while heating and dehumidifying keep running on internal data.
 - The old wired external-probe wiring (`PIN_EXTERNAL_TEMP`, GPIO4) is left intact and unused in this mode, so you can switch back any time without touching hardware.
 
 ### Battery level (daily check)
@@ -111,7 +114,7 @@ systemctl list-timers dermestid-battery.timer
 python3 sensorpush_battery.py
 ```
 
-The result (percentage, voltage, and how long ago it was checked) shows up on the dashboard next to the external sensor's temperature, and a warning event is logged if the battery drops to 15% or below. The check is a no-op if `external_source` isn't set to SensorPush, so it's safe to enable even before you've configured an address.
+The result (percentage, voltage, and how long ago it was checked) shows up on the dashboard next to the external sensor's temperature, and a warning event is logged if the battery drops to 15% or below. The check is a no-op if `sensorpush_mac` isn't set, so it's safe to enable even before you've configured an address - it checks the battery whenever an address is set, regardless of whether SensorPush happens to be the currently-active reading or on standby.
 
 A couple of things worth knowing:
 - The HT1 only accepts **one** BLE connection at a time. If the SensorPush phone app happens to be connected right when the daily check runs, that check simply fails and retries the next day — no crash, just a logged warning.

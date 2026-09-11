@@ -27,23 +27,19 @@
 
   <div class="card" style="max-width:420px;">
     <h2>External</h2>
-    <div class="field">
-      <label>Source</label>
-      <select id="externalSourceSelect" onchange="onExternalSourceChange()">
-        <option value="local_gpio">Wired probe (local GPIO)</option>
-        <option value="sensorpush">SensorPush (Bluetooth)</option>
-      </select>
+    <div class="stat-sub" style="margin-bottom:10px;">
+      Automatic failover - SensorPush is used whenever it's reporting fresh data; the wired probe (GPIO4) takes over automatically the moment it isn't, and hands back the moment it recovers. Nothing to switch manually.
     </div>
-    <div class="field" id="sensorpushMacField" style="display:none;">
+    <div class="field">
       <label>SensorPush BLE address</label>
       <input type="text" id="sensorpushMacInput" placeholder="AA:BB:CC:DD:EE:FF">
       <div class="stat-sub" style="margin-top:6px;">
-        Don't know the address? Run <code>python3 discover_sensorpush.py</code> on the Pi to find it.
+        Identifies which physical unit to listen for - doesn't need to change unless you swap in a different SensorPush. Don't know the address? Run <code>python3 discover_sensorpush.py</code> on the Pi to find it.
       </div>
       <div class="stat-sub" id="sensorpushSignal" style="margin-top:6px;">Signal: --</div>
     </div>
-    <button class="save-btn" onclick="saveExternalSource()">Save</button>
-    <div class="save-msg" id="externalSourceMsg"></div>
+    <button class="save-btn" onclick="saveSensorpushMac()">Save</button>
+    <div class="save-msg" id="sensorpushMacMsg"></div>
   </div>
 </div>
 
@@ -68,20 +64,21 @@ async function loadConfig() {
   const res = await fetch('/api/status');
   const data = await res.json();
   renderSetpointPanels(data.config);
-  renderExternalSourceForm(data.config);
+  document.getElementById('sensorpushMacInput').value = data.config.sensorpush_mac || '';
   document.getElementById('internalSourceSelect').value = data.config.internal_source || 'dht22';
   updateSignalDisplay(data);
 }
 
 function updateSignalDisplay(data) {
   const el = document.getElementById('sensorpushSignal');
-  if (data.config.external_source === 'sensorpush' && data.ble_status) {
+  if (data.ble_status) {
     const age = Math.round(data.ble_status.age_seconds);
-    el.textContent = `Signal: ${data.ble_status.rssi}dBm · last seen ${age}s ago`;
-  } else if (data.config.external_source === 'sensorpush') {
+    const activeNote = data.latest && data.latest.active_external_source === 'sensorpush' ? ' (currently active)' : ' (currently on standby)';
+    el.textContent = `Signal: ${data.ble_status.rssi}dBm · last seen ${age}s ago${activeNote}`;
+  } else if (data.config.sensorpush_mac) {
     el.textContent = 'Signal: no reading yet';
   } else {
-    el.textContent = 'Signal: -- (not using SensorPush)';
+    el.textContent = 'Signal: -- (no SensorPush address set)';
   }
 }
 
@@ -93,6 +90,23 @@ setInterval(async () => {
   const data = await res.json();
   updateSignalDisplay(data);
 }, 5000);
+
+async function saveSensorpushMac() {
+  const mac = document.getElementById('sensorpushMacInput').value.trim();
+  const res = await fetch('/api/sensorpush-mac', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({sensorpush_mac: mac})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('sensorpushMacMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
 
 async function saveInternalSource() {
   const source = document.getElementById('internalSourceSelect').value;
@@ -169,40 +183,6 @@ async function saveSetpoints(mode) {
   });
   const data = await res.json();
   const msg = document.getElementById(`${mode}-msg`);
-  if (!res.ok) {
-    msg.textContent = data.error || 'Save failed';
-    msg.className = 'save-msg err';
-  } else {
-    msg.textContent = 'Saved';
-    msg.className = 'save-msg ok';
-    setTimeout(() => { msg.textContent = ''; }, 2500);
-  }
-}
-
-function renderExternalSourceForm(config) {
-  const select = document.getElementById('externalSourceSelect');
-  const macField = document.getElementById('sensorpushMacField');
-  const macInput = document.getElementById('sensorpushMacInput');
-  select.value = config.external_source || 'local_gpio';
-  if (config.sensorpush_mac) macInput.value = config.sensorpush_mac;
-  macField.style.display = select.value === 'sensorpush' ? 'block' : 'none';
-}
-
-function onExternalSourceChange() {
-  const select = document.getElementById('externalSourceSelect');
-  document.getElementById('sensorpushMacField').style.display =
-    select.value === 'sensorpush' ? 'block' : 'none';
-}
-
-async function saveExternalSource() {
-  const source = document.getElementById('externalSourceSelect').value;
-  const mac = document.getElementById('sensorpushMacInput').value.trim();
-  const res = await fetch('/api/external-source', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({source, sensorpush_mac: mac})
-  });
-  const data = await res.json();
-  const msg = document.getElementById('externalSourceMsg');
   if (!res.ok) {
     msg.textContent = data.error || 'Save failed';
     msg.className = 'save-msg err';

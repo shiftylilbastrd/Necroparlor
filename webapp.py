@@ -44,7 +44,7 @@ def api_status():
     stale = bool(latest) and (time.time() - latest["ts"]) > 90
 
     ble_status = None
-    if config.get("external_source") == "sensorpush" and config.get("sensorpush_mac"):
+    if config.get("sensorpush_mac"):
         ble = state.get_ble_reading(config["sensorpush_mac"])
         if ble:
             ble_status = {
@@ -73,18 +73,20 @@ def api_ble_sensors():
     return jsonify(state.get_all_ble_readings())
 
 
-@app.route("/api/external-source", methods=["POST"])
-def api_set_external_source():
+@app.route("/api/sensorpush-mac", methods=["POST"])
+def api_set_sensorpush_mac():
+    """Sets which physical SensorPush unit to listen for. Not a source
+    toggle - external sensor failover is automatic (see climate.py) -
+    this just identifies which BLE address is the right one, useful if
+    more than one SensorPush unit is nearby."""
     body = request.get_json(force=True, silent=True) or {}
-    source, mac, error = state.validate_external_source(body.get("source"), body.get("sensorpush_mac"))
+    mac, error = state.validate_sensorpush_mac(body.get("sensorpush_mac"))
     if error:
         return jsonify({"error": error}), 400
     config = state.load_config()
-    config["external_source"] = source
     config["sensorpush_mac"] = mac
     state.save_config(config)
-    label = f"SensorPush ({mac})" if source == "sensorpush" else "local wired probe"
-    state.log_event("info", f"External sensor source changed to {label}")
+    state.log_event("info", f"SensorPush address {'set to ' + mac if mac else 'cleared'}")
     return jsonify(config)
 
 
