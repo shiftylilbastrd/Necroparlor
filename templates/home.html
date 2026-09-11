@@ -6,12 +6,19 @@
 <style>
   .header-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }
   .header-row h1 { margin: 0; }
-  .door-badge {
+  .status-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+  .door-badge, .output-badge {
     display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px;
     font-weight: 700; font-size: 0.9rem; border: 1px solid var(--panel-border); flex-shrink: 0;
   }
   .door-badge.open { background: rgba(217,164,65,0.15); color: var(--warn); border-color: rgba(217,164,65,0.45); }
   .door-badge.closed { background: rgba(79,178,134,0.12); color: var(--accent); border-color: rgba(79,178,134,0.35); }
+  .output-badge.on { background: rgba(79,178,134,0.15); color: var(--accent); border-color: rgba(79,178,134,0.45); }
+  .output-badge.off { background: rgba(147,160,171,0.08); color: var(--text-dim); border-color: var(--panel-border); }
+  .badge-icon { display: inline-block; transition: opacity 0.25s, filter 0.25s; }
+  .output-badge.off .badge-icon { opacity: 0.45; filter: grayscale(1); }
+  .badge-icon.spin { animation: spin 1.1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .mode-dropdown { position: relative; width: 170px; flex-shrink: 0; }
   #modeTrigger {
     width: 100%; text-align: left; background: #10151a; border: 1px solid var(--panel-border);
@@ -30,13 +37,20 @@
   .mode-option.active { background: rgba(79,178,134,0.16); }
   .mode-option small { display: block; color: var(--text-dim); margin-top: 2px; }
   .chart-label { font-size: 0.8rem; color: var(--text-dim); margin: 14px 0 6px 0; font-weight: 600; }
+  .tile-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .tile-side { text-align: right; flex-shrink: 0; }
 </style>
 {% endblock %}
 {% block content %}
 
 <div class="header-row">
   <h1>🪲 Dermestid Enclosure</h1>
-  <div class="door-badge closed" id="doorBadge">🚪 <span id="doorBadgeLabel">--</span></div>
+  <div class="status-badges">
+    <div class="door-badge closed" id="doorBadge">🚪 <span id="doorBadgeLabel">--</span></div>
+    <div class="output-badge off" id="fanBadge"><span class="badge-icon" id="fanIcon">🌀</span> <span id="fanBadgeLabel">Fan OFF</span></div>
+    <div class="output-badge off" id="heaterBadge"><span class="badge-icon" id="heaterIcon">🔥</span> <span id="heaterBadgeLabel">Heater OFF</span></div>
+    <div class="output-badge off" id="dehumBadge"><span class="badge-icon" id="dehumIcon">💧</span> <span id="dehumBadgeLabel">Dehum OFF</span></div>
+  </div>
   <div class="mode-dropdown" id="modeDropdownWrapper">
     <button id="modeTrigger" type="button" onclick="toggleModeDropdown()">
       <span id="modeTriggerLabel">--</span><span class="caret">▾</span>
@@ -68,25 +82,20 @@
   </div>
   <div class="card">
     <h2>External</h2>
-    <div class="stat-value" id="statExternalTemp">--°F</div>
-    <div class="stat-sub" id="statExternalHumidity">-- %RH</div>
-    <div class="stat-sub" id="statExternalSource">--</div>
-    <div class="stat-sub" id="statExternalUpdated" style="margin-top:6px;">Updated: --</div>
+    <div class="tile-row">
+      <div>
+        <div class="stat-value" id="statExternalTemp">--°F</div>
+        <div class="stat-sub" id="statExternalHumidity">-- %RH</div>
+        <div class="stat-sub" id="statExternalUpdated" style="margin-top:6px;">Updated: --</div>
+      </div>
+      <div class="tile-side stat-sub" id="statExternalBattery"></div>
+    </div>
   </div>
   <div class="card">
     <h2>Fallback</h2>
     <div class="stat-value" id="statFallbackTemp">--°F</div>
     <div class="stat-sub" id="statFallbackHumidity">-- %RH</div>
-    <div class="stat-sub" id="statFallbackSource">--</div>
     <div class="stat-sub" id="statFallbackUpdated" style="margin-top:6px;">Updated: --</div>
-  </div>
-  <div class="card">
-    <h2>Outputs</h2>
-    <div class="stat-sub">
-      Fan/Vent <span class="pill off" id="pillFan">OFF</span><br><br>
-      Heater <span class="pill off" id="pillHeater">OFF</span><br><br>
-      Dehumidifier <span class="pill off" id="pillHumidity">OFF</span>
-    </div>
   </div>
 </div>
 
@@ -114,15 +123,13 @@ function fmtTime(ts) {
 }
 function fmtAgo(ts) {
   if (ts === null || ts === undefined) return 'never';
-  const secs = Math.round(Date.now() / 1000 - ts);
+  return fmtDuration(Date.now() / 1000 - ts);
+}
+function fmtDuration(secs) {
+  secs = Math.round(secs);
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
   return `${Math.round(secs / 3600)}h ago`;
-}
-function pillEl(id, on, onLabel, offLabel) {
-  const el = document.getElementById(id);
-  el.textContent = on ? onLabel : offLabel;
-  el.className = 'pill ' + (on ? 'on' : 'off');
 }
 
 function updateModeUI(mode) {
@@ -194,9 +201,9 @@ async function refreshStatus() {
     document.getElementById('statFallbackUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.fallback);
 
     document.getElementById('lastUpdateLine').textContent = 'Last update: ' + fmtTime(data.latest.ts);
-    pillEl('pillFan', !!data.latest.fan, 'ON', 'OFF');
-    pillEl('pillHeater', !!data.latest.heater, 'ON', 'OFF');
-    pillEl('pillHumidity', !!data.latest.dehumidifier, 'ON', 'OFF');
+    outputBadge('fanBadge', 'fanIcon', 'fanBadgeLabel', !!data.latest.fan, 'Fan', true);
+    outputBadge('heaterBadge', 'heaterIcon', 'heaterBadgeLabel', !!data.latest.heater, 'Heater', false);
+    outputBadge('dehumBadge', 'dehumIcon', 'dehumBadgeLabel', !!data.latest.dehumidifier, 'Dehum', false);
   }
 
   updateModeUI(data.config.current_mode);
@@ -212,34 +219,21 @@ async function refreshStatus() {
     doorLabel.textContent = 'unknown';
   }
 
-  const sourceLabel = document.getElementById('statExternalSource');
-  const activeSource = data.latest && data.latest.active_external_source;
-  if (activeSource === 'sensorpush') {
-    if (data.ble_status) {
-      const age = Math.round(data.ble_status.age_seconds);
-      let text = `SensorPush (auto) · seen ${age}s ago`;
-      if (data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
-        const battAge = Math.round(data.ble_status.battery_age_seconds / 3600);
-        text += ` · batt ~${Math.round(data.ble_status.battery_pct)}% (${battAge}h ago)`;
-      }
-      sourceLabel.textContent = text;
-    } else {
-      sourceLabel.textContent = 'SensorPush (auto) · no reading yet';
-    }
-  } else if (activeSource === 'local_gpio') {
-    sourceLabel.textContent = 'Wired probe (auto-failover)';
+  const batteryEl = document.getElementById('statExternalBattery');
+  if (data.ble_status && data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
+    batteryEl.textContent = `${Math.round(data.ble_status.battery_pct)}% · ${fmtDuration(data.ble_status.battery_age_seconds)}`;
   } else {
-    sourceLabel.textContent = '--';
+    batteryEl.textContent = '';
   }
+}
 
-  const fallbackSourceLabel = document.getElementById('statFallbackSource');
-  if (activeSource === 'sensorpush') {
-    fallbackSourceLabel.textContent = 'Wired probe (on standby)';
-  } else if (activeSource === 'local_gpio') {
-    fallbackSourceLabel.textContent = 'SensorPush (on standby)';
-  } else {
-    fallbackSourceLabel.textContent = '--';
-  }
+function outputBadge(badgeId, iconId, labelId, on, name, spins) {
+  const badge = document.getElementById(badgeId);
+  const icon = document.getElementById(iconId);
+  const label = document.getElementById(labelId);
+  badge.className = 'output-badge ' + (on ? 'on' : 'off');
+  label.textContent = `${name} ${on ? 'ON' : 'OFF'}`;
+  icon.classList.toggle('spin', on && spins);
 }
 
 function setRange(hours) {
@@ -301,7 +295,7 @@ async function refreshHistory() {
     ...bandDatasets('External °F', points.map(p => p.external_temp), points.map(p => p.external_temp_min), points.map(p => p.external_temp_max), '#d9a441')
   ];
   if (hasFallback) {
-    tempDatasets.push(...bandDatasets('Fallback °F', points.map(p => p.fallback_external_temp), points.map(p => p.fallback_external_temp_min), points.map(p => p.fallback_external_temp_max), '#93a0ab'));
+    tempDatasets.push(...bandDatasets('Fallback °F', points.map(p => p.fallback_external_temp), points.map(p => p.fallback_external_temp_min), points.map(p => p.fallback_external_temp_max), '#4ade80'));
   }
   updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined }, timeOptions);
 
@@ -310,7 +304,7 @@ async function refreshHistory() {
     ...bandDatasets('External %RH', points.map(p => p.external_humidity), points.map(p => p.external_humidity_min), points.map(p => p.external_humidity_max), '#d9a441')
   ];
   if (hasFallback) {
-    humidityDatasets.push(...bandDatasets('Fallback %RH', points.map(p => p.fallback_external_humidity), points.map(p => p.fallback_external_humidity_min), points.map(p => p.fallback_external_humidity_max), '#93a0ab'));
+    humidityDatasets.push(...bandDatasets('Fallback %RH', points.map(p => p.fallback_external_humidity), points.map(p => p.fallback_external_humidity_min), points.map(p => p.fallback_external_humidity_max), '#4ade80'));
   }
   updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);
 }
