@@ -370,6 +370,21 @@ def _migrate_readings_columns(conn):
         conn.execute("ALTER TABLE readings ADD COLUMN fallback_external_humidity REAL")
     if "active_external_source" not in existing:
         conn.execute("ALTER TABLE readings ADD COLUMN active_external_source TEXT")
+    # ble_temp/wired_temp replace fallback_external_temp/humidity above -
+    # each physical sensor's reading now lives under its own fixed name
+    # regardless of which one is currently active, instead of whichever
+    # one ISN'T active being stored as a generic, role-based "fallback"
+    # value. The old fallback_external_* columns are kept (unused going
+    # forward) purely so historical rows already written under the old
+    # scheme don't lose data.
+    if "ble_temp" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN ble_temp REAL")
+    if "ble_humidity" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN ble_humidity REAL")
+    if "wired_temp" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN wired_temp REAL")
+    if "wired_humidity" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN wired_humidity REAL")
 
 
 def _migrate_ble_readings_columns(conn):
@@ -443,16 +458,26 @@ def get_all_ble_readings():
 
 
 def log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
-                 fan, heater, dehumidifier, vent, fallback_external_temp=None, fallback_external_humidity=None,
+                 fan, heater, dehumidifier, vent,
+                 ble_temp=None, ble_humidity=None, wired_temp=None, wired_humidity=None,
                  active_external_source=None):
+    """external_temp/humidity is whichever physical sensor is currently
+    ACTIVE (drives control decisions) - it's the value the delta-glitch
+    filter and failsafe machinery track continuously across cycles,
+    regardless of which physical sensor is behind it at any moment.
+    ble_temp/wired_temp are each physical sensor's OWN reading under its
+    own fixed name, always, regardless of which one is active - so a
+    dashboard tile for "the BLE sensor" always shows the BLE sensor,
+    never silently relabeled to show the wired probe's data just
+    because the wired probe happens to be the one currently active."""
     conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity, "
-        "active_external_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "fan, heater, dehumidifier, vent, ble_temp, ble_humidity, wired_temp, wired_humidity, "
+        "active_external_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
-         int(fan), int(heater), int(dehumidifier), int(vent), fallback_external_temp, fallback_external_humidity,
+         int(fan), int(heater), int(dehumidifier), int(vent), ble_temp, ble_humidity, wired_temp, wired_humidity,
          active_external_source)
     )
     conn.commit()
@@ -489,29 +514,29 @@ def get_last_valid_timestamps():
     row = conn.execute(
         """
         SELECT MAX(CASE WHEN internal_temp IS NOT NULL THEN ts END),
-               MAX(CASE WHEN external_temp IS NOT NULL THEN ts END),
-               MAX(CASE WHEN fallback_external_temp IS NOT NULL THEN ts END)
+               MAX(CASE WHEN ble_temp IS NOT NULL THEN ts END),
+               MAX(CASE WHEN wired_temp IS NOT NULL THEN ts END)
         FROM readings
         WHERE ts >= ?
         """,
         (since,)
     ).fetchone()
     conn.close()
-    return {"internal": row[0], "external": row[1], "fallback": row[2]}
+    return {"internal": row[0], "ble": row[1], "wired": row[2]}
 
 
 def get_latest_reading():
     conn = get_db()
     row = conn.execute(
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "fan, heater, dehumidifier, vent, fallback_external_temp, fallback_external_humidity, "
+        "fan, heater, dehumidifier, vent, ble_temp, ble_humidity, wired_temp, wired_humidity, "
         "active_external_source FROM readings ORDER BY ts DESC LIMIT 1"
     ).fetchone()
     conn.close()
     if not row:
         return None
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-            "fan", "heater", "dehumidifier", "vent", "fallback_external_temp", "fallback_external_humidity",
+            "fan", "heater", "dehumidifier", "vent", "ble_temp", "ble_humidity", "wired_temp", "wired_humidity",
             "active_external_source"]
     return dict(zip(keys, row))
 
@@ -566,10 +591,10 @@ def get_history(hours):
         SELECT CAST((ts + ?) / ? AS INTEGER) * ? - ? AS bucket,
                AVG(internal_temp), MIN(internal_temp), MAX(internal_temp),
                AVG(internal_humidity), MIN(internal_humidity), MAX(internal_humidity),
-               AVG(external_temp), MIN(external_temp), MAX(external_temp),
-               AVG(external_humidity), MIN(external_humidity), MAX(external_humidity),
-               AVG(fallback_external_temp), MIN(fallback_external_temp), MAX(fallback_external_temp),
-               AVG(fallback_external_humidity), MIN(fallback_external_humidity), MAX(fallback_external_humidity)
+               AVG(ble_temp), MIN(ble_temp), MAX(ble_temp),
+               AVG(ble_humidity), MIN(ble_humidity), MAX(ble_humidity),
+               AVG(wired_temp), MIN(wired_temp), MAX(wired_temp),
+               AVG(wired_humidity), MIN(wired_humidity), MAX(wired_humidity)
         FROM readings
         WHERE ts >= ?
         GROUP BY bucket
@@ -583,10 +608,10 @@ def get_history(hours):
             "ts": r[0],
             "internal_temp": r[1], "internal_temp_min": r[2], "internal_temp_max": r[3],
             "internal_humidity": r[4], "internal_humidity_min": r[5], "internal_humidity_max": r[6],
-            "external_temp": r[7], "external_temp_min": r[8], "external_temp_max": r[9],
-            "external_humidity": r[10], "external_humidity_min": r[11], "external_humidity_max": r[12],
-            "fallback_external_temp": r[13], "fallback_external_temp_min": r[14], "fallback_external_temp_max": r[15],
-            "fallback_external_humidity": r[16], "fallback_external_humidity_min": r[17], "fallback_external_humidity_max": r[18],
+            "ble_temp": r[7], "ble_temp_min": r[8], "ble_temp_max": r[9],
+            "ble_humidity": r[10], "ble_humidity_min": r[11], "ble_humidity_max": r[12],
+            "wired_temp": r[13], "wired_temp_min": r[14], "wired_temp_max": r[15],
+            "wired_humidity": r[16], "wired_humidity_min": r[17], "wired_humidity_max": r[18],
         }
         for r in rows
     ]
@@ -697,11 +722,18 @@ def get_readings_table(limit=50, before_ts=None):
     get_recent_events(). Unlike get_history() (which averages into
     buckets for charting), this returns exactly what's in the database
     row by row - useful for the kind of close diagnosis a chart can
-    smooth over, like spotting a specific cycle's raw value."""
+    smooth over, like spotting a specific cycle's raw value.
+
+    Includes both external_temp/humidity (whichever physical sensor was
+    ACTIVE that cycle - what actually drove the heat/cool decision) and
+    ble_temp/wired_temp (each physical sensor's own reading, always,
+    regardless of which was active) - useful together for diagnosing
+    exactly what each sensor was reporting independent of which one was
+    driving control at the time."""
     conn = get_db()
     query = (
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "fallback_external_temp, fallback_external_humidity, active_external_source, "
+        "ble_temp, ble_humidity, wired_temp, wired_humidity, active_external_source, "
         "fan, heater, dehumidifier, vent FROM readings WHERE 1=1"
     )
     params = []
@@ -713,7 +745,7 @@ def get_readings_table(limit=50, before_ts=None):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-            "fallback_external_temp", "fallback_external_humidity", "active_external_source",
+            "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
             "fan", "heater", "dehumidifier", "vent"]
     return [dict(zip(keys, r)) for r in rows]
 

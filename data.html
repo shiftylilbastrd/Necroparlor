@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Data - Dermestid Enclosure{% endblock %}
+{% block head_extra %}
+<style>
+  .table-wrap { overflow-x: auto; border: 1px solid var(--panel-border); border-radius: 10px; }
+  table.data-table { border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
+  table.data-table th, table.data-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--panel-border); }
+  table.data-table th:first-child, table.data-table td:first-child,
+  table.data-table th:nth-child(2), table.data-table td:nth-child(2) { text-align: left; }
+  table.data-table th { color: var(--text-dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  table.data-table td.null-cell { color: var(--text-dim); }
+  table.data-table tr:last-child td { border-bottom: none; }
+  /* Time and Mode keep normal horizontal headers - their data is wide
+     regardless of header orientation, so rotating those specifically
+     wouldn't narrow the column at all. Every other header rotates
+     vertical, since those columns' data (a short number, a single
+     flag) is much narrower than the label describing it - the column
+     width should follow the short data, not the long label. */
+  th.rot { height: 92px; padding: 0; position: relative; vertical-align: bottom; text-align: left; }
+  th.rot span.rot-label {
+    position: absolute; bottom: 6px; left: 50%;
+    transform: translateX(-50%) rotate(180deg);
+    writing-mode: vertical-rl; white-space: nowrap;
+  }
+  .out-flag { display: inline-block; font-size: 0.95rem; }
+  .out-flag.on { color: var(--accent); }
+  .out-flag.off { color: var(--text-dim); opacity: 0.4; }
+  .fan-state { display: inline-block; font-size: 0.95rem; }
+  .fan-state.off { color: var(--text-dim); opacity: 0.4; }
+  .fan-state.cooling { color: #4f8fd9; }
+  .fan-state.venting { color: var(--accent); }
+  .table-legend { margin-top: 8px; font-size: 0.8rem; color: var(--text-dim); }
+  .table-legend .fan-state { margin-right: 3px; }
+</style>
+{% endblock %}
+{% block content %}
+
+<h1>Data</h1>
+<div class="subtitle">Raw readings, one row per control cycle - every column exactly as stored, newest first</div>
+
+<div class="filter-row">
+  <button onclick="resetAndLoad()">Refresh</button>
+</div>
+
+<div class="table-wrap">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Mode</th>
+        <th class="rot"><span class="rot-label">Internal °F</span></th>
+        <th class="rot"><span class="rot-label">Internal %RH</span></th>
+        <th class="rot"><span class="rot-label">BLE °F</span></th>
+        <th class="rot"><span class="rot-label">BLE %RH</span></th>
+        <th class="rot"><span class="rot-label">Wired °F</span></th>
+        <th class="rot"><span class="rot-label">Wired %RH</span></th>
+        <th class="rot"><span class="rot-label">Active source</span></th>
+        <th class="rot"><span class="rot-label">Fan</span></th>
+        <th class="rot"><span class="rot-label">Heat</span></th>
+        <th class="rot"><span class="rot-label">Dehum</span></th>
+      </tr>
+    </thead>
+    <tbody id="dataRows"></tbody>
+  </table>
+</div>
+<div class="table-legend">
+  <span class="fan-state cooling">●</span> Fan: thermal cooling &nbsp;&nbsp;
+  <span class="fan-state venting">●</span> Fan: scheduled ventilation (cleaning mode) &nbsp;&nbsp;
+  <span class="fan-state off">●</span> Fan: off
+</div>
+<div style="text-align:center; margin-top:14px;">
+  <button id="loadMoreBtn" onclick="loadMore()">Load more</button>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const PAGE_SIZE = 50;
+let oldestLoadedTs = null;
+
+function fmtDateTime(ts) {
+  return new Date(ts * 1000).toLocaleString([], {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+function num(v, digits) {
+  return (v === null || v === undefined) ? '<span class="null-cell">--</span>' : v.toFixed(digits);
+}
+function flag(on) {
+  return `<span class="out-flag ${on ? 'on' : 'off'}">${on ? '●' : '○'}</span>`;
+}
+function fanState(fanOn, ventOn) {
+  // vent_active always drives the fan too (see climate.py), so a vent
+  // cycle takes priority in this display even if thermal cooling also
+  // happened to want the fan at the same moment - vent is the more
+  // specific, intentional reason in that overlap.
+  if (ventOn) return `<span class="fan-state venting" title="Scheduled ventilation">●</span>`;
+  if (fanOn) return `<span class="fan-state cooling" title="Thermal cooling">●</span>`;
+  return `<span class="fan-state off" title="Off">○</span>`;
+}
+function srcAbbrev(src) {
+  if (src === 'ble' || src === 'sensorpush') return 'BLE';  // 'sensorpush' is the old stored value, for historical rows
+  if (src === 'local_gpio') return 'Wired';
+  return '<span class="null-cell">--</span>';
+}
+
+function renderRows(rows, append) {
+  const tbody = document.getElementById('dataRows');
+  const html = rows.map(r => `
+    <tr>
+      <td>${fmtDateTime(r.ts)}</td>
+      <td>${r.mode}</td>
+      <td>${num(r.internal_temp, 1)}</td>
+      <td>${num(r.internal_humidity, 1)}</td>
+      <td>${num(r.ble_temp, 1)}</td>
+      <td>${num(r.ble_humidity, 1)}</td>
+      <td>${num(r.wired_temp, 1)}</td>
+      <td>${num(r.wired_humidity, 1)}</td>
+      <td>${srcAbbrev(r.active_external_source)}</td>
+      <td>${fanState(!!r.fan, !!r.vent)}</td>
+      <td>${flag(!!r.heater)}</td>
+      <td>${flag(!!r.dehumidifier)}</td>
+    </tr>
+  `).join('');
+  if (append) {
+    tbody.insertAdjacentHTML('beforeend', html);
+  } else {
+    tbody.innerHTML = html || '<tr><td colspan="12" class="stat-sub">No data yet</td></tr>';
+  }
+  if (rows.length > 0) {
+    oldestLoadedTs = rows[rows.length - 1].ts;
+  }
+  document.getElementById('loadMoreBtn').style.display = rows.length < PAGE_SIZE ? 'none' : 'inline-block';
+}
+
+async function fetchRows(beforeTs) {
+  let url = `/api/readings-table?limit=${PAGE_SIZE}`;
+  if (beforeTs) url += `&before=${beforeTs}`;
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function resetAndLoad() {
+  oldestLoadedTs = null;
+  const rows = await fetchRows(null);
+  renderRows(rows, false);
+}
+
+async function loadMore() {
+  const rows = await fetchRows(oldestLoadedTs);
+  renderRows(rows, true);
+}
+
+resetAndLoad();
+</script>
+{% endblock %}

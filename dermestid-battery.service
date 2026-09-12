@@ -1,0 +1,9 @@
+[Unit]
+Description=Dermestid enclosure BLE sensor battery check (currently SensorPush-HT1-specific - see ble_battery.py)
+After=bluetooth.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/dermestid
+ExecStart=/usr/bin/python3 /home/pi/dermestid/ble_battery.py

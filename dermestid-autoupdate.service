@@ -1,0 +1,10 @@
+[Unit]
+Description=Dermestid auto-update from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/dermestid
+ExecStart=/bin/bash /home/pi/dermestid/auto_update.sh

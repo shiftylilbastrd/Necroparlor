@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+{% block title %}Home - Dermestid Enclosure{% endblock %}
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  .header-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }
+  .header-row h1 { margin: 0; }
+  .status-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+  .door-badge, .output-badge {
+    display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px;
+    font-weight: 700; font-size: 0.9rem; border: 1px solid var(--panel-border); flex-shrink: 0;
+  }
+  .door-badge.open { background: rgba(217,83,79,0.15); color: var(--danger); border-color: rgba(217,83,79,0.45); }
+  .door-badge.closed { background: rgba(79,178,134,0.12); color: var(--accent); border-color: rgba(79,178,134,0.35); }
+  .output-badge.on { background: rgba(79,178,134,0.15); color: var(--accent); border-color: rgba(79,178,134,0.45); }
+  .output-badge.off { background: rgba(147,160,171,0.08); color: var(--text-dim); border-color: var(--panel-border); }
+  .badge-icon { display: inline-block; transition: opacity 0.25s, filter 0.25s; }
+  .output-badge.off .badge-icon { opacity: 0.45; filter: grayscale(1); }
+  .badge-icon.spin { animation: spin 1.1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .mode-dropdown { position: relative; width: 170px; flex-shrink: 0; }
+  #modeTrigger {
+    width: 100%; text-align: left; background: #10151a; border: 1px solid var(--panel-border);
+    border-radius: 6px; color: var(--text); padding: 8px 10px; font-size: 0.9rem; font-weight: 600;
+    cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+  }
+  #modeTrigger .caret { color: var(--text-dim); font-size: 0.75rem; margin-left: 6px; }
+  .mode-options {
+    position: absolute; top: calc(100% + 6px); right: 0; left: auto; width: 220px; z-index: 20;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.45); overflow: hidden;
+  }
+  .mode-option { padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--panel-border); }
+  .mode-option:last-child { border-bottom: none; }
+  .mode-option:hover { background: rgba(79,178,134,0.12); }
+  .mode-option.active { background: rgba(79,178,134,0.16); }
+  .mode-option small { display: block; color: var(--text-dim); margin-top: 2px; }
+  .chart-label { font-size: 0.8rem; color: var(--text-dim); margin: 14px 0 6px 0; font-weight: 600; }
+  .tile-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .tile-side { text-align: right; flex-shrink: 0; }
+  .active-tag { font-size: 0.7rem; font-weight: 600; color: var(--accent); vertical-align: middle; }
+</style>
+{% endblock %}
+{% block content %}
+
+<div class="header-row">
+  <h1>🪲 Dermestid Enclosure</h1>
+  <div class="status-badges">
+    <div class="door-badge closed" id="doorBadge">🚪 <span id="doorBadgeLabel">--</span></div>
+    <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon">🌀</span> Fan</div>
+    <div class="output-badge off" id="heaterBadge" title="Heater"><span class="badge-icon" id="heaterIcon">🔥</span> Heater</div>
+    <div class="output-badge off" id="dehumBadge" title="Dehumidifier"><span class="badge-icon" id="dehumIcon">💧</span> Dehum</div>
+  </div>
+  <div class="mode-dropdown" id="modeDropdownWrapper">
+    <button id="modeTrigger" type="button" onclick="toggleModeDropdown()">
+      <span id="modeTriggerLabel">--</span><span class="caret">▾</span>
+    </button>
+    <div class="mode-options" id="modeOptions" hidden>
+      <div class="mode-option" data-mode="dormant" onclick="selectMode('dormant')">
+        <strong>Dormant</strong><small>Low activity, minimal feeding</small>
+      </div>
+      <div class="mode-option" data-mode="ready" onclick="selectMode('ready')">
+        <strong>Ready</strong><small>Optimal for breeding & cleaning</small>
+      </div>
+      <div class="mode-option" data-mode="cleaning" onclick="selectMode('cleaning')">
+        <strong>Cleaning</strong><small>Ready + scheduled ventilation</small>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="subtitle" id="lastUpdateLine">Last update: --</div>
+<div class="save-msg" id="modeMsg" style="margin-bottom:10px;"></div>
+
+<div class="banner" id="staleBanner">⚠ No sensor update in over 90 seconds - check the climate service on the Pi.</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Internal</h2>
+    <div class="stat-value" id="statInternalTemp">--°F</div>
+    <div class="stat-sub" id="statInternalHumidity">-- %RH</div>
+    <div class="stat-sub" id="statInternalUpdated" style="margin-top:6px;">Updated: --</div>
+  </div>
+  <div class="card">
+    <h2>BLE sensor <span class="active-tag" id="bleActiveTag" style="display:none;">(active)</span></h2>
+    <div class="tile-row">
+      <div>
+        <div class="stat-value" id="statBleTemp">--°F</div>
+        <div class="stat-sub" id="statBleHumidity">-- %RH</div>
+        <div class="stat-sub" id="statBleUpdated" style="margin-top:6px;">Updated: --</div>
+      </div>
+      <div class="tile-side" id="statBleBatteryWrap" style="display:none;">
+        <div class="stat-sub" style="font-weight:600;">Battery</div>
+        <div class="stat-sub" id="statBleBatteryPct">--</div>
+        <div class="stat-sub" id="statBleBatteryAge">--</div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Wired probe <span class="active-tag" id="wiredActiveTag" style="display:none;">(active)</span></h2>
+    <div class="stat-value" id="statWiredTemp">--°F</div>
+    <div class="stat-sub" id="statWiredHumidity">-- %RH</div>
+    <div class="stat-sub" id="statWiredUpdated" style="margin-top:6px;">Updated: --</div>
+  </div>
+</div>
+
+<div class="section-title">History</div>
+<div class="range-row" id="rangeRow">
+  <button data-hours="6" onclick="setRange(6)">6h</button>
+  <button data-hours="24" class="active" onclick="setRange(24)">24h</button>
+  <button data-hours="168" onclick="setRange(168)">7d</button>
+  <button data-hours="720" onclick="setRange(720)">30d</button>
+</div>
+<div class="chart-label">Temperature</div>
+<div class="card"><div class="chart-container"><canvas id="tempChart"></canvas></div></div>
+<div class="chart-label">Humidity</div>
+<div class="card"><div class="chart-container"><canvas id="humidityChart"></canvas></div></div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+let currentRangeHours = 24;
+let modeDropdownOpen = false;
+const MODE_NAMES = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+
+function fmtTime(ts) {
+  return new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+function fmtAgo(ts) {
+  if (ts === null || ts === undefined) return 'never';
+  return fmtDuration(Date.now() / 1000 - ts);
+}
+function fmtDuration(secs) {
+  secs = Math.round(secs);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  return `${Math.round(secs / 3600)}h ago`;
+}
+
+function updateModeUI(mode) {
+  document.getElementById('modeTriggerLabel').textContent = MODE_NAMES[mode] || mode;
+  document.querySelectorAll('.mode-option').forEach(el => {
+    el.classList.toggle('active', el.dataset.mode === mode);
+  });
+}
+
+function toggleModeDropdown() {
+  modeDropdownOpen = !modeDropdownOpen;
+  document.getElementById('modeOptions').hidden = !modeDropdownOpen;
+}
+
+document.addEventListener('click', (e) => {
+  if (!modeDropdownOpen) return;
+  const wrapper = document.getElementById('modeDropdownWrapper');
+  if (!wrapper.contains(e.target)) {
+    modeDropdownOpen = false;
+    document.getElementById('modeOptions').hidden = true;
+  }
+});
+
+async function selectMode(mode) {
+  modeDropdownOpen = false;
+  document.getElementById('modeOptions').hidden = true;
+  updateModeUI(mode); // optimistic - reconciled by the next refreshStatus regardless
+  const res = await fetch('/api/mode', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({mode})
+  });
+  const msg = document.getElementById('modeMsg');
+  if (!res.ok) {
+    const data = await res.json();
+    msg.textContent = data.error || 'Failed to change mode';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Mode changed';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2000);
+  }
+  refreshStatus();
+}
+
+async function refreshStatus() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  document.getElementById('staleBanner').style.display = data.stale ? 'block' : 'none';
+  const lastValid = data.last_valid_timestamps || {};
+
+  if (data.latest) {
+    document.getElementById('statInternalTemp').textContent = data.latest.internal_temp.toFixed(1) + '°F';
+    document.getElementById('statInternalHumidity').textContent = data.latest.internal_humidity.toFixed(1) + ' %RH';
+    document.getElementById('statInternalUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.internal);
+
+    document.getElementById('statBleTemp').textContent =
+      (data.latest.ble_temp !== null && data.latest.ble_temp !== undefined)
+        ? data.latest.ble_temp.toFixed(1) + '°F' : '--°F';
+    document.getElementById('statBleHumidity').textContent =
+      (data.latest.ble_humidity !== null && data.latest.ble_humidity !== undefined)
+        ? data.latest.ble_humidity.toFixed(1) + ' %RH' : '-- %RH';
+    document.getElementById('statBleUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.ble);
+
+    document.getElementById('statWiredTemp').textContent =
+      (data.latest.wired_temp !== null && data.latest.wired_temp !== undefined)
+        ? data.latest.wired_temp.toFixed(1) + '°F' : '--°F';
+    document.getElementById('statWiredHumidity').textContent =
+      (data.latest.wired_humidity !== null && data.latest.wired_humidity !== undefined)
+        ? data.latest.wired_humidity.toFixed(1) + ' %RH' : '-- %RH';
+    document.getElementById('statWiredUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.wired);
+
+    const activeSource = data.latest.active_external_source;
+    document.getElementById('bleActiveTag').style.display = (activeSource === 'ble') ? 'inline' : 'none';
+    document.getElementById('wiredActiveTag').style.display = (activeSource === 'local_gpio') ? 'inline' : 'none';
+
+    document.getElementById('lastUpdateLine').textContent = 'Last update: ' + fmtTime(data.latest.ts);
+    outputBadge('fanBadge', 'fanIcon', !!data.latest.fan, true);
+    outputBadge('heaterBadge', 'heaterIcon', !!data.latest.heater, false);
+    outputBadge('dehumBadge', 'dehumIcon', !!data.latest.dehumidifier, false);
+  }
+
+  updateModeUI(data.config.current_mode);
+
+  const doorBadge = document.getElementById('doorBadge');
+  const doorLabel = document.getElementById('doorBadgeLabel');
+  if (data.door_status) {
+    const isOpen = data.door_status.is_open;
+    doorBadge.className = 'door-badge ' + (isOpen ? 'open' : 'closed');
+    doorLabel.textContent = isOpen ? 'Open' : 'Closed';
+  } else {
+    doorBadge.className = 'door-badge closed';
+    doorLabel.textContent = 'unknown';
+  }
+
+  const batteryWrap = document.getElementById('statBleBatteryWrap');
+  if (data.ble_status && data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
+    batteryWrap.style.display = 'block';
+    document.getElementById('statBleBatteryPct').textContent = `${Math.round(data.ble_status.battery_pct)}%`;
+    document.getElementById('statBleBatteryAge').textContent = fmtDuration(data.ble_status.battery_age_seconds);
+  } else {
+    batteryWrap.style.display = 'none';
+  }
+}
+
+function outputBadge(badgeId, iconId, on, spins) {
+  const badge = document.getElementById(badgeId);
+  const icon = document.getElementById(iconId);
+  badge.className = 'output-badge ' + (on ? 'on' : 'off');
+  icon.classList.toggle('spin', on && spins);
+}
+
+function setRange(hours) {
+  currentRangeHours = hours;
+  document.querySelectorAll('#rangeRow button').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.hours, 10) === hours);
+  });
+  refreshHistory();
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// Expands one metric into the 3 Chart.js datasets that draw a mean line
+// with a shaded min/max band behind it (same idea as Home Assistant's
+// Statistics Graph card). Order matters: max first, then min with
+// fill:'-1' (fills back to the previous dataset - the max line), then
+// the visible mean line drawn last so it sits on top of its own band.
+function bandDatasets(label, mean, min, max, colorHex) {
+  return [
+    { label: label + ' max', data: max, borderColor: 'transparent', backgroundColor: 'transparent', pointRadius: 0, fill: false, isBand: true, tension: 0.25 },
+    { label: label + ' min', data: min, borderColor: 'transparent', backgroundColor: hexToRgba(colorHex, 0.18), pointRadius: 0, fill: '-1', isBand: true, tension: 0.25 },
+    { label: label, data: mean, borderColor: colorHex, backgroundColor: 'transparent', pointRadius: 0, borderWidth: 2, fill: false, tension: 0.25 }
+  ];
+}
+
+function timeScaleOptions(hours) {
+  // `unit` here only controls label TEXT formatting, not tick position -
+  // position is forced separately via ticks.source:'data' below. Verified
+  // with a real headless Chart.js render that stepSize alone is NOT
+  // reliable for this: Chart.js silently overrides it with its own
+  // "nicer" spacing (confirmed producing 5-hour ticks when 6 was
+  // requested) - ticks.source:'data' is what actually guarantees ticks
+  // only ever land on real data points, and autoSkip still thins them
+  // for readability without breaking that alignment.
+  if (hours <= 6) return { unit: 'minute', tooltipFormat: 'MMM d h:mm a', displayFormats: { minute: 'h:mm a' } };
+  if (hours <= 24) return { unit: 'hour', tooltipFormat: 'MMM d h:mm a', displayFormats: { hour: 'h a' } };
+  if (hours <= 168) return { unit: 'hour', tooltipFormat: 'MMM d h:mm a', displayFormats: { hour: 'MMM d, h a' } };
+  return { unit: 'day', tooltipFormat: 'MMM d', displayFormats: { day: 'MMM d' } };
+}
+
+async function refreshHistory() {
+  const res = await fetch(`/api/history?hours=${currentRangeHours}`);
+  const points = await res.json();
+  const labels = points.map(p => new Date(p.ts * 1000));
+  const timeOptions = timeScaleOptions(currentRangeHours);
+
+  // BLE is only shown if there's actually any BLE data in this range -
+  // otherwise it'd be a permanently-empty legend entry whenever no BLE
+  // sensor has ever been configured. Wired is always shown - it's a
+  // permanent part of the setup, not conditional the way BLE is.
+  const hasBle = points.some(p => p.ble_temp !== null && p.ble_temp !== undefined);
+
+  const tempDatasets = [
+    ...bandDatasets('Internal °F', points.map(p => p.internal_temp), points.map(p => p.internal_temp_min), points.map(p => p.internal_temp_max), '#4f8fd9'),
+    ...bandDatasets('Wired °F', points.map(p => p.wired_temp), points.map(p => p.wired_temp_min), points.map(p => p.wired_temp_max), '#4ade80')
+  ];
+  if (hasBle) {
+    tempDatasets.push(...bandDatasets('BLE °F', points.map(p => p.ble_temp), points.map(p => p.ble_temp_min), points.map(p => p.ble_temp_max), '#d9a441'));
+  }
+  updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined }, timeOptions);
+
+  const humidityDatasets = [
+    ...bandDatasets('Internal %RH', points.map(p => p.internal_humidity), points.map(p => p.internal_humidity_min), points.map(p => p.internal_humidity_max), '#4f8fd9'),
+    ...bandDatasets('Wired %RH', points.map(p => p.wired_humidity), points.map(p => p.wired_humidity_min), points.map(p => p.wired_humidity_max), '#4ade80')
+  ];
+  if (hasBle) {
+    humidityDatasets.push(...bandDatasets('BLE %RH', points.map(p => p.ble_humidity), points.map(p => p.ble_humidity_min), points.map(p => p.ble_humidity_max), '#d9a441'));
+  }
+  updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);
+}
+
+const chartInstances = {};
+
+function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOptions) {
+  const existing = chartInstances[instanceKey];
+  if (existing && existing.data.datasets.length === datasets.length) {
+    existing.data.labels = labels;
+    datasets.forEach((d, i) => { existing.data.datasets[i].data = d.data; });
+    existing.options.scales.x.time = timeOptions;
+    existing.update();
+    return;
+  }
+  if (existing) {
+    // Dataset count changed since this chart was created (e.g. the
+    // fallback series just appeared or disappeared) - the fast in-place
+    // update above only works when the count matches, since it maps
+    // data onto existing dataset objects by index. Rebuilding from
+    // scratch here is simpler and safer than trying to patch Chart.js's
+    // internal dataset list to add/remove one .
+    existing.destroy();
+    delete chartInstances[instanceKey];
+  }
+
+  if (typeof Chart === 'undefined') {
+    document.getElementById(canvasId).closest('.chart-container').innerHTML =
+      '<div class="stat-sub" style="padding:20px;">Chart library failed to load - check your internet connection (this page loads Chart.js from a CDN) or open the browser console for details.</div>';
+    return;
+  }
+
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  chartInstances[instanceKey] = new Chart(ctx, {
+    type: 'line',
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { type: 'time', time: timeOptions, ticks: { source: 'data', color: '#93a0ab' }, grid: { color: '#2a323a' } },
+        y: { min: yRange.min, max: yRange.max, grace: 0, ticks: { color: '#93a0ab' }, grid: { color: '#2a323a' } }
+      },
+      plugins: {
+        legend: { labels: { color: '#e7ecef', filter: (item, data) => !data.datasets[item.datasetIndex].isBand } },
+        tooltip: { filter: (item) => !item.dataset.isBand }
+      }
+    }
+  });
+}
+
+refreshStatus();
+refreshHistory();
+setInterval(refreshStatus, 5000);
+setInterval(refreshHistory, 60000);
+</script>
+{% endblock %}
