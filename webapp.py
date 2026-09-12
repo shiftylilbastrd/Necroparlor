@@ -49,8 +49,8 @@ def api_status():
     stale = bool(latest) and (time.time() - latest["ts"]) > 90
 
     ble_status = None
-    if config.get("sensorpush_mac"):
-        ble = state.get_ble_reading(config["sensorpush_mac"])
+    if config.get("ble_mac"):
+        ble = state.get_ble_reading(config["ble_mac"])
         if ble:
             ble_status = {
                 "temp_f": ble["temp_f"],
@@ -76,34 +76,49 @@ def api_status():
 
 @app.route("/api/ble-sensors")
 def api_ble_sensors():
-    """All SensorPush addresses currently being heard, for picking which
-    one to wire in as the external sensor."""
+    """All BLE addresses currently being heard, for picking which one
+    to wire in as the external sensor."""
     return jsonify(state.get_all_ble_readings())
 
 
-@app.route("/api/sensorpush-mac", methods=["POST"])
-def api_set_sensorpush_mac():
-    """Sets which physical SensorPush unit to listen for. Not a source
-    toggle - external sensor failover is automatic (see climate.py) -
-    this just identifies which BLE address is the right one, useful if
-    more than one SensorPush unit is nearby."""
+@app.route("/api/ble-sensor-types")
+def api_ble_sensor_types():
+    """The supported BLE sensor brand registry, for populating the
+    Config page's brand dropdown."""
+    return jsonify({key: info["label"] for key, info in state.BLE_SENSOR_LIBRARIES.items()})
+
+
+@app.route("/api/ble-mac", methods=["POST"])
+def api_set_ble_mac():
+    """Sets which physical BLE unit to listen for, and which brand's
+    decoder to use. Not a source toggle - external sensor failover is
+    automatic (see climate.py) - this just identifies which BLE address
+    is the right one (useful if more than one matching unit is nearby)
+    and which library decodes its advertisements. Changing the brand
+    requires restarting ble_listener.py to take effect (it's read once
+    at startup, not re-checked every cycle)."""
     body = request.get_json(force=True, silent=True) or {}
-    mac, error = state.validate_sensorpush_mac(body.get("sensorpush_mac"))
+    mac, error = state.validate_ble_mac(body.get("ble_mac"))
+    if error:
+        return jsonify({"error": error}), 400
+    sensor_type, error = state.validate_ble_sensor_type(body.get("ble_sensor_type", "sensorpush"))
     if error:
         return jsonify({"error": error}), 400
     config = state.load_config()
-    config["sensorpush_mac"] = mac
+    config["ble_mac"] = mac
+    config["ble_sensor_type"] = sensor_type
     state.save_config(config)
-    state.log_event("info", f"SensorPush address {'set to ' + mac if mac else 'cleared'}")
+    state.log_event("info", f"BLE sensor address {'set to ' + mac if mac else 'cleared'} "
+                             f"(brand: {state.BLE_SENSOR_LIBRARIES[sensor_type]['label']})")
     return jsonify(config)
 
 
 @app.route("/api/calibration", methods=["POST"])
 def api_set_calibration():
     """Saves per-sensor calibration offsets. Tied to physical sensor
-    identity (internal/sensorpush/wired), not the dynamic active/
+    identity (internal/ble/wired), not the dynamic active/
     fallback role, since which physical sensor plays which role can
-    swap automatically during a SensorPush outage."""
+    swap automatically during a BLE sensor outage."""
     body = request.get_json(force=True, silent=True) or {}
     cleaned, error = state.validate_calibration(body)
     if error:
@@ -187,8 +202,47 @@ def api_update_status():
     config = state.load_config()
     return jsonify({
         "status": status,
-        "check_interval_minutes": config.get("update_check_interval_minutes", 15)
+        "check_interval_minutes": config.get("update_check_interval_minutes", 15),
+        "update_branch": config.get("update_branch", "main"),
     })
+
+
+@app.route("/api/update-branches")
+def api_update_branches():
+    """Lists branches available on the remote, for the Config page's
+    dropdown. A lightweight `git ls-remote` (just queries refs, doesn't
+    fetch any objects), so this is safe to call on every page load
+    without meaningfully touching the repo or the network."""
+    try:
+        result = subprocess.run(["git", "ls-remote", "--heads", "origin"],
+                                 cwd=state.BASE_DIR, check=True, timeout=15, capture_output=True, text=True)
+    except Exception:
+        logging.exception("Could not list remote branches")
+        return jsonify({"error": "could not reach the remote to list branches"}), 502
+    branches = []
+    for line in result.stdout.splitlines():
+        # Each line looks like: <sha>\trefs/heads/<branch-name>
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+            branches.append(parts[1][len("refs/heads/"):])
+    return jsonify(sorted(branches))
+
+
+@app.route("/api/update-branch", methods=["POST"])
+def api_set_update_branch():
+    """Sets which branch auto_update.sh and the background checker
+    track. Doesn't switch anything itself - that happens the next time
+    an update is actually applied (button or timer), same as any other
+    pending update."""
+    body = request.get_json(force=True, silent=True) or {}
+    branch, error = state.validate_update_branch(body.get("branch"))
+    if error:
+        return jsonify({"error": error}), 400
+    config = state.load_config()
+    config["update_branch"] = branch
+    state.save_config(config)
+    state.log_event("info", f"Update branch changed to '{branch}'")
+    return jsonify(config)
 
 
 @app.route("/api/update-check-interval", methods=["POST"])
@@ -236,12 +290,40 @@ def api_apply_update():
     return jsonify({"status": "started"})
 
 
+@app.route("/api/check-for-update-now", methods=["POST"])
+def api_check_for_update_now():
+    """Runs the same read-only check the background thread does
+    (git fetch + compare), synchronously, right now - for when the
+    configured check interval is longer than you want to wait, without
+    needing to change that interval or restart anything. Just a fetch
+    and a comparison (no pull, no restart), so unlike apply-update this
+    is safe to run inline and return the fresh result directly, no
+    detached-process complexity needed."""
+    _git_check_for_update()
+    status = state.get_update_status()
+    config = state.load_config()
+    return jsonify({
+        "status": status,
+        "check_interval_minutes": config.get("update_check_interval_minutes", 15),
+        "update_branch": config.get("update_branch", "main"),
+    })
+
+
 def _git_check_for_update():
-    """Read-only: fetches from origin and compares local HEAD to
-    origin/main. Never pulls or restarts anything by itself - applying
-    an update is a separate, explicit action (the timer or the
-    dashboard button), both of which reuse the same tested
-    auto_update.sh rather than duplicating this logic.
+    """Read-only: fetches the CONFIGURED target branch from origin and
+    compares local HEAD to it. Never pulls, checks out, or restarts
+    anything by itself - applying an update (including a branch switch)
+    is a separate, explicit action (the timer or the dashboard button),
+    both of which reuse the same tested auto_update.sh rather than
+    duplicating this logic.
+
+    Comparing HEAD against origin/<target branch> naturally covers two
+    different situations with the same logic: if the currently checked-
+    out branch IS the target branch, a difference means new commits are
+    available; if a DIFFERENT branch is selected, HEAD and the target
+    almost certainly differ entirely, meaning a branch switch is what's
+    actually needed. current_branch/target_branch are both recorded so
+    the dashboard can tell these apart and message them differently.
 
     Uses the same lockfile as auto_update.sh, non-blocking: if a manual
     update is currently running, this just skips this one check and
@@ -258,19 +340,24 @@ def _git_check_for_update():
         except OSError:
             logging.info("Skipping this update check - auto_update.sh appears to be running")
             return
-        subprocess.run(["git", "fetch", "origin", "main", "--quiet"],
+        config = state.load_config()
+        target_branch = config.get("update_branch", "main")
+        current_branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                                         cwd=state.BASE_DIR, check=True, capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "fetch", "origin", target_branch, "--quiet"],
                         cwd=state.BASE_DIR, check=True, timeout=30, capture_output=True)
         local = subprocess.run(["git", "rev-parse", "HEAD"], cwd=state.BASE_DIR,
                                 check=True, capture_output=True, text=True).stdout.strip()
-        remote = subprocess.run(["git", "rev-parse", "origin/main"], cwd=state.BASE_DIR,
+        remote = subprocess.run(["git", "rev-parse", f"origin/{target_branch}"], cwd=state.BASE_DIR,
                                  check=True, capture_output=True, text=True).stdout.strip()
         is_available = local != remote
         remote_message = None
         if is_available:
-            msg = subprocess.run(["git", "log", "origin/main", "-1", "--pretty=%s"],
+            msg = subprocess.run(["git", "log", f"origin/{target_branch}", "-1", "--pretty=%s"],
                                   cwd=state.BASE_DIR, check=True, capture_output=True, text=True)
             remote_message = msg.stdout.strip()
-        state.save_update_status(is_available, local[:7], remote[:7], remote_message)
+        state.save_update_status(is_available, local[:7], remote[:7], remote_message,
+                                  current_branch=current_branch, target_branch=target_branch)
     except Exception:
         logging.exception("Background update check failed")
     finally:

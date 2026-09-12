@@ -1,0 +1,19 @@
+# Runtime state - regenerated automatically, not source
+dermestid.db
+dermestid.db-shm
+dermestid.db-wal
+config.json
+.git_update.lock
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor/OS cruft
+.DS_Store
+*.swp

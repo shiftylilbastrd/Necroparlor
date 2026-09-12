@@ -1,0 +1,231 @@
+# Project status (read this first in a new session)
+
+This file exists because long troubleshooting sessions eventually get
+auto-summarized, and auto-summaries flatten *why* a decision was made
+even when they keep *what* changed. Everything below is the kind of
+thing that's easy to silently reverse if you don't know it was
+deliberate. The README documents how the system works; this documents
+why it works that way and what's still in motion.
+
+**Maintenance convention**: append dated entries under "Open threads /
+known issues" as things come up or get resolved. Don't rewrite the
+"Load-bearing decisions" section casually - only touch an entry there
+if the actual underlying decision changed, and say so explicitly
+rather than just editing it silently.
+
+## Current state (as of this writing)
+
+- Active development is happening on the **`ble-genericization`**
+  branch, not yet merged to `main`. It contains the full SensorPush→
+  generic-BLE rebrand, the fixed-sensor-identity dashboard redesign,
+  branch-selection in the update system, and several smaller fixes.
+  **Check `git branch` / the Config page's branch dropdown before
+  assuming you're looking at main's state.**
+- The Pi should have `dermestid-ble.service` installed and enabled
+  (replacing the old `dermestid-sensorpush.service`, which should be
+  stopped/disabled/removed). Sudoers should authorize
+  `dermestid-ble.service`, not the old name.
+- `config.json` is deliberately **not git-tracked** (see below) - a
+  fresh clone won't have one, and that's correct, not a bug.
+
+## Load-bearing decisions
+
+### Sensor identity vs. role - the recurring theme
+Several real bugs this project has hit trace back to the same root
+cause: confusing a physical sensor's *identity* with the *role* it
+happens to be playing (active/fallback) at a given moment. The fix
+pattern has been consistent: tie things to identity, never to role.
+- Calibration offsets are keyed `internal_temp_offset`,
+  `ble_temp_offset`, `wired_temp_offset` - never `external_*` or
+  `fallback_*` - because which physical sensor is "active" changes
+  automatically, and an offset has to follow the hardware, not the
+  label. Verified directly: forced a failover, confirmed the wired
+  probe's own offset stayed correct rather than picking up the BLE
+  sensor's.
+- The `readings` table stores `ble_temp`/`ble_humidity` and
+  `wired_temp`/`wired_humidity` as separate, always-populated columns
+  - each always holds that specific sensor's own reading, whether it's
+  currently active or not. `active_external_source` is a label on top,
+  never a reason data moves to a different column. (Earlier design had
+  a single `fallback_external_temp` column holding "whichever isn't
+  active" - meant the same field could silently show a different
+  physical sensor's data depending on system state. This was a real
+  reported bug, fixed by the redesign above.)
+- **UI labels are intentionally different from the code's internal
+  names.** The dashboard and Data page show "External" (= the BLE
+  sensor) and "Fallback" (= the wired probe), matching what the Config
+  page already established - even though the underlying fields and
+  variables are named `ble_*`/`wired_*` in code. This is deliberate,
+  not inconsistency to "clean up" - it was an explicit request to match
+  existing UI terminology, made *after* the fixed-identity redesign
+  was built. Don't rename the code fields to match the UI text, and
+  don't rename the UI text back to `ble`/`wired`.
+
+### External sensor failover
+- Fully automatic, not a manual toggle: the BLE sensor is used
+  whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s), the wired
+  probe automatically otherwise. There is no `external_source` config
+  key anymore (removed along with the manual toggle it used to
+  control).
+- Only **internal** sensor loss triggers the full critical failsafe
+  (forces heat/fan/dehum off after 90s) - every control decision
+  depends on internal readings, so there's no safe degraded mode
+  there. Losing the **external** sensor (both BLE and wired down)
+  only pauses thermal cooling specifically, since that's the one
+  decision that genuinely needs to know if outside air would help.
+  Heating and dehumidifying keep running on internal data alone
+  either way.
+- Every failover transition (both directions) is logged once, not
+  spammed every cycle.
+
+### Heat vs. fan/vent interaction
+- `cooling_needed = thermal_cool_request or vent_active` drives the
+  fan either way, but the heat-blocking mutual-exclusion check only
+  looks at `thermal_cool_request` specifically, not `cooling_needed`.
+  Reasoning: genuine thermal cooling and heat really would fight each
+  other (heating air that's about to be vented out), but the
+  scheduled cleaning-mode ventilation cycle is timer-driven for air
+  quality, not temperature - blocking heat during it could cause a
+  real temperature dip unrelated to why the fan turned on. Heat is
+  allowed to run alongside a scheduled vent cycle; it's still blocked
+  during real thermal cooling.
+
+### Sensor reading validation
+- The anti-glitch filter (`validate_reading()`) rejects an
+  implausible single-cycle jump, but has a streak-recovery mechanism:
+  3 consecutive readings that are mutually consistent with each other
+  (even though they differ from the old accepted baseline) get
+  accepted as a genuine sustained change. Without this, a real gradual
+  drift gets rejected forever against an ever-more-stale frozen
+  reference - this happened for real once (internal humidity), causing
+  an emergency shutdown that never recovered until the service was
+  manually restarted.
+- DHT22 reads get up to 3 retries within a single cycle
+  (`DHT_READ_RETRIES`) before giving up - ordinary single-attempt DHT
+  flakiness is well-documented, and this measurably cut the false
+  "sensor unavailable" rate (roughly 37% → under 5% of cycles, under a
+  simulated 35% single-attempt failure rate matching real observed log
+  frequency). There's also a `DHT_READ_GAP_SECONDS` pause between the
+  internal and wired DHT22 reads each cycle - built as a hypothesis
+  about back-to-back single-wire interference, but the retry logic
+  above turned out to be the more impactful fix. The gap is harmless
+  either way; just don't assume it was the thing that actually
+  resolved the false-alarm pattern.
+
+### BLE sensor support
+- Brand is pluggable via `shared_state.BLE_SENSOR_LIBRARIES` (a
+  registry of package/class per brand: SensorPush, Govee, INKBIRD,
+  Xiaomi, RuuviTag). SensorPush, Govee, and INKBIRD's exact class names
+  were directly verified against real source/usage examples; Xiaomi
+  and RuuviTag follow the same well-established naming convention but
+  weren't individually confirmed - `ble_listener.py` fails with a
+  clear, actionable error (not a silent crash) if a class name turns
+  out to be wrong.
+- `ble_battery.py` is genuinely SensorPush-HT1-specific and **cannot**
+  be generalized the same way as the listener - its GATT characteristic
+  and voltage formula are reverse-engineered for that one device's
+  firmware specifically, with no equivalent cross-brand library
+  ecosystem the way passive advertisement decoding has. It skips
+  itself cleanly (logging why) if a different brand is configured.
+  Many other brands include battery directly in the passive
+  advertisement instead, which `ble_listener.py` saves for free when
+  present - check there before assuming a brand needs its own battery
+  script.
+- Watchdog timeout is 2 minutes (`WATCHDOG_TIMEOUT`), not the
+  originally-designed 10 - shortened based on a real observed pattern
+  (a clean ~10-minute stretch, then a stall that a simple restart
+  reliably clears). There's also a retry loop for BlueZ's "already in
+  progress" error on `scanner.start()`, which handles a *different,
+  shorter-lived* stuck state than the watchdog does.
+- **Three tiers of BLE failure exist, and only two currently
+  self-heal**: a short stall (watchdog catches it, ~2min), a
+  short-lived BlueZ "already in progress" state (retry logic catches
+  it, ~25s) - and a *deeper* stuck state that has, at least once,
+  required a full Pi reboot when `systemctl restart bluetooth` alone
+  didn't clear it. An automatic reboot-escalation for that third tier
+  was deliberately **not** built yet, pending more data on how often
+  it actually recurs - see open threads below.
+
+### Update system
+- `config.json` is **not git-tracked** (removed deliberately after
+  repeated real merge conflicts between the dashboard's live rewrites
+  and whatever the committed default happened to be). A fresh clone
+  has none; `load_config()` auto-creates it from `DEFAULT_CONFIG`.
+  **Any future rename of a config key needs an explicit migration
+  inside `load_config()`** (see the `sensorpush_mac` → `ble_mac`
+  migration for the pattern) - otherwise upgrading silently resets
+  that setting to its default, which happened for real once before
+  the migration was added.
+- `auto_update.sh` restarts `dermestid-web.service` **last**,
+  deliberately. When triggered via the dashboard button, the script
+  runs as a child of that same service - systemd's default
+  `KillMode=control-group` kills the *entire* cgroup (including the
+  detached script) the instant the service is told to restart, not
+  just the tracked main process. Everything else has to happen first,
+  or it silently never runs.
+- A shared lockfile (`.git_update.lock` + `flock`) keeps the
+  background update-checker and a manual `auto_update.sh` run from
+  colliding on the same git ref at the same time - hit this for real
+  once ("cannot lock ref ... is at X but expected Y").
+- The sudo preflight check tests the **actual** restart commands
+  directly (`sudo -n systemctl restart ...`, checking the real exit
+  code) rather than a separate probe command. Two earlier attempts
+  (`sudo -n true`, then `sudo -n -l | grep`) both turned out to test
+  something subtly different from what actually mattered and gave
+  false negatives in practice - this was the version that finally
+  matched reality.
+- Branch selection (`update_branch` config key) lets the dashboard
+  switch which branch `auto_update.sh` tracks - it correctly does a
+  `git checkout -B`, not a `git pull`, when the target differs from
+  what's checked out, with the same stash-safety either way. **This
+  only handles git-level file changes.** It cannot automatically
+  apply a structural migration a branch might need (a renamed systemd
+  service, a new required config key) - those still need to be done by
+  hand, same as the BLE rename itself needed.
+
+## Established workflows / things that look like bugs but aren't
+
+- Deployment is via dragging files into GitHub's web UI, not git CLI
+  pushes from a dev machine. **Always check the branch selector shows
+  the intended branch before dragging files in** - it's easy to
+  accidentally commit to whatever branch GitHub happened to have
+  selected.
+- `auto_update.sh`'s own executable permission bit (`chmod +x`) shows
+  up as a "local change" on essentially every pull or branch switch,
+  since GitHub's web uploader doesn't preserve the exec bit. This is
+  expected and harmless - the stash/restore cycle handles it silently
+  most of the time; don't chase it as a real issue if it appears in a
+  "local changes detected" message.
+- The `update-dermestid` shell alias just does `cd ~/dermestid &&
+  ./auto_update.sh` - if it's "not found," it's almost always either a
+  fresh shell that hasn't sourced `.bashrc` yet, or the word order
+  typo (`dermestid-update` instead of `update-dermestid`).
+- Testing a branch: either use the dashboard's branch dropdown now
+  that it exists, or manually `git fetch origin && git checkout
+  <branch>` and restart services by hand - **don't** use
+  `update-dermestid` while manually testing a branch that isn't yet
+  what the dashboard's `update_branch` config points to, since the two
+  can disagree about which branch is "current."
+
+## Open threads / known issues
+
+- **[open]** A Data-page report of "Fallback missing for a while" came
+  in showing old "External"/"Fallback" column headers from *before*
+  the fixed-identity rename - most likely just a stale
+  `dermestid-web.service` that hadn't been restarted to pick up the
+  new template (Flask caches templates in production mode), not a new
+  bug. Not yet confirmed either way - worth a fresh look once
+  definitely on current code.
+- **[open]** Tier-3 BLE failure (deep bluetoothd stuck state,
+  `systemctl restart bluetooth` insufficient, needs a full reboot) -
+  happened twice this session. No automatic recovery built yet;
+  revisit if it keeps recurring.
+- **[open]** SHT31 upgrade for the internal sensor is under
+  consideration, motivated by real DHT22 reliability issues even after
+  the retry-logic fix. Probe form factor (PTFE vs. ceramic vs. metal
+  mesh filter cap) was researched but no purchase decision made yet.
+- **[open]** `xiaomi`/`ruuvitag` entries in `BLE_SENSOR_LIBRARIES`
+  have unverified exact class names (follow the established
+  convention but weren't checked against real source) - confirm before
+  actually switching to either.
+- **[open]** `ble-genericization` branch not yet merged to `main`.
