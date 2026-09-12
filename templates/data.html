@@ -50,10 +50,10 @@
         <th>Mode</th>
         <th class="rot"><span class="rot-label">Internal °F</span></th>
         <th class="rot"><span class="rot-label">Internal %RH</span></th>
-        <th class="rot"><span class="rot-label">External °F</span></th>
-        <th class="rot"><span class="rot-label">External %RH</span></th>
-        <th class="rot"><span class="rot-label">Fallback °F</span></th>
-        <th class="rot"><span class="rot-label">Fallback %RH</span></th>
+        <th class="rot"><span class="rot-label">BLE °F</span></th>
+        <th class="rot"><span class="rot-label">BLE %RH</span></th>
+        <th class="rot"><span class="rot-label">Wired °F</span></th>
+        <th class="rot"><span class="rot-label">Wired %RH</span></th>
         <th class="rot"><span class="rot-label">Active source</span></th>
         <th class="rot"><span class="rot-label">Fan</span></th>
         <th class="rot"><span class="rot-label">Heat</span></th>
@@ -112,10 +112,10 @@ function renderRows(rows, append) {
       <td>${r.mode}</td>
       <td>${num(r.internal_temp, 1)}</td>
       <td>${num(r.internal_humidity, 1)}</td>
-      <td>${num(r.external_temp, 1)}</td>
-      <td>${num(r.external_humidity, 1)}</td>
-      <td>${num(r.fallback_external_temp, 1)}</td>
-      <td>${num(r.fallback_external_humidity, 1)}</td>
+      <td>${num(r.ble_temp, 1)}</td>
+      <td>${num(r.ble_humidity, 1)}</td>
+      <td>${num(r.wired_temp, 1)}</td>
+      <td>${num(r.wired_humidity, 1)}</td>
       <td>${srcAbbrev(r.active_external_source)}</td>
       <td>${fanState(!!r.fan, !!r.vent)}</td>
       <td>${flag(!!r.heater)}</td>

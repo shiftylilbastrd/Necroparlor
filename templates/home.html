@@ -39,6 +39,7 @@
   .chart-label { font-size: 0.8rem; color: var(--text-dim); margin: 14px 0 6px 0; font-weight: 600; }
   .tile-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
   .tile-side { text-align: right; flex-shrink: 0; }
+  .active-tag { font-size: 0.7rem; font-weight: 600; color: var(--accent); vertical-align: middle; }
 </style>
 {% endblock %}
 {% block content %}
@@ -81,25 +82,25 @@
     <div class="stat-sub" id="statInternalUpdated" style="margin-top:6px;">Updated: --</div>
   </div>
   <div class="card">
-    <h2>External</h2>
+    <h2>BLE sensor <span class="active-tag" id="bleActiveTag" style="display:none;">(active)</span></h2>
     <div class="tile-row">
       <div>
-        <div class="stat-value" id="statExternalTemp">--°F</div>
-        <div class="stat-sub" id="statExternalHumidity">-- %RH</div>
-        <div class="stat-sub" id="statExternalUpdated" style="margin-top:6px;">Updated: --</div>
+        <div class="stat-value" id="statBleTemp">--°F</div>
+        <div class="stat-sub" id="statBleHumidity">-- %RH</div>
+        <div class="stat-sub" id="statBleUpdated" style="margin-top:6px;">Updated: --</div>
       </div>
-      <div class="tile-side" id="statExternalBatteryWrap" style="display:none;">
+      <div class="tile-side" id="statBleBatteryWrap" style="display:none;">
         <div class="stat-sub" style="font-weight:600;">Battery</div>
-        <div class="stat-sub" id="statExternalBatteryPct">--</div>
-        <div class="stat-sub" id="statExternalBatteryAge">--</div>
+        <div class="stat-sub" id="statBleBatteryPct">--</div>
+        <div class="stat-sub" id="statBleBatteryAge">--</div>
       </div>
     </div>
   </div>
   <div class="card">
-    <h2>Fallback</h2>
-    <div class="stat-value" id="statFallbackTemp">--°F</div>
-    <div class="stat-sub" id="statFallbackHumidity">-- %RH</div>
-    <div class="stat-sub" id="statFallbackUpdated" style="margin-top:6px;">Updated: --</div>
+    <h2>Wired probe <span class="active-tag" id="wiredActiveTag" style="display:none;">(active)</span></h2>
+    <div class="stat-value" id="statWiredTemp">--°F</div>
+    <div class="stat-sub" id="statWiredHumidity">-- %RH</div>
+    <div class="stat-sub" id="statWiredUpdated" style="margin-top:6px;">Updated: --</div>
   </div>
 </div>
 
@@ -188,21 +189,25 @@ async function refreshStatus() {
     document.getElementById('statInternalHumidity').textContent = data.latest.internal_humidity.toFixed(1) + ' %RH';
     document.getElementById('statInternalUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.internal);
 
-    document.getElementById('statExternalTemp').textContent =
-      (data.latest.external_temp !== null && data.latest.external_temp !== undefined)
-        ? data.latest.external_temp.toFixed(1) + '°F' : '--°F';
-    document.getElementById('statExternalHumidity').textContent =
-      (data.latest.external_humidity !== null && data.latest.external_humidity !== undefined)
-        ? data.latest.external_humidity.toFixed(1) + ' %RH' : '-- %RH';
-    document.getElementById('statExternalUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.external);
+    document.getElementById('statBleTemp').textContent =
+      (data.latest.ble_temp !== null && data.latest.ble_temp !== undefined)
+        ? data.latest.ble_temp.toFixed(1) + '°F' : '--°F';
+    document.getElementById('statBleHumidity').textContent =
+      (data.latest.ble_humidity !== null && data.latest.ble_humidity !== undefined)
+        ? data.latest.ble_humidity.toFixed(1) + ' %RH' : '-- %RH';
+    document.getElementById('statBleUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.ble);
 
-    document.getElementById('statFallbackTemp').textContent =
-      (data.latest.fallback_external_temp !== null && data.latest.fallback_external_temp !== undefined)
-        ? data.latest.fallback_external_temp.toFixed(1) + '°F' : '--°F';
-    document.getElementById('statFallbackHumidity').textContent =
-      (data.latest.fallback_external_humidity !== null && data.latest.fallback_external_humidity !== undefined)
-        ? data.latest.fallback_external_humidity.toFixed(1) + ' %RH' : '-- %RH';
-    document.getElementById('statFallbackUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.fallback);
+    document.getElementById('statWiredTemp').textContent =
+      (data.latest.wired_temp !== null && data.latest.wired_temp !== undefined)
+        ? data.latest.wired_temp.toFixed(1) + '°F' : '--°F';
+    document.getElementById('statWiredHumidity').textContent =
+      (data.latest.wired_humidity !== null && data.latest.wired_humidity !== undefined)
+        ? data.latest.wired_humidity.toFixed(1) + ' %RH' : '-- %RH';
+    document.getElementById('statWiredUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.wired);
+
+    const activeSource = data.latest.active_external_source;
+    document.getElementById('bleActiveTag').style.display = (activeSource === 'ble') ? 'inline' : 'none';
+    document.getElementById('wiredActiveTag').style.display = (activeSource === 'local_gpio') ? 'inline' : 'none';
 
     document.getElementById('lastUpdateLine').textContent = 'Last update: ' + fmtTime(data.latest.ts);
     outputBadge('fanBadge', 'fanIcon', !!data.latest.fan, true);
@@ -223,11 +228,11 @@ async function refreshStatus() {
     doorLabel.textContent = 'unknown';
   }
 
-  const batteryWrap = document.getElementById('statExternalBatteryWrap');
+  const batteryWrap = document.getElementById('statBleBatteryWrap');
   if (data.ble_status && data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
     batteryWrap.style.display = 'block';
-    document.getElementById('statExternalBatteryPct').textContent = `${Math.round(data.ble_status.battery_pct)}%`;
-    document.getElementById('statExternalBatteryAge').textContent = fmtDuration(data.ble_status.battery_age_seconds);
+    document.getElementById('statBleBatteryPct').textContent = `${Math.round(data.ble_status.battery_pct)}%`;
+    document.getElementById('statBleBatteryAge').textContent = fmtDuration(data.ble_status.battery_age_seconds);
   } else {
     batteryWrap.style.display = 'none';
   }
@@ -289,26 +294,27 @@ async function refreshHistory() {
   const labels = points.map(p => new Date(p.ts * 1000));
   const timeOptions = timeScaleOptions(currentRangeHours);
 
-  // Only show the fallback series if there's actually any fallback data
-  // in this range - otherwise it'd just be a permanently-empty legend
-  // entry cluttering the chart whenever no fallback source is configured.
-  const hasFallback = points.some(p => p.fallback_external_temp !== null && p.fallback_external_temp !== undefined);
+  // BLE is only shown if there's actually any BLE data in this range -
+  // otherwise it'd be a permanently-empty legend entry whenever no BLE
+  // sensor has ever been configured. Wired is always shown - it's a
+  // permanent part of the setup, not conditional the way BLE is.
+  const hasBle = points.some(p => p.ble_temp !== null && p.ble_temp !== undefined);
 
   const tempDatasets = [
     ...bandDatasets('Internal °F', points.map(p => p.internal_temp), points.map(p => p.internal_temp_min), points.map(p => p.internal_temp_max), '#4f8fd9'),
-    ...bandDatasets('External °F', points.map(p => p.external_temp), points.map(p => p.external_temp_min), points.map(p => p.external_temp_max), '#d9a441')
+    ...bandDatasets('Wired °F', points.map(p => p.wired_temp), points.map(p => p.wired_temp_min), points.map(p => p.wired_temp_max), '#4ade80')
   ];
-  if (hasFallback) {
-    tempDatasets.push(...bandDatasets('Fallback °F', points.map(p => p.fallback_external_temp), points.map(p => p.fallback_external_temp_min), points.map(p => p.fallback_external_temp_max), '#4ade80'));
+  if (hasBle) {
+    tempDatasets.push(...bandDatasets('BLE °F', points.map(p => p.ble_temp), points.map(p => p.ble_temp_min), points.map(p => p.ble_temp_max), '#d9a441'));
   }
   updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined }, timeOptions);
 
   const humidityDatasets = [
     ...bandDatasets('Internal %RH', points.map(p => p.internal_humidity), points.map(p => p.internal_humidity_min), points.map(p => p.internal_humidity_max), '#4f8fd9'),
-    ...bandDatasets('External %RH', points.map(p => p.external_humidity), points.map(p => p.external_humidity_min), points.map(p => p.external_humidity_max), '#d9a441')
+    ...bandDatasets('Wired %RH', points.map(p => p.wired_humidity), points.map(p => p.wired_humidity_min), points.map(p => p.wired_humidity_max), '#4ade80')
   ];
-  if (hasFallback) {
-    humidityDatasets.push(...bandDatasets('Fallback %RH', points.map(p => p.fallback_external_humidity), points.map(p => p.fallback_external_humidity_min), points.map(p => p.fallback_external_humidity_max), '#4ade80'));
+  if (hasBle) {
+    humidityDatasets.push(...bandDatasets('BLE %RH', points.map(p => p.ble_humidity), points.map(p => p.ble_humidity_min), points.map(p => p.ble_humidity_max), '#d9a441'));
   }
   updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);
 }
