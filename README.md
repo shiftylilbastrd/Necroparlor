@@ -1,5 +1,7 @@
 # Dermestid Enclosure Climate Control
 
+**Starting a new session on this project? Read `PROJECT_STATUS.md` first** - it covers current branch state, the reasoning behind several non-obvious design decisions, and open threads that this README alone won't tell you.
+
 Files:
 
 - `climate.py` — main control loop (heater, fan/vent servo, dehumidifier, door light). Run this on the Pi at all times.
