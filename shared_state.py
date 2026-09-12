@@ -44,6 +44,12 @@ DEFAULT_CONFIG = {
     # just updates the "update available" status, doesn't pull or
     # restart anything by itself). Minutes.
     "update_check_interval_minutes": 15,
+    # Which git branch auto_update.sh and the background checker track.
+    # Defaults to main - switching this to anything else means running
+    # code that hasn't gone through the same scrutiny as what actually
+    # ships to main, so it's meant for deliberate testing, not a normal
+    # setting to leave changed long-term.
+    "update_branch": "main",
     # Where climate.py gets the *internal* reading from:
     #   "dht22"  - wired DHT22/AM2302 probe on PIN_INTERNAL_TEMP (default -
     #              what's actually on hand)
@@ -348,6 +354,7 @@ def init_db():
             checked_at REAL
         )
     """)
+    _migrate_update_state_columns(conn)
     conn.commit()
     conn.close()
 
@@ -608,18 +615,36 @@ def get_door_state():
     return {"is_open": bool(row[0]), "ts": row[1]}
 
 
-def save_update_status(is_available, local_commit, remote_commit, remote_message):
+def _migrate_update_state_columns(conn):
+    """Adds branch-tracking columns to update_state for DBs that predate
+    branch selection support."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(update_state)").fetchall()}
+    if "current_branch" not in existing:
+        conn.execute("ALTER TABLE update_state ADD COLUMN current_branch TEXT")
+    if "target_branch" not in existing:
+        conn.execute("ALTER TABLE update_state ADD COLUMN target_branch TEXT")
+
+
+def save_update_status(is_available, local_commit, remote_commit, remote_message,
+                        current_branch=None, target_branch=None):
     """Called by webapp.py's background update-checker thread after every
     GitHub check (read-only - this never pulls or restarts anything by
-    itself, just records what it found)."""
+    itself, just records what it found). current_branch/target_branch
+    let the dashboard distinguish "new commits on the branch you're
+    already on" from "a different branch is selected and hasn't been
+    switched to yet" - two different situations that need different
+    handling by auto_update.sh."""
     conn = get_db()
     conn.execute(
-        "INSERT INTO update_state (id, is_available, local_commit, remote_commit, remote_message, checked_at) "
-        "VALUES (1, ?, ?, ?, ?, ?) "
+        "INSERT INTO update_state (id, is_available, local_commit, remote_commit, remote_message, "
+        "checked_at, current_branch, target_branch) "
+        "VALUES (1, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(id) DO UPDATE SET is_available=excluded.is_available, "
         "local_commit=excluded.local_commit, remote_commit=excluded.remote_commit, "
-        "remote_message=excluded.remote_message, checked_at=excluded.checked_at",
-        (int(is_available), local_commit, remote_commit, remote_message, time.time())
+        "remote_message=excluded.remote_message, checked_at=excluded.checked_at, "
+        "current_branch=excluded.current_branch, target_branch=excluded.target_branch",
+        (int(is_available), local_commit, remote_commit, remote_message, time.time(),
+         current_branch, target_branch)
     )
     conn.commit()
     conn.close()
@@ -628,13 +653,31 @@ def save_update_status(is_available, local_commit, remote_commit, remote_message
 def get_update_status():
     conn = get_db()
     row = conn.execute(
-        "SELECT is_available, local_commit, remote_commit, remote_message, checked_at FROM update_state WHERE id = 1"
+        "SELECT is_available, local_commit, remote_commit, remote_message, checked_at, "
+        "current_branch, target_branch FROM update_state WHERE id = 1"
     ).fetchone()
     conn.close()
     if not row:
         return None
     return {"is_available": bool(row[0]), "local_commit": row[1], "remote_commit": row[2],
-            "remote_message": row[3], "checked_at": row[4]}
+            "remote_message": row[3], "checked_at": row[4],
+            "current_branch": row[5], "target_branch": row[6]}
+
+
+UPDATE_BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def validate_update_branch(branch):
+    """Returns (branch, None) on success or (None, error) on failure.
+    Deliberately strict (letters/digits/dot/underscore/slash/dash only) -
+    this value gets interpolated into a shell command in auto_update.sh,
+    so beyond just being a plausible branch name, it must not be able to
+    smuggle in shell metacharacters."""
+    if not branch or not UPDATE_BRANCH_RE.match(branch):
+        return None, "branch name must contain only letters, numbers, dots, underscores, dashes, and slashes"
+    if branch.startswith(".") or branch.startswith("/") or ".." in branch:
+        return None, "not a valid branch name"
+    return branch, None
 
 
 def validate_update_interval(minutes):

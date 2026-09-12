@@ -28,19 +28,27 @@ if ! flock -w 30 200; then
 fi
 
 BEFORE=$(git rev-parse HEAD)
-git fetch origin main --quiet
-AFTER=$(git rev-parse origin/main)
+TARGET_BRANCH=$(python3 -c "import shared_state as state; print(state.load_config().get('update_branch', 'main'))")
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+git fetch origin "$TARGET_BRANCH" --quiet
+AFTER=$(git rev-parse "origin/$TARGET_BRANCH")
 
-if [ "$BEFORE" = "$AFTER" ]; then
-    echo "No update available (still at ${BEFORE:0:7})"
+if [ "$BEFORE" = "$AFTER" ] && [ "$CURRENT_BRANCH" = "$TARGET_BRANCH" ]; then
+    echo "No update available (still at ${BEFORE:0:7} on $CURRENT_BRANCH)"
     exit 0
 fi
 
-echo "Update found: ${BEFORE:0:7} -> ${AFTER:0:7}"
+if [ "$CURRENT_BRANCH" != "$TARGET_BRANCH" ]; then
+    echo "Branch switch found: $CURRENT_BRANCH -> $TARGET_BRANCH (${AFTER:0:7})"
+else
+    echo "Update found: ${BEFORE:0:7} -> ${AFTER:0:7}"
+fi
 
 # config.json is tracked in git but also gets rewritten by the dashboard
 # (setpoints, sensor source, etc.) - stash any such local changes before
-# pulling so they can't conflict, then restore them afterward.
+# pulling OR switching branches so they can't conflict, then restore
+# them afterward. A branch switch can fail on uncommitted changes just
+# as easily as a pull can - same treatment for both.
 STASHED=0
 if ! git diff --quiet || ! git diff --cached --quiet; then
     echo "Local changes detected (likely config.json from the dashboard) - stashing"
@@ -48,7 +56,18 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     STASHED=1
 fi
 
-git pull origin main --quiet
+if [ "$CURRENT_BRANCH" != "$TARGET_BRANCH" ]; then
+    # -B creates the local branch if it doesn't exist yet, or resets it
+    # to exactly match the remote if it does - the Pi should never carry
+    # local commits on a branch that don't exist upstream, so resetting
+    # to match origin exactly is the correct, expected behavior here,
+    # not data loss (uncommitted changes are separately protected by
+    # the stash above; this only affects committed history on the
+    # branch itself, which the Pi's clone should never diverge on).
+    git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH" --quiet
+else
+    git pull origin "$TARGET_BRANCH" --quiet
+fi
 
 if [ "$STASHED" = "1" ]; then
     if git stash pop --quiet; then
@@ -98,4 +117,4 @@ if ! sudo -n systemctl restart dermestid-web.service; then
     exit 1
 fi
 
-echo "Update complete - now running $(git rev-parse --short HEAD)"
+echo "Update complete - now running $(git rev-parse --short HEAD) on branch $(git rev-parse --abbrev-ref HEAD)"

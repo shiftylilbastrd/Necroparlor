@@ -202,8 +202,47 @@ def api_update_status():
     config = state.load_config()
     return jsonify({
         "status": status,
-        "check_interval_minutes": config.get("update_check_interval_minutes", 15)
+        "check_interval_minutes": config.get("update_check_interval_minutes", 15),
+        "update_branch": config.get("update_branch", "main"),
     })
+
+
+@app.route("/api/update-branches")
+def api_update_branches():
+    """Lists branches available on the remote, for the Config page's
+    dropdown. A lightweight `git ls-remote` (just queries refs, doesn't
+    fetch any objects), so this is safe to call on every page load
+    without meaningfully touching the repo or the network."""
+    try:
+        result = subprocess.run(["git", "ls-remote", "--heads", "origin"],
+                                 cwd=state.BASE_DIR, check=True, timeout=15, capture_output=True, text=True)
+    except Exception:
+        logging.exception("Could not list remote branches")
+        return jsonify({"error": "could not reach the remote to list branches"}), 502
+    branches = []
+    for line in result.stdout.splitlines():
+        # Each line looks like: <sha>\trefs/heads/<branch-name>
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+            branches.append(parts[1][len("refs/heads/"):])
+    return jsonify(sorted(branches))
+
+
+@app.route("/api/update-branch", methods=["POST"])
+def api_set_update_branch():
+    """Sets which branch auto_update.sh and the background checker
+    track. Doesn't switch anything itself - that happens the next time
+    an update is actually applied (button or timer), same as any other
+    pending update."""
+    body = request.get_json(force=True, silent=True) or {}
+    branch, error = state.validate_update_branch(body.get("branch"))
+    if error:
+        return jsonify({"error": error}), 400
+    config = state.load_config()
+    config["update_branch"] = branch
+    state.save_config(config)
+    state.log_event("info", f"Update branch changed to '{branch}'")
+    return jsonify(config)
 
 
 @app.route("/api/update-check-interval", methods=["POST"])
@@ -252,11 +291,20 @@ def api_apply_update():
 
 
 def _git_check_for_update():
-    """Read-only: fetches from origin and compares local HEAD to
-    origin/main. Never pulls or restarts anything by itself - applying
-    an update is a separate, explicit action (the timer or the
-    dashboard button), both of which reuse the same tested
-    auto_update.sh rather than duplicating this logic.
+    """Read-only: fetches the CONFIGURED target branch from origin and
+    compares local HEAD to it. Never pulls, checks out, or restarts
+    anything by itself - applying an update (including a branch switch)
+    is a separate, explicit action (the timer or the dashboard button),
+    both of which reuse the same tested auto_update.sh rather than
+    duplicating this logic.
+
+    Comparing HEAD against origin/<target branch> naturally covers two
+    different situations with the same logic: if the currently checked-
+    out branch IS the target branch, a difference means new commits are
+    available; if a DIFFERENT branch is selected, HEAD and the target
+    almost certainly differ entirely, meaning a branch switch is what's
+    actually needed. current_branch/target_branch are both recorded so
+    the dashboard can tell these apart and message them differently.
 
     Uses the same lockfile as auto_update.sh, non-blocking: if a manual
     update is currently running, this just skips this one check and
@@ -273,19 +321,24 @@ def _git_check_for_update():
         except OSError:
             logging.info("Skipping this update check - auto_update.sh appears to be running")
             return
-        subprocess.run(["git", "fetch", "origin", "main", "--quiet"],
+        config = state.load_config()
+        target_branch = config.get("update_branch", "main")
+        current_branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                                         cwd=state.BASE_DIR, check=True, capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "fetch", "origin", target_branch, "--quiet"],
                         cwd=state.BASE_DIR, check=True, timeout=30, capture_output=True)
         local = subprocess.run(["git", "rev-parse", "HEAD"], cwd=state.BASE_DIR,
                                 check=True, capture_output=True, text=True).stdout.strip()
-        remote = subprocess.run(["git", "rev-parse", "origin/main"], cwd=state.BASE_DIR,
+        remote = subprocess.run(["git", "rev-parse", f"origin/{target_branch}"], cwd=state.BASE_DIR,
                                  check=True, capture_output=True, text=True).stdout.strip()
         is_available = local != remote
         remote_message = None
         if is_available:
-            msg = subprocess.run(["git", "log", "origin/main", "-1", "--pretty=%s"],
+            msg = subprocess.run(["git", "log", f"origin/{target_branch}", "-1", "--pretty=%s"],
                                   cwd=state.BASE_DIR, check=True, capture_output=True, text=True)
             remote_message = msg.stdout.strip()
-        state.save_update_status(is_available, local[:7], remote[:7], remote_message)
+        state.save_update_status(is_available, local[:7], remote[:7], remote_message,
+                                  current_branch=current_branch, target_branch=target_branch)
     except Exception:
         logging.exception("Background update check failed")
     finally:

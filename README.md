@@ -170,6 +170,14 @@ By default, getting a code change onto the Pi means `git pull` + restarting the 
 
 **Actually applying an update — either via that button, or the fully-hands-off timer below — needs a one-time permission setup**, since both ultimately restart services without anyone there to type a password:
 
+### Tracking a different branch
+
+The Config page's Software updates tile has a branch dropdown, populated from whatever branches actually exist on the remote (`git ls-remote`). By default it tracks `main`. Selecting a different branch and saving means both the periodic checker and the "Update now" button start tracking that branch instead - useful for testing something before it's merged to main, exactly the workflow used for the BLE-sensor-genericization work.
+
+**A branch switch is a different git operation than a normal update**, and `auto_update.sh` handles both correctly: pulling new commits when you're already on the target branch, or actually checking out a different branch when the target changes. Same stash-safety either way for any local uncommitted changes to tracked files. Verified directly against a real git remote with two branches: a clean same-branch update, an actual branch switch (confirmed the working files genuinely changed to match the new branch), running it again immediately afterward correctly reporting "up to date," a clean non-conflicting local change surviving a branch switch, and a genuinely conflicting one degrading exactly the same graceful way the existing config.json-conflict handling already did (a clear warning, not a crash, nothing silently lost).
+
+**What this can't do**: automatically handle deeper structural changes a branch might contain - a renamed systemd service (like the BLE genericization work itself needed), a new required config key with no sensible default, anything that isn't purely "different files at different git commits." A branch switch this way only takes care of the git-level file changes; anything the branch's own commit messages or notes say to do manually still needs to be done manually. Switching branches is meant for deliberate testing, not something to leave set to non-main long-term - switch back to main once you're done.
+
 ```bash
 sudo visudo -f /etc/sudoers.d/dermestid
 ```

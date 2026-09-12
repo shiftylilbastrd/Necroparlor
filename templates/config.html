@@ -78,6 +78,16 @@
 <div class="section-title">Software updates</div>
 <div class="card" style="max-width:420px;">
   <div class="field">
+    <label>Branch to track</label>
+    <select id="updateBranchSelect" onchange="onBranchSelectChange()"></select>
+    <div class="stat-sub" id="updateBranchWarning" style="margin-top:6px; display:none; color:var(--warn);">
+      ⚠ Non-main branches are for deliberate testing - running code that hasn't gone through the same scrutiny as main. Switching back to main after testing is recommended, not something to leave changed long-term. A branch switch also can't automatically handle deeper structural changes (like a renamed systemd service) - check that branch's own notes for any manual steps.
+    </div>
+  </div>
+  <button class="save-btn" style="margin-top:8px;" onclick="saveUpdateBranch()">Save branch</button>
+  <div class="save-msg" id="updateBranchMsg"></div>
+
+  <div class="field" style="margin-top:14px;">
     <label>Check for updates every (minutes)</label>
     <input type="number" id="updateIntervalInput" min="1" max="1440">
   </div>
@@ -282,7 +292,45 @@ async function loadUpdateStatus() {
   const res = await fetch('/api/update-status');
   const data = await res.json();
   document.getElementById('updateIntervalInput').value = data.check_interval_minutes;
+  await populateUpdateBranches(data.update_branch);
   renderUpdateStatus(data.status);
+}
+
+async function populateUpdateBranches(currentTarget) {
+  const select = document.getElementById('updateBranchSelect');
+  try {
+    const res = await fetch('/api/update-branches');
+    const branches = await res.json();
+    if (!res.ok) throw new Error(branches.error || 'could not list branches');
+    select.innerHTML = branches.map(b => `<option value="${b}">${b}</option>`).join('');
+    select.value = currentTarget || 'main';
+  } catch (e) {
+    select.innerHTML = `<option value="${currentTarget || 'main'}">${currentTarget || 'main'}</option>`;
+  }
+  onBranchSelectChange();
+}
+
+function onBranchSelectChange() {
+  const select = document.getElementById('updateBranchSelect');
+  document.getElementById('updateBranchWarning').style.display = select.value === 'main' ? 'none' : 'block';
+}
+
+async function saveUpdateBranch() {
+  const branch = document.getElementById('updateBranchSelect').value;
+  const res = await fetch('/api/update-branch', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({branch})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('updateBranchMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+    loadUpdateStatus();
+  }
 }
 
 function renderUpdateStatus(status) {
@@ -295,12 +343,16 @@ function renderUpdateStatus(status) {
   }
   const checkedAgo = Math.round((Date.now() / 1000 - status.checked_at) / 60);
   const agoText = checkedAgo < 1 ? 'just now' : `${checkedAgo}m ago`;
-  if (status.is_available) {
+  const branchMismatch = status.current_branch && status.target_branch && status.current_branch !== status.target_branch;
+  if (branchMismatch) {
+    text.textContent = `Branch switch pending: ${status.current_branch} → ${status.target_branch} (checked ${agoText})`;
+    btn.style.display = 'inline-block';
+  } else if (status.is_available) {
     const msgPart = status.remote_message ? `: "${status.remote_message}"` : '';
-    text.textContent = `Update available${msgPart} (checked ${agoText})`;
+    text.textContent = `Update available on ${status.target_branch || 'main'}${msgPart} (checked ${agoText})`;
     btn.style.display = 'inline-block';
   } else {
-    text.textContent = `Up to date (checked ${agoText})`;
+    text.textContent = `Up to date on ${status.target_branch || 'main'} (checked ${agoText})`;
     btn.style.display = 'none';
   }
 }
