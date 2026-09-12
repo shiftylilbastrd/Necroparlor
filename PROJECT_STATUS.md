@@ -15,12 +15,13 @@ rather than just editing it silently.
 
 ## Current state (as of this writing)
 
-- Active development is happening on the **`ble-genericization`**
-  branch, not yet merged to `main`. It contains the full SensorPush→
-  generic-BLE rebrand, the fixed-sensor-identity dashboard redesign,
-  branch-selection in the update system, and several smaller fixes.
-  **Check `git branch` / the Config page's branch dropdown before
-  assuming you're looking at main's state.**
+- **`main` is current and complete.** The `ble-genericization` branch
+  (full SensorPush→generic-BLE rebrand, the fixed-sensor-identity
+  dashboard redesign, branch-selection in the update system, and
+  several smaller fixes) has been merged into `main`, and the Pi has
+  been switched back to tracking `main`. No feature branch is
+  currently active - if you see one, it's new work, not something in
+  progress from before.
 - The Pi should have `dermestid-ble.service` installed and enabled
   (replacing the old `dermestid-sensorpush.service`, which should be
   stopped/disabled/removed). Sudoers should authorize
@@ -209,13 +210,15 @@ pattern has been consistent: tie things to identity, never to role.
 
 ## Open threads / known issues
 
+- **[resolved]** `ble-genericization` merged into `main`; Pi confirmed
+  switched back to tracking `main`.
 - **[open]** A Data-page report of "Fallback missing for a while" came
   in showing old "External"/"Fallback" column headers from *before*
   the fixed-identity rename - most likely just a stale
   `dermestid-web.service` that hadn't been restarted to pick up the
   new template (Flask caches templates in production mode), not a new
-  bug. Not yet confirmed either way - worth a fresh look once
-  definitely on current code.
+  bug. No further reports since, but never explicitly re-confirmed
+  fixed - worth a fresh look if it recurs.
 - **[open]** Tier-3 BLE failure (deep bluetoothd stuck state,
   `systemctl restart bluetooth` insufficient, needs a full reboot) -
   happened twice this session. No automatic recovery built yet;
@@ -228,4 +231,3 @@ pattern has been consistent: tie things to identity, never to role.
   have unverified exact class names (follow the established
   convention but weren't checked against real source) - confirm before
   actually switching to either.
-- **[open]** `ble-genericization` branch not yet merged to `main`.
