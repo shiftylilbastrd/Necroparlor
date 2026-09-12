@@ -577,7 +577,9 @@ def get_history(hours):
     """
     conn = get_db()
     since = time.time() - hours * 3600
-    if hours <= 6:
+    if hours <= 1:
+        bucket_seconds = 2 * 60            # 1h view  -> 2-minute buckets
+    elif hours <= 6:
         bucket_seconds = 15 * 60          # 6h view  -> 15-minute buckets
     elif hours <= 24:
         bucket_seconds = 60 * 60          # 24h view -> 1-hour buckets
