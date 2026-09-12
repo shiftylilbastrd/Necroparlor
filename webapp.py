@@ -290,6 +290,25 @@ def api_apply_update():
     return jsonify({"status": "started"})
 
 
+@app.route("/api/check-for-update-now", methods=["POST"])
+def api_check_for_update_now():
+    """Runs the same read-only check the background thread does
+    (git fetch + compare), synchronously, right now - for when the
+    configured check interval is longer than you want to wait, without
+    needing to change that interval or restart anything. Just a fetch
+    and a comparison (no pull, no restart), so unlike apply-update this
+    is safe to run inline and return the fresh result directly, no
+    detached-process complexity needed."""
+    _git_check_for_update()
+    status = state.get_update_status()
+    config = state.load_config()
+    return jsonify({
+        "status": status,
+        "check_interval_minutes": config.get("update_check_interval_minutes", 15),
+        "update_branch": config.get("update_branch", "main"),
+    })
+
+
 def _git_check_for_update():
     """Read-only: fetches the CONFIGURED target branch from origin and
     compares local HEAD to it. Never pulls, checks out, or restarts

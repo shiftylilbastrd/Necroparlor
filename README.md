@@ -166,7 +166,7 @@ The unit files assume the folder is at `/home/pi/dermestid` and the user is `pi`
 
 By default, getting a code change onto the Pi means `git pull` + restarting the affected service by hand every time. This project can now tell you when an update is waiting and apply it with one click, instead.
 
-**Checking for updates works out of the box, no setup needed.** `webapp.py` runs a background check every 15 minutes by default (configurable on the Config page, 1–1440 minutes) — read-only, it only compares your local commit to GitHub's, never pulls or restarts anything by itself. When it finds something new, a banner appears at the top of every page (Home, Logs, Config) linking to the Config page, which also shows the specific commit message and an **"Update now"** button.
+**Checking for updates works out of the box, no setup needed.** `webapp.py` runs a background check every 15 minutes by default (configurable on the Config page, 1–1440 minutes) — read-only, it only compares your local commit to GitHub's, never pulls or restarts anything by itself. When it finds something new, a banner appears at the top of every page (Home, Logs, Config) linking to the Config page, which also shows the specific commit message and an **"Update now"** button. A separate **"Check now"** button runs that same read-only check immediately, for whenever the configured interval feels too slow to wait out.
 
 **Actually applying an update — either via that button, or the fully-hands-off timer below — needs a one-time permission setup**, since both ultimately restart services without anyone there to type a password:
 

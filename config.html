@@ -95,6 +95,7 @@
   <div class="save-msg" id="updateIntervalMsg"></div>
 
   <div class="stat-sub" id="updateStatusText" style="margin-top:14px;">Checking...</div>
+  <button class="save-btn" id="checkNowBtn" onclick="checkForUpdateNow()" style="margin-top:10px;">Check now</button>
   <button class="save-btn" id="applyUpdateBtn" onclick="applyUpdate()" style="margin-top:10px; display:none;">Update now</button>
   <div class="save-msg" id="applyUpdateMsg"></div>
 </div>
@@ -388,6 +389,24 @@ async function applyUpdate() {
     // isn't actually a failure, so it's deliberately not surfaced as one.
   }
   setTimeout(() => { window.location.reload(); }, 8000);
+}
+
+async function checkForUpdateNow() {
+  const btn = document.getElementById('checkNowBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  try {
+    const res = await fetch('/api/check-for-update-now', { method: 'POST' });
+    const data = await res.json();
+    document.getElementById('updateIntervalInput').value = data.check_interval_minutes;
+    renderUpdateStatus(data.status);
+  } catch (e) {
+    const text = document.getElementById('updateStatusText');
+    text.textContent = 'Check failed - see the Logs page or try again in a moment.';
+  }
+  btn.disabled = false;
+  btn.textContent = originalText;
 }
 
 loadUpdateStatus();
