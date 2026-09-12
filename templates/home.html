@@ -82,7 +82,7 @@
     <div class="stat-sub" id="statInternalUpdated" style="margin-top:6px;">Updated: --</div>
   </div>
   <div class="card">
-    <h2>BLE sensor <span class="active-tag" id="bleActiveTag" style="display:none;">(active)</span></h2>
+    <h2>External <span class="active-tag" id="bleActiveTag" style="display:none;">(active)</span></h2>
     <div class="tile-row">
       <div>
         <div class="stat-value" id="statBleTemp">--°F</div>
@@ -97,7 +97,7 @@
     </div>
   </div>
   <div class="card">
-    <h2>Wired probe <span class="active-tag" id="wiredActiveTag" style="display:none;">(active)</span></h2>
+    <h2>Fallback <span class="active-tag" id="wiredActiveTag" style="display:none;">(active)</span></h2>
     <div class="stat-value" id="statWiredTemp">--°F</div>
     <div class="stat-sub" id="statWiredHumidity">-- %RH</div>
     <div class="stat-sub" id="statWiredUpdated" style="margin-top:6px;">Updated: --</div>
@@ -303,19 +303,19 @@ async function refreshHistory() {
 
   const tempDatasets = [
     ...bandDatasets('Internal °F', points.map(p => p.internal_temp), points.map(p => p.internal_temp_min), points.map(p => p.internal_temp_max), '#4f8fd9'),
-    ...bandDatasets('Wired °F', points.map(p => p.wired_temp), points.map(p => p.wired_temp_min), points.map(p => p.wired_temp_max), '#4ade80')
+    ...bandDatasets('Fallback °F', points.map(p => p.wired_temp), points.map(p => p.wired_temp_min), points.map(p => p.wired_temp_max), '#4ade80')
   ];
   if (hasBle) {
-    tempDatasets.push(...bandDatasets('BLE °F', points.map(p => p.ble_temp), points.map(p => p.ble_temp_min), points.map(p => p.ble_temp_max), '#d9a441'));
+    tempDatasets.push(...bandDatasets('External °F', points.map(p => p.ble_temp), points.map(p => p.ble_temp_min), points.map(p => p.ble_temp_max), '#d9a441'));
   }
   updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined }, timeOptions);
 
   const humidityDatasets = [
     ...bandDatasets('Internal %RH', points.map(p => p.internal_humidity), points.map(p => p.internal_humidity_min), points.map(p => p.internal_humidity_max), '#4f8fd9'),
-    ...bandDatasets('Wired %RH', points.map(p => p.wired_humidity), points.map(p => p.wired_humidity_min), points.map(p => p.wired_humidity_max), '#4ade80')
+    ...bandDatasets('Fallback %RH', points.map(p => p.wired_humidity), points.map(p => p.wired_humidity_min), points.map(p => p.wired_humidity_max), '#4ade80')
   ];
   if (hasBle) {
-    humidityDatasets.push(...bandDatasets('BLE %RH', points.map(p => p.ble_humidity), points.map(p => p.ble_humidity_min), points.map(p => p.ble_humidity_max), '#d9a441'));
+    humidityDatasets.push(...bandDatasets('External %RH', points.map(p => p.ble_humidity), points.map(p => p.ble_humidity_min), points.map(p => p.ble_humidity_max), '#d9a441'));
   }
   updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);
 }
