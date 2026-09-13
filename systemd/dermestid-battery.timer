@@ -1,8 +1,13 @@
 [Unit]
-Description=Run the BLE sensor battery check daily (currently SensorPush-HT1-specific)
+Description=Run the BLE sensor battery check every few hours (currently SensorPush-HT1-specific)
 
 [Timer]
-OnCalendar=daily
+# Fires every 4h, but ble_battery.py itself skips the actual BLE connection
+# unless the last SUCCESSFUL check is more than BATTERY_CHECK_FRESHNESS_HOURS
+# (20h) old - so normal operation still only connects ~once/day. This more
+# frequent firing exists so a FAILED check gets retried within a few hours
+# instead of waiting up to ~24-48h for the next scheduled attempt.
+OnCalendar=*-*-* 0/4:00:00
 # If the Pi was off/rebooting at the scheduled time, run as soon as it's back up
 Persistent=true
 # Spread load slightly if you ever run more than one of these

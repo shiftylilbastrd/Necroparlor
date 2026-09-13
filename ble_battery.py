@@ -23,14 +23,23 @@ when present (see its on_advertisement()). This script only matters
 if you're using a brand whose passive ad omits battery info the way
 SensorPush's does.
 
-Meant to run periodically (see systemd/dermestid-battery.timer -
-daily by default), NOT continuously: the HT1 allows only one BLE
-connection at a time, so holding one open would block the SensorPush
-phone app (if you also use it) from ever connecting.
+Meant to run periodically (see systemd/dermestid-battery.timer - every
+4h by default, though it internally skips most of those runs once a
+recent successful check is on file, see BATTERY_CHECK_FRESHNESS_HOURS
+below), NOT continuously: the HT1 allows only one BLE connection at a
+time, so holding one open would block the SensorPush phone app (if
+you also use it) from ever connecting.
 
 If a check fails - e.g. the phone app happened to be connected at the
-same moment - it's logged as a warning and simply retried at the next
-scheduled run. No connection means no reading, not a crash.
+same moment - it's logged as a warning. Rather than waiting a full
+day for the next scheduled run, the timer now fires every few hours
+(see systemd/dermestid-battery.timer) and this script skips the
+actual BLE connection attempt whenever the last SUCCESSFUL check is
+still fresh (see BATTERY_CHECK_FRESHNESS_HOURS below) - so under
+normal operation it still only genuinely connects to the sensor
+about once a day, but a failed attempt gets retried within a few
+hours instead of up to ~24-48h later. No connection means no
+reading, not a crash.
 
 GATT characteristic and voltage formula are from the community's
 reverse-engineered HT1 protocol documentation (MIT licensed):
@@ -41,6 +50,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import struct
+import time
 
 from bleak import BleakClient
 
@@ -69,6 +79,16 @@ RETRY_DELAY_SECONDS = 10
 BATTERY_FULL_V = 3.1
 BATTERY_EMPTY_V = 2.1
 LOW_BATTERY_PCT = 15
+
+# The timer now fires every few hours (see systemd/dermestid-battery.timer)
+# instead of daily, specifically so a FAILED check gets retried sooner than
+# a full day later. But the HT1 only allows one BLE connection at a time,
+# and there's no real reason to bother it more than about once a day when
+# things are working - so skip the actual connection attempt whenever the
+# last successful check is still within this window. A failed/missing
+# check leaves battery_ts stale (or unset), so it always falls through and
+# retries on the very next timer fire instead.
+BATTERY_CHECK_FRESHNESS_HOURS = 20
 
 
 def voltage_to_percent(voltage):
@@ -122,6 +142,16 @@ async def main():
         return
 
     address = config["ble_mac"]
+
+    existing = state.get_ble_reading(address)
+    last_ts = (existing or {}).get("battery_ts")
+    if last_ts:
+        age_hours = (time.time() - last_ts) / 3600
+        if age_hours < BATTERY_CHECK_FRESHNESS_HOURS:
+            logging.info(f"Last successful battery check for {address} was "
+                         f"{age_hours:.1f}h ago (< {BATTERY_CHECK_FRESHNESS_HOURS}h) - skipping this run.")
+            return
+
     logging.info(f"Checking battery for {address}...")
     try:
         voltage = await check_with_retries(address)

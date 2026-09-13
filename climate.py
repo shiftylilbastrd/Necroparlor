@@ -224,21 +224,37 @@ def read_temp_and_humidity_f(pin):
     unavailable" failsafe-countdown starts in one evening, each
     recovering within a cycle or two - consistent with ordinary
     single-attempt DHT flakiness, not a genuine sustained failure.
+
+    Logs a warning (visible via `journalctl -u dermestid-climate.service`)
+    only once all DHT_READ_RETRIES attempts are exhausted - not on every
+    individual attempt, since those are expected/routine. Previously this
+    failed completely silently, making a genuinely dead/disconnected
+    sensor indistinguishable from ordinary transient flakiness without
+    reading the raw GPIO trace by hand. Also now catches any exception
+    type, not just RuntimeError - the underlying bit-banged read (this
+    project runs with use_pulseio=False, since pulseio isn't available on
+    Raspberry Pi) can occasionally raise other exception types too, and
+    those shouldn't be able to crash the whole control loop.
     """
+    last_error = None
     for attempt in range(DHT_READ_RETRIES):
         try:
             device = _get_dht_device(pin)
             temp_c = device.temperature
             humidity = device.humidity
-        except RuntimeError:
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
             if attempt < DHT_READ_RETRIES - 1:
                 time.sleep(DHT_READ_RETRY_DELAY_SECONDS)
                 continue
+            logging.warning(f"DHT22 on GPIO{pin} failed after {DHT_READ_RETRIES} attempts: {last_error}")
             return None, None
         if temp_c is None or humidity is None:
+            last_error = "device returned None for temperature/humidity"
             if attempt < DHT_READ_RETRIES - 1:
                 time.sleep(DHT_READ_RETRY_DELAY_SECONDS)
                 continue
+            logging.warning(f"DHT22 on GPIO{pin} failed after {DHT_READ_RETRIES} attempts: {last_error}")
             return None, None
         return temp_c * 9.0 / 5.0 + 32.0, humidity
     return None, None

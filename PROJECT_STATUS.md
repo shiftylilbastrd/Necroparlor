@@ -718,3 +718,90 @@ pattern has been consistent: tie things to identity, never to role.
   lines added on the Pi, or it'll silently only find indices the camera
   service isn't already holding open). `config.json`'s camera block
   needs no migration for this batch - no key was renamed.
+- **[open, 2026-09-13]** BLE battery check retry cadence fixed:
+  `ble_battery.py` failing (e.g. the SensorPush phone app happened to
+  be connected) used to mean waiting a full 24h+ for the next
+  `OnCalendar=daily` timer fire before retrying - user reported this
+  directly ("a mechanism needs to be in place so it doesn't just
+  repeatedly fail"). Fixed with a freshness check rather than just a
+  blunter timer: `dermestid-battery.timer` now fires every 4h
+  (`OnCalendar=*-*-* 0/4:00:00`), but `ble_battery.py`'s `main()` skips
+  the actual BLE connection attempt whenever `battery_ts` (already
+  existed in `ble_readings`, previously only used for display) shows
+  the last *successful* check is under `BATTERY_CHECK_FRESHNESS_HOURS`
+  (20h) old. Net effect: normal operation still only genuinely connects
+  to the sensor ~once/day (same HT1 single-connection-at-a-time
+  consideration as before), but a failed day now gets retried within a
+  few hours instead of up to ~24-48h later. Verified via a standalone
+  logic-replica test (6 cases: never-checked, fresh, just-under-
+  threshold, just-over-threshold, stale/failed-yesterday, falsy
+  `battery_ts`) - real BLE connection logic itself untestable in this
+  sandbox (no `bleak`/hardware). **Still needs**: re-copying
+  `systemd/dermestid-battery.timer` to `/etc/systemd/system/` and
+  `daemon-reload` + timer restart on the Pi (same one-time-install
+  caveat as any `.timer`/`.service` change - `git pull`/`auto_update.sh`
+  alone won't pick this up).
+- **[open, 2026-09-13]** `climate.py`'s `read_temp_and_humidity_f()`
+  (the wired DHT22 probe reader, used for both the internal sensor in
+  `dht22` mode and the external sensor's `local_gpio` fallback) never
+  logged anything on failure - it silently returned `(None, None)`
+  after exhausting `DHT_READ_RETRIES`, and only caught `RuntimeError`
+  specifically (any other exception type would have propagated
+  uncaught and potentially crashed the control loop). Found while
+  investigating the user's report of missing wired/Fallback sensor
+  data persisting after the Pi 4 migration - there was genuinely no way
+  to see in the logs whether that specific probe was failing at all.
+  Fixed: now catches any exception type (never crashes the loop) and
+  logs a `journalctl -u dermestid-climate.service`-visible warning,
+  naming the GPIO pin and the specific error, only once all retries are
+  exhausted (not per-attempt, since a single flaky attempt is routine
+  and expected - see the existing docstring reasoning above this fix).
+  Verified via a standalone logic-replica test (5 cases: clean success,
+  transient `RuntimeError` then recovery, transient non-`RuntimeError`
+  then recovery, all-attempts-raise, all-attempts-return-`None`) -
+  `climate.py` itself can only be `ast.parse`d in this sandbox, not
+  imported/run (needs real `RPi.GPIO`/`adafruit_dht`/hardware). **Still
+  open**: the user's physical wiring (signal=pin7/BCM4, ground=pin9,
+  power=pin17) was independently confirmed correct against
+  `PIN_EXTERNAL_TEMP=4`, ruling out mis-wiring - once this logging fix
+  is deployed and the probe fails again, `journalctl -u
+  dermestid-climate.service -n 40` should finally say *why*
+  (connection/sensor/Pi4-timing) instead of just that the field is
+  empty.
+- **[open, 2026-09-13]** User reports the light-override icon (see the
+  manual light-override entry above) still isn't visible on the Home
+  page live view despite "all the changes have been committed and
+  applied." Confirmed the relevant code genuinely is present in this
+  repo's `templates/home.html` (`lightToggleBtn`, `toggleLight()`,
+  the CSS) - so this isn't a code bug here, it's a deploy-visibility
+  gap on the Pi. Two known precedents in this exact project for
+  "code is right but the page doesn't show it," in order of likelihood
+  to check first: (1) a stale duplicate template sitting at the repo
+  root instead of `templates/` (see the `[resolved, 2026-09-13]`
+  Camera-nav-link entry above - this exact symptom, previously
+  root-caused to exactly this) - check `ls *.html` at the repo root on
+  both the user's local folder and the Pi's working copy; (2) if that's
+  clean, Flask's production-mode (`debug=False`) template caching
+  meaning `dermestid-web.service` needs an explicit restart to pick up
+  a changed `.html` file even after a successful `git pull` - the
+  Data-page "Fallback missing" entry above already documented this
+  exact class of issue once before. Not yet confirmed which (if
+  either) applies here.
+- **[open, 2026-09-13]** Video "still choppy... nothing like a true
+  live feed" reported again after the Discover/auto-restart UX batch
+  shipped. Root cause is almost certainly still the same one already
+  identified two rounds ago, not a new problem: the user had
+  `live_capture_interval_seconds` set to `2` (2s between frames =
+  0.5fps; the tuned default is `0.2`, ~5fps) and, separately, the new
+  Discover-and-prefill feature had set the operational live-capture
+  resolution to the camera's max 1920x1080 (via Save) rather than a
+  performance-appropriate value - both compound the same symptom.
+  Recommended fix given: set `live_capture_interval_seconds` back to
+  `~0.2` and resolution back down to `1280x720` (or lower) on the
+  Config page. **Not yet confirmed by the user whether this was
+  actually applied** - the most recent message doesn't make clear
+  whether this specific change was tried, so this remains the first
+  thing to rule out before treating this as a deeper pipeline problem
+  (capture rate, encode time, or relay overhead - see the Pi
+  3B+-era live-view-performance entry above, which may or may not
+  still be relevant post-Pi-4-migration).
