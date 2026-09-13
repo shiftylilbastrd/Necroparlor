@@ -521,6 +521,19 @@ def api_camera_discover():
         return jsonify({"error": "Could not parse discovery output - see logs/camera.log or run "
                                   "discover_camera.py manually on the Pi."}), 500
 
+    # Remember each device's probed resolutions in config.json, keyed by
+    # index - so switching back to (or reloading the page on) a device
+    # already discovered once doesn't fall back to the generic, unverified
+    # COMMON_RESOLUTIONS list until Discover gets clicked again. See
+    # DEFAULT_CONFIG["camera_known_resolutions"]'s comment in
+    # shared_state.py.
+    if devices:
+        config = state.load_config()
+        known = config.setdefault("camera_known_resolutions", {})
+        for d in devices:
+            known[str(d["index"])] = d.get("supported_resolutions") or []
+        state.save_config(config)
+
     response = {"devices": devices}
     if not devices:
         response["hint"] = ("No camera found on indices 0-9. If dermestid-camera.service is "

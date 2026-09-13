@@ -119,7 +119,7 @@
     </div>
     <div class="field">
       <label>Device (index, e.g. "0", or a /dev path)</label>
-      <input type="text" id="cameraDeviceInput" placeholder="0">
+      <input type="text" id="cameraDeviceInput" placeholder="0" oninput="onCameraDeviceInput()">
     </div>
     <button class="save-btn" onclick="discoverCameras()" id="cameraDiscoverBtn" style="margin-top:2px;">Discover</button>
     <div id="cameraDiscoverResults" style="margin-top:10px; display:none;">
@@ -206,6 +206,44 @@ function populateResolutionOptions(resolutions, selectedW, selectedH) {
   }
 }
 
+// Populated from config.json's camera_known_resolutions (see
+// shared_state.py's DEFAULT_CONFIG) every time loadConfig() runs - this
+// is what lets a previously-Discovered device's resolution list survive
+// a page reload or switching back to it, without needing to click
+// Discover again. Keyed by device index as a string, same as the
+// server-side cache.
+let knownCameraResolutions = {};
+
+// Shared by loadConfig() (initial page load) and onCameraDeviceInput()
+// (typing/switching the device field afterward) - looks up the given
+// device key in the persisted cache first, then lastDiscoveredCameras
+// (this session's own fresher Discover results, if any), and only
+// falls back to the generic, unverified COMMON_RESOLUTIONS list if
+// neither has anything for this device.
+function applyResolutionsForDevice(deviceKey, selectedW, selectedH) {
+  const live = lastDiscoveredCameras[deviceKey] || lastDiscoveredCameras[Number(deviceKey)];
+  const cached = knownCameraResolutions[deviceKey];
+  const resolutions = (live && live.supported_resolutions && live.supported_resolutions.length)
+    ? live.supported_resolutions
+    : (cached && cached.length) ? cached : COMMON_RESOLUTIONS;
+  populateResolutionOptions(resolutions, selectedW, selectedH);
+  const hint = document.getElementById('cameraResolutionHint');
+  if (resolutions !== COMMON_RESOLUTIONS) {
+    hint.textContent = `Confirmed supported by this camera (${resolutions.length} mode${resolutions.length === 1 ? '' : 's'}, remembered from a previous Discover).`;
+  } else {
+    hint.textContent = 'Common resolutions shown - click Discover above to narrow this to only what your camera actually supports.';
+  }
+}
+
+// Fires as the Device field is typed into (not just when Discover finds
+// something) - if this exact value was Discovered before, at any point,
+// its resolution list comes back immediately with no need to re-run
+// Discover just because you're switching back to a camera you already
+// checked.
+function onCameraDeviceInput() {
+  applyResolutionsForDevice(document.getElementById('cameraDeviceInput').value.trim(), null, null);
+}
+
 async function loadConfig() {
   const res = await fetch('/api/status');
   const data = await res.json();
@@ -223,8 +261,9 @@ async function loadConfig() {
   updateSignalDisplay(data);
 
   const cam = data.config.camera || {};
+  knownCameraResolutions = data.config.camera_known_resolutions || {};
   document.getElementById('cameraDeviceInput').value = cam.device ?? '0';
-  populateResolutionOptions(COMMON_RESOLUTIONS, cam.width ?? 1280, cam.height ?? 720);
+  applyResolutionsForDevice(cam.device ?? '0', cam.width ?? 1280, cam.height ?? 720);
   document.getElementById('cameraQualityInput').value = cam.jpeg_quality ?? 80;
   document.getElementById('cameraFpsInput').value = cam.live_capture_fps ?? 5;
   document.getElementById('cameraRelayFpsInput').value = cam.stream_relay_fps ?? 7;
@@ -445,22 +484,12 @@ function selectCameraIndex(index) {
   document.getElementById('cameraDeviceInput').value = index;
   // discover_camera.py actually tests a list of common resolutions
   // against this specific device (see probe_supported_resolutions) and
-  // reports back only the ones it genuinely supports - use THAT list
-  // for the dropdown instead of the generic COMMON_RESOLUTIONS fallback,
-  // so picking from it can't offer a resolution this camera doesn't
-  // actually have a mode for. Falls back to the generic list if an
-  // older discover_camera.py (or a probe that came back empty for some
-  // other reason) didn't provide one.
+  // reports back only the ones it genuinely supports - applyResolutionsForDevice()
+  // prefers this session's own fresh lastDiscoveredCameras entry over
+  // the persisted cache, so a just-run Discover always wins even if it
+  // found something different than last time.
   const device = lastDiscoveredCameras[index];
-  if (device) {
-    const resolutions = (device.supported_resolutions && device.supported_resolutions.length)
-      ? device.supported_resolutions : COMMON_RESOLUTIONS;
-    populateResolutionOptions(resolutions, device.width, device.height);
-    document.getElementById('cameraResolutionHint').textContent =
-      (device.supported_resolutions && device.supported_resolutions.length)
-        ? `Confirmed supported by this camera (${resolutions.length} mode${resolutions.length === 1 ? '' : 's'}).`
-        : 'Common resolutions shown - this camera\'s own supported list came back empty.';
-  }
+  applyResolutionsForDevice(String(index), device ? device.width : null, device ? device.height : null);
   document.querySelectorAll('.camera-discover-item').forEach(el => el.classList.remove('selected'));
   const chosen = document.getElementById(`cam-discover-${index}`);
   if (chosen) chosen.classList.add('selected');

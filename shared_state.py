@@ -129,6 +129,18 @@ DEFAULT_CONFIG = {
         "live_capture_fps": 5,       # camera_service.py's own capture rate
         "stream_relay_fps": 7,       # webapp.py's per-viewer MJPEG relay rate
     },
+    # Cache of discover_camera.py's own probed results, keyed by device
+    # index as a string (e.g. "0") - NOT a user-facing setting, just
+    # memory of what Discover already found, so switching back to a
+    # previously-discovered device (or just reloading the Config page)
+    # doesn't fall back to the generic, unverified COMMON_RESOLUTIONS
+    # list until Discover gets clicked again. Populated by
+    # api_camera_discover() in webapp.py every time Discover actually
+    # runs; only keyed by plain index, since that's the only form
+    # selectCameraIndex() ever sets the device field to - a hand-typed
+    # /dev/v4l/by-id/... path won't have a cached entry, which is fine,
+    # it just falls back to COMMON_RESOLUTIONS like before this existed.
+    "camera_known_resolutions": {},
     "modes": {
         "dormant": {
             # Cold enough to slow metabolism way down (less feeding,
@@ -180,14 +192,22 @@ CAMERA_HEIGHT_BOUNDS = (120, 1080)
 CAMERA_QUALITY_BOUNDS = (30, 95)   # JPEG quality - below 30 is visibly
                                     # useless, above 95 has negligible
                                     # visual benefit for a large size cost
-CAMERA_FPS_BOUNDS = (0.1, 10)  # frames/sec - camera_service.py's own
+CAMERA_FPS_BOUNDS = (0.1, 20)  # frames/sec - camera_service.py's own
 # capture rate. A floor of 0.1fps (one frame per 10s) rather than the
 # old interval-based floor's equivalent of one frame per 30s: going
 # slower than that isn't really a "live view" anymore, it overlaps with
 # what the separate timelapse/snapshot_interval_minutes feature is
 # already for - tightening this bound removes that redundant range
 # rather than preserving it. See camera_service.py's docstring for the
-# Pi-CPU-vs-smoothness trade-off at the fast end.
+# Pi-CPU-vs-smoothness trade-off at the fast end. Ceiling raised from an
+# original 10 to match STREAM_RELAY_FPS_BOUNDS below - the original 10
+# cap blocked testing higher rates before there was any real evidence
+# it would help, and Pi-health data (see PROJECT_STATUS.md) shows this
+# Pi has CPU/thermal headroom well beyond 10fps. Note: 5->10fps testing
+# didn't noticeably reduce perceived "jitter," which points more at the
+# capture/relay pipeline's frame-timing consistency than at the raw fps
+# number - raising this ceiling is about not blocking further testing,
+# not an expectation that a bigger number alone fixes the complaint.
 STREAM_RELAY_FPS_BOUNDS = (0.2, 20)  # frames/sec - the per-viewer MJPEG
 # relay rate (webapp.py's api_camera_stream), independent of the capture
 # rate above - see the "camera" DEFAULT_CONFIG comment for why this is

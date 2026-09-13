@@ -1213,3 +1213,59 @@ pattern has been consistent: tie things to identity, never to role.
     against every template file, not just eyeballing the diff - worth
     doing that check by default before pushing any template change from
     now on, not only after something breaks.
+  - **[CONFIRMED, 2026-09-13]** User confirmed the site loads again after
+    the fix above. Unrelated to the Jinja bug itself but hit in the same
+    session: their `update-dermestid` shell alias (`~/.bashrc`, personal,
+    not part of this repo) was calling `./auto_update.sh` directly, which
+    needs the executable bit - lost at some point, most likely because
+    their commit path goes through GitHub Desktop on Windows, which has
+    no concept of a Unix executable bit and can write the file back as
+    non-executable. Changed the alias to `bash auto_update.sh` instead
+    (matching what `webapp.py`'s own "Update now" button already does),
+    which no longer depends on that bit at all - should stop recurring.
+  - **Still open**: the Light badge/door-banner/sticky-nav UI batch and
+    the door-banner redundant-poll fix (both earlier entries above) are
+    not yet confirmed working on real hardware - worth a check next time
+    the dashboard's up.
+
+- **[2026-09-13] Camera resolution memory (Discover no longer needed on
+  every device switch)**
+  - User asked for the device to remember which resolutions
+    `discover_camera.py` already found for the currently-selected camera,
+    so switching devices (or just reloading Config) doesn't fall back to
+    the generic, unverified `COMMON_RESOLUTIONS` list until Discover gets
+    clicked again.
+  - New `config.json` key `camera_known_resolutions`: a plain dict keyed
+    by device index as a *string* (e.g. `"0"`), value = that device's
+    list of confirmed-supported resolutions from the last time Discover
+    actually ran. Added to `DEFAULT_CONFIG` in `shared_state.py`; existing
+    config.json files on disk backfill this key automatically the next
+    time `load_config()` merges against defaults, no migration needed.
+  - `webapp.py`'s `api_camera_discover()` now writes into this dict for
+    every device Discover finds, right before returning its response -
+    so the cache is always as fresh as the last real probe.
+  - `templates/config.html`: added a shared `applyResolutionsForDevice()`
+    helper used by both `loadConfig()` (on page load) and the device
+    input field's new `oninput` handler (`onCameraDeviceInput()`) - it
+    prefers a *live* Discover result from this page session if one
+    exists, falls back to the persisted `camera_known_resolutions` cache
+    otherwise, and only falls back to the generic `COMMON_RESOLUTIONS`
+    list if neither exists yet for that device. `selectCameraIndex()`
+    (clicking a device in the Discover results list) was refactored to
+    reuse the same helper instead of duplicating the logic. The
+    resolution-dropdown hint text now says "remembered from a previous
+    Discover" when serving from either the live or cached result, versus
+    "click Discover above" when it's still showing the generic list.
+  - Verified clean before pushing: `python3 -m py_compile shared_state.py
+    webapp.py` and a real Jinja2 parse check
+    (`env.get_template(name)`) against all six templates - both clean.
+    This check is now standard practice after the earlier
+    `{% block %}`-in-a-comment incident above broke every page; doing it
+    by default is cheap insurance against a repeat.
+  - **Not yet confirmed working on real hardware.** To test: run Discover
+    once for a camera, then either reload the Config page or switch to a
+    different device and back - the resolution dropdown should repopulate
+    immediately from memory without Discover needing to run again.
+    `dermestid-web.service` needs a restart to pick up the `webapp.py` /
+    `config.html` changes (config.json itself needs no manual edit - the
+    new key just starts empty and fills in the next time Discover runs).
