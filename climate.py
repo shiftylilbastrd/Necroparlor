@@ -89,7 +89,20 @@ PIN_HEATER = 22
 PIN_HUMIDITY = 23
 PIN_SERVO = 18            # PWM-capable pin
 PIN_INTERNAL_TEMP = 27    # wired DHT22/AM2302 (internal_source: "dht22", default)
-PIN_EXTERNAL_TEMP = 4     # wired external probe fallback (local_gpio mode)
+PIN_EXTERNAL_TEMP = 5     # wired external probe fallback (local_gpio mode)
+                          # NOT GPIO4 (physical pin 7) - confirmed dead on this
+                          # Pi 4 board 2026-09-13: `pinctrl get 4` reads "lo"
+                          # even configured as input with its internal pull-up
+                          # enabled and with nothing physically connected to
+                          # it - a pin in that state can only read high, so
+                          # this is a hardware fault on the board itself, not
+                          # a wiring/sensor/software issue (see
+                          # PROJECT_STATUS.md for the full elimination trail:
+                          # ruled out 1-Wire, pigpiod, supply voltage, GPIO
+                          # backend, and the sensor unit itself in turn).
+                          # Moved to GPIO5 (physical pin 29) instead - rewire
+                          # the probe's DATA line from physical pin 7 to
+                          # physical pin 29; GND/VCC are unchanged.
 PIN_LIGHT = 26            # moved off GPIO15 (was sharing UART0 RXD - see README)
 PIN_SWITCH = 24
 

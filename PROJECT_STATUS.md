@@ -1090,3 +1090,51 @@ pattern has been consistent: tie things to identity, never to role.
     would produce exactly this kind of persistent, one-sided failure.
     Worth confirming which type of DHT22 is on the wired external run,
     and whether a pull-up resistor was added.
+  - **[RESOLVED, 2026-09-13]** Both hypotheses above turned out to be
+    wrong, ruled out one at a time with real evidence rather than
+    assumption:
+    - 1-Wire: confirmed off (`grep -i w1 config.txt`, `/sys/bus/w1/
+      devices/`, `lsmod | grep w1` all empty).
+    - `pigpiod`/Remote GPIO: confirmed not installed at all (`systemctl
+      status pigpiod` - unit not found; `dpkg -l | grep pigpio` - empty).
+    - Dual GPIO-backend race (RPi.GPIO direct import vs. Blinka's own
+      backend): ruled out - `pip3 show RPi.GPIO` shows `Required-by:
+      Adafruit-Blinka`, meaning Blinka uses the very same `RPi.GPIO`
+      install for the DHT22 bitbang reads, not a separate/competing
+      backend. One unified access path, no cross-library conflict.
+    - Supply voltage (3.3V vs. the internal sensor's 5V): ruled out by
+      direct test - moved the external probe's VCC from pin 17 (3.3V)
+      to 5V, failure persisted identically, reverted.
+    - The physical DHT22 sensor unit itself: ruled out by swapping which
+      sensor head sat on which wiring run (internal <-> external) while
+      leaving the wires themselves in place - the failure stayed with
+      the GPIO4 wiring regardless of which sensor was attached to it.
+    - **Root cause, confirmed directly**: `pinctrl get 4` with the DATA
+      wire physically unplugged from the Pi's header entirely (nothing
+      connected to the pin at all) still reported the pin reading `lo`
+      despite being configured as an input with its internal pull-up
+      enabled. A pin in that exact configuration can only read high if
+      it's functioning correctly - there is no wiring, sensor, or config
+      state that can make a genuinely floating, pulled-up input read
+      low. This is a hardware fault in GPIO4 on this specific Pi 4
+      board (comparison: `pinctrl get 27` read `hi`, the expected/
+      correct idle state, the whole time).
+    - **Fix applied**: `PIN_EXTERNAL_TEMP` moved from GPIO4 to GPIO5
+      (physical pin 29, previously unused by this project) in
+      `climate.py`, with a comment explaining why. README's external-
+      probe wiring instructions and both other GPIO4 mentions updated
+      to match. **User still needs to physically move the DATA wire**
+      from physical pin 7 to physical pin 29 (GND/VCC unchanged) and
+      restart `dermestid-climate.service` after pulling this update -
+      not yet confirmed working on real hardware.
+    - Worth noting for the historical record: this whole investigation
+      also turned up and fixed a real, independent bug in
+      `read_temp_and_humidity_f()`'s retry logic (see the fps/dropdown
+      entry above this one for the Pi-health batch context, and the
+      code comment in `climate.py` itself for the fix) - `adafruit_dht`
+      silently no-ops retries called within ~2s of a prior attempt on
+      the same device instance, so the original code's 3 "retries" were
+      actually 1 real attempt plus 2 instant echoes of its result. Fixed
+      by recreating the device object on every retry. This is a genuine
+      improvement to both sensors' resilience to ordinary single-attempt
+      flakiness, independent of the GPIO4 hardware fault above.

@@ -72,7 +72,17 @@ Offsets are tied to the *physical sensor*, not to "active"/"fallback" - since wh
 
 ## External reading: a BLE sensor with automatic wired-probe failover
 
-The external (outside-air) reading comes from two sensors working together, not a manual choice: a BLE sensor as the primary, and a wired DHT22/AM2302 probe on GPIO4 as an always-connected fallback. `climate.py` reads both every single cycle and automatically uses whichever one is actually fresh - the BLE sensor whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s, the same window the sensor-failure failsafe uses elsewhere), the wired probe automatically otherwise. There's no source toggle to remember to flip - if the BLE sensor drops out, control keeps running on the wired probe with zero action needed, and control switches back the moment it recovers.
+The external (outside-air) reading comes from two sensors working together, not a manual choice: a BLE sensor as the primary, and a wired DHT22/AM2302 probe on GPIO5 (`PIN_EXTERNAL_TEMP`) as an always-connected fallback. `climate.py` reads both every single cycle and automatically uses whichever one is actually fresh - the BLE sensor whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s, the same window the sensor-failure failsafe uses elsewhere), the wired probe automatically otherwise. There's no source toggle to remember to flip - if the BLE sensor drops out, control keeps running on the wired probe with zero action needed, and control switches back the moment it recovers.
+
+Wire the fallback probe like this:
+
+| DHT22/AM2302 pin | Pi pin |
+|---|---|
+| VCC | 5V (pin 2 or 4) |
+| GND | GND (pin 9 or similar) |
+| DATA | GPIO5 (physical pin 29) |
+
+**Not GPIO4 (physical pin 7)**, even though that's the more "obvious" nearby pin and earlier revisions of this project used it. On this specific Pi 4 board, GPIO4 was confirmed dead on 2026-09-13: `pinctrl get 4` reports the pin reading low even configured as an input with its own internal pull-up enabled and with absolutely nothing connected to it - a pin in that state can only physically read high, so this is a hardware fault in the board itself, not the sensor, the wiring, or any software setting. See the dated entry in `PROJECT_STATUS.md` for the full elimination trail (1-Wire, `pigpiod`, supply voltage, GPIO backend, and the sensor unit itself were each individually ruled out first). If you're setting this up on a different Pi, GPIO4 should work fine there - this is specific to this one board.
 
 **Supported BLE sensor brands** (`ble_listener.py`'s decoder, selected via `config.json`'s `ble_sensor_type`): SensorPush, Govee, INKBIRD, Xiaomi, and RuuviTag are supported out of the box - see `shared_state.BLE_SENSOR_LIBRARIES` for the exact package/class each one uses. All of them are passive listening (no pairing, no connection, no gateway or hub needed), so none of them touch the sensor's own battery budget beyond what it already spends broadcasting.
 
@@ -119,7 +129,7 @@ A raw readings table (`/data`), one row per control cycle, every column exactly 
 Things worth knowing:
 - **Range through metal ductwork is the main risk.** Test placement with `discover_ble_sensor.py` running before you seal the sensor into the vent — ductwork can attenuate the signal more than open air.
 - **Advertisements can occasionally pause** until something "wakes" the sensor (a known quirk of at least SensorPush's specifically - the companion app, or another BLE connection, can trigger this; may or may not apply to other brands). This is exactly the situation automatic failover exists for: the wired probe takes over the instant the BLE sensor goes stale, and losing the external reading entirely (both sensors down) still doesn't shut anything down (see "Sensor-failure failsafe" below) - it just pauses thermal cooling specifically until a fresh reading comes back from either one, while heating and dehumidifying keep running on internal data.
-- The old wired external-probe wiring (`PIN_EXTERNAL_TEMP`, GPIO4) is left intact and unused in this mode, so you can switch back any time without touching hardware.
+- The old wired external-probe wiring (`PIN_EXTERNAL_TEMP`, GPIO5) is left intact and unused in this mode, so you can switch back any time without touching hardware.
 
 ### Battery level (~daily check, SensorPush HT1 specifically)
 
@@ -342,7 +352,7 @@ If you're running the SHT31: it's a genuine upgrade — tighter accuracy (±0.2�
 
 `climate.py` watches for internal humidity pegged at or above 99% for more than a minute (SHT31 mode only — this check is skipped entirely on DHT22, which has no heater to pulse) and, when it sees that, pulses the SHT31's heater for 10 seconds (rate-limited to once per 10 minutes) rather than just reporting garbage until it dries out on its own. This check runs on the raw reading *before* the delta-glitch filter, deliberately — a real condensation event can jump straight to ~100% faster than the filter's normal tolerance, and if the recovery logic only looked at filtered readings, a real condensation event would look identical to a dead sensor and slide straight into the emergency-shutdown failsafe instead of ever getting a chance to dry out. The delta-filtered value is still the only thing the actual heat/cool/dehumidify decisions act on, so control quality isn't affected — only the recovery trigger sees the raw value.
 
-The external probe fallback (`local_gpio` mode, wired DHT22/AM2302 on GPIO4) is untouched and still available if you ever stop using a BLE sensor.
+The external probe fallback (`local_gpio` mode, wired DHT22/AM2302 on GPIO5) is untouched and still available if you ever stop using a BLE sensor.
 
 ## Tuning knobs that stay hardcoded (on purpose)
 
