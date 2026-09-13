@@ -10,16 +10,26 @@ only. Don't port-forward it to the internet.
 """
 import time
 import os
+import shutil
 import subprocess
 import threading
 import logging
 import fcntl
 
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, send_file, abort
 
 import shared_state as state
 
 app = Flask(__name__)
+
+# A live camera frame is considered stale once it's older than this many
+# multiples of the CONFIGURED live-capture interval, rather than a fixed
+# number of seconds - keeps the staleness threshold proportional to
+# however fast camera_service.py is actually set to capture, instead of
+# being wrong at either extreme (a fixed 10s threshold would falsely
+# flag a deliberately slow 5s-interval setup, or too slowly notice a
+# genuinely dead 1s-interval one).
+CAMERA_STALE_MULTIPLIER = 5
 
 
 @app.route("/")
@@ -40,6 +50,11 @@ def data_page():
 @app.route("/config")
 def config_page():
     return render_template("config.html", active_page="config")
+
+
+@app.route("/camera")
+def camera_page():
+    return render_template("camera.html", active_page="camera")
 
 
 @app.route("/api/status")
@@ -140,6 +155,74 @@ def api_set_internal_source():
     config["internal_source"] = source
     state.save_config(config)
     state.log_event("info", f"Internal sensor source changed to '{source}'")
+    return jsonify(config)
+
+
+@app.route("/api/camera/status")
+def api_camera_status():
+    config = state.load_config()
+    cam_cfg = config.get("camera", {})
+    interval = cam_cfg.get("live_capture_interval_seconds", 2)
+    available = False
+    age_seconds = None
+    if os.path.exists(state.CAMERA_LIVE_PATH):
+        age_seconds = time.time() - os.path.getmtime(state.CAMERA_LIVE_PATH)
+        available = age_seconds < interval * CAMERA_STALE_MULTIPLIER
+    disk = shutil.disk_usage(state.BASE_DIR)
+    return jsonify({
+        "available": available,
+        "age_seconds": age_seconds,
+        "camera": cam_cfg,
+        "current_mode": config.get("current_mode"),
+        "snapshot_interval_minutes": config.get("modes", {}).get(config.get("current_mode"), {}).get("snapshot_interval_minutes", 0),
+        "snapshot_count": state.get_camera_snapshot_count(),
+        "disk_free_mb": disk.free / (1024 * 1024),
+    })
+
+
+@app.route("/api/camera/latest.jpg")
+def api_camera_latest():
+    if not os.path.exists(state.CAMERA_LIVE_PATH):
+        abort(404)
+    response = send_file(state.CAMERA_LIVE_PATH, mimetype="image/jpeg")
+    # Every poll should get whatever's freshest right now, never a
+    # browser-cached copy from the last one - same reasoning as the
+    # rest of this dashboard's live-updating tiles.
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/camera/snapshots")
+def api_camera_snapshots():
+    """Paginated timelapse gallery listing, same before_ts cursor
+    pattern as /api/events and /api/readings-table."""
+    limit = request.args.get("limit", default=50, type=int)
+    before = request.args.get("before", default=None, type=float)
+    snapshots = state.get_camera_snapshots(limit=limit, before_ts=before)
+    for s in snapshots:
+        s["url"] = f"/api/camera/snapshot/{int(s['ts'])}.jpg"
+    return jsonify(snapshots)
+
+
+@app.route("/api/camera/snapshot/<int:ts>.jpg")
+def api_camera_snapshot(ts):
+    row = state.get_camera_snapshot(ts)
+    if not row or not os.path.exists(os.path.join(state.CAMERA_TIMELAPSE_DIR, row["filename"])):
+        abort(404)
+    return send_file(os.path.join(state.CAMERA_TIMELAPSE_DIR, row["filename"]), mimetype="image/jpeg")
+
+
+@app.route("/api/camera-settings", methods=["POST"])
+def api_set_camera_settings():
+    body = request.get_json(force=True, silent=True) or {}
+    cleaned, error = state.validate_camera_settings(body)
+    if error:
+        return jsonify({"error": error}), 400
+    config = state.load_config()
+    config["camera"] = cleaned
+    state.save_config(config)
+    state.log_event("info", "Camera settings updated - restart the camera service "
+                             "for a device/resolution change to take effect")
     return jsonify(config)
 
 

@@ -12,6 +12,8 @@ Files:
 - `ble_listener.py` — optional background service that listens for a BLE sensor (brand selected via `config.json`'s `ble_sensor_type` - SensorPush, Govee, INKBIRD, Xiaomi, and RuuviTag are supported out of the box, see `shared_state.BLE_SENSOR_LIBRARIES`) and feeds it into `climate.py` as the external reading, instead of a wired probe. Has a self-watchdog: BLE scans can silently stall after many hours of continuous operation without crashing (a known real-world BlueZ/bleak issue) - if 2 minutes pass with no reading actually decoded, it exits deliberately so systemd's `Restart=on-failure` brings it back up fresh rather than sitting there doing nothing indefinitely.
 - `ble_battery.py` — optional one-shot script, run daily by a systemd timer, that briefly connects to check battery level for sensors whose passive broadcast doesn't include it. Currently only implemented for SensorPush's HT1 specifically (see the file's own docstring for why this one, unlike the listener, can't be made brand-generic the same way) - skips itself cleanly if a different brand is configured. Many other brands include battery directly in their passive advertisement instead, which `ble_listener.py` already saves for free when present - check the Data page before assuming you need an equivalent for your brand.
 - `discover_ble_sensor.py` — one-time helper to find your BLE sensors' addresses (whichever brand is configured).
+- `camera_service.py` — optional background service for a USB webcam: writes a live frame for the dashboard's Camera page, and saves timelapse snapshots on a per-mode interval you set on the Config page.
+- `discover_camera.py` — one-time helper to find which `/dev/videoN` index is your actual webcam.
 - `systemd/*.service`, `systemd/*.timer` — units so everything starts on boot, restarts if it crashes, and the battery check runs on schedule.
 
 ## Install
@@ -142,6 +144,51 @@ A couple of things worth knowing:
 - The percentage is a rough estimate from a linear voltage curve (3.1V full, 2.1V empty for the CR2032 it takes), not a precise fuel gauge — treat it as a "getting low, plan a swap" signal rather than an exact number.
 - Daily is a sensible default given how slowly coin cells drain, but you can change the schedule by editing `OnCalendar=` in `dermestid-battery.timer` (e.g. `OnCalendar=weekly`).
 
+## Camera (optional)
+
+A USB webcam pointed into the enclosure, handled by its own optional service (`camera_service.py`) - like the BLE listener, nothing else in this project depends on it, and it's fine to skip entirely.
+
+```bash
+pip3 install opencv-python-headless --break-system-packages
+```
+
+("headless" - no GUI/display dependencies, which a Pi running this as a background service doesn't need and would rather not have to install.)
+
+1. **Plug in the webcam and find its device index:**
+   ```bash
+   python3 discover_camera.py
+   ```
+   This tries `/dev/video0` through `/dev/video9`, saves a sample JPEG for each one that actually opens and reads a frame, and tells you which index each came from. Some webcams register more than one `/dev/videoN` node (one for actual video, one for metadata) - look at the saved images to tell which index is the real camera.
+
+2. **Set it on the dashboard** (Config page's Camera card), or by hand-editing `config.json`:
+   ```json
+   "camera": {
+     "device": "0",
+     "width": 1280,
+     "height": 720,
+     "jpeg_quality": 80,
+     "live_capture_interval_seconds": 2
+   }
+   ```
+   `device` can be a bare index (`"0"`) or a full path - a `/dev/v4l/by-id/...` symlink is more robust than a bare index if you ever have more than one USB video device connected, since indices can shuffle across a reboot depending on enumeration order but a by-id symlink won't. A device/resolution change needs the camera service restarted to take effect (read once at startup, same reasoning as the BLE sensor brand setting); quality and the live-view interval take effect within one cycle.
+
+3. **Run it** alongside the other services:
+   ```bash
+   python3 camera_service.py
+   ```
+
+**Live view** (`/camera` page): the service captures a frame every `live_capture_interval_seconds` and overwrites a single `camera/latest.jpg` - the dashboard just polls and displays whatever's currently there. This is deliberately a periodically-refreshed still, not a true video stream (MJPEG or similar): a real USB webcam typically only accepts one client connection at a time anyway, so a shared file that any number of dashboard viewers can read independently avoids that limitation entirely, at the cost of not being literally live-motion video.
+
+**Timelapse**: each of the three modes (Dormant/Ready/Cleaning) has its own `snapshot_interval_minutes` on the Config page, right next to that mode's setpoints - `0` means never (no timelapse capture while in that mode). Whichever mode is currently active is the one whose interval applies; switching modes doesn't itself trigger an immediate snapshot, it just changes how often future ones happen. Saved frames accumulate under `camera/timelapse/` (and a matching `camera_snapshots` row in `dermestid.db`) and are browsable, newest first, on the Camera page - same "Load more" pagination as the Logs and Data pages.
+
+**Disk space**: timelapse frames are meant to be kept, not aggressively pruned - that's the whole point of a timelapse - so there's no day-to-day retention/rotation setting. What exists instead is a hardcoded safety net: if free disk space drops below 200MB, the service deletes the oldest saved snapshots (logging a warning, once, not every cycle) to keep the SD card from actually filling up and taking the whole Pi down - which would also kill climate control, the actually safety-critical part of this project. If you see that warning regularly, lower the snapshot interval, resolution, or JPEG quality rather than relying on it to keep bailing you out.
+
+```bash
+sudo cp systemd/dermestid-camera.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dermestid-camera.service
+```
+
 ## Run permanently (recommended)
 
 ```bash
@@ -153,6 +200,8 @@ sudo systemctl enable --now dermestid-web.service
 sudo systemctl enable --now dermestid-ble.service
 # optional daily battery check, see below:
 sudo systemctl enable --now dermestid-battery.timer
+# only if you're using a USB webcam, see "Camera" above:
+sudo systemctl enable --now dermestid-camera.service
 ```
 
 Check status/logs:
@@ -189,6 +238,7 @@ Paste this in, save, and exit:
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-climate.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-web.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-ble.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-camera.service
 ```
 
 (Run `which systemctl` first and double-check it matches `/usr/bin/systemctl` — if your system has it somewhere else, use that exact path instead, since `sudoers` rules must match exactly.)
@@ -272,3 +322,5 @@ The external probe fallback (`local_gpio` mode, wired DHT22/AM2302 on GPIO4) is 
 ## Tuning knobs that stay hardcoded (on purpose)
 
 Things like hysteresis bands, the sensor-failure timeout, the heater/fan runtime cutoffs, and the SHT31 condensation-recovery thresholds live as constants at the top of `climate.py` rather than in the web UI — they're safety guardrails, not day-to-day settings. If you want to adjust them, edit the constants directly and restart the service.
+
+Same idea in `camera_service.py`: its capture-stall watchdog timeout, the consecutive-failure count before it proactively reopens the device, and the low-disk-space snapshot-pruning threshold are all constants at the top of that file, not Config-page settings — see the "Camera" section above for the reasoning.

@@ -19,14 +19,31 @@ rather than just editing it silently.
   (full SensorPush→generic-BLE rebrand, the fixed-sensor-identity
   dashboard redesign, branch-selection in the update system, and
   several smaller fixes) has been merged into `main`, and the Pi has
-  been switched back to tracking `main`. No feature branch is
-  currently active - if you see one, it's new work, not something in
-  progress from before.
+  been switched back to tracking `main`.
+- **`add-webcam` is now an active feature branch** (started 2026-09-12):
+  adding an optional USB webcam - live view + per-mode timelapse. See
+  the "Camera / timelapse" load-bearing-decisions section below. Not
+  yet run against real hardware - see Open threads.
 - The Pi should have `dermestid-ble.service` installed and enabled
   (replacing the old `dermestid-sensorpush.service`, which should be
   stopped/disabled/removed). Sudoers should authorize
   `dermestid-ble.service`, not the old name.
-- `config.json` is deliberately **not git-tracked** (see below) - a
+- **[correction, 2026-09-12]** `config.json` is *supposed to be*, and
+  as of this entry actually IS again, not git-tracked - but it had
+  silently drifted back to being tracked (last touched by a normal
+  "Add files via upload" commit, `f25443d`) with no corresponding
+  `.gitignore` entry, directly contradicting this file's own older
+  claim below that it wasn't. Almost certainly an accidental
+  re-upload via the GitHub web UI drag-and-drop workflow this project
+  uses for deploys (see "Established workflows" below) - dragging in a
+  local `config.json` re-adds it to the commit if it's included in the
+  drop. Re-fixed here: `git rm --cached config.json` + re-added to
+  `.gitignore`. **If you ever see `config.json` show up as a pending
+  change in `git status` on the Pi again, that's this same drift
+  happening again, not a new bug** - check `.gitignore` and re-remove
+  it from tracking rather than assuming the working file itself is
+  wrong.
+- `config.json` is deliberately **not git-tracked** (see above) - a
   fresh clone won't have one, and that's correct, not a bug.
 
 ## Load-bearing decisions
@@ -184,6 +201,62 @@ pattern has been consistent: tie things to identity, never to role.
   service, a new required config key) - those still need to be done by
   hand, same as the BLE rename itself needed.
 
+### Camera / timelapse (added on `add-webcam`, 2026-09-12)
+- **Separate systemd service (`camera_service.py`), not code inside
+  `webapp.py`** - deliberately mirrors the BLE listener's architecture
+  rather than having Flask open the device itself. Two concrete reasons,
+  not just "for consistency": (1) most USB UVC webcams only accept one
+  open client at a time - if each dashboard viewer's request tried to
+  open the device itself, a second simultaneous viewer would just break;
+  a single background process owning the device and writing a shared
+  `camera/latest.jpg` file sidesteps that entirely. (2) the timelapse
+  has to keep capturing on schedule independent of the web process's own
+  lifecycle, which restarts far more often (every applied update, per
+  `auto_update.sh`) than a capture loop should be interrupted.
+- **Live view is a periodically-overwritten still (`camera/latest.jpg`),
+  not an MJPEG stream** - the dashboard just polls
+  `/api/camera/latest.jpg` on a timer, same pattern as the rest of this
+  dashboard's polled tiles (5s status polling, etc.), not a persistent
+  streaming connection. Simpler, and sidesteps the same multi-viewer
+  device-contention problem above; the tradeoff is genuinely-live motion
+  video is out of scope for now, on purpose.
+- **Timelapse interval is per-mode** (`snapshot_interval_minutes` inside
+  each mode's block in `config.json`, alongside its setpoints), not a
+  single global setting - explicit request, since a mode you barely
+  visit (Dormant) plausibly warrants a different cadence than one you're
+  actively watching. `0` is the sentinel for "never" and is exempt from
+  the normal minutes bounds check.
+- **One global `last_snapshot_time`, not one per mode** - deliberately
+  NOT reset on a mode switch. Switching from a long-interval mode to a
+  short-interval one doesn't itself fire an immediate snapshot just
+  because the mode changed; the newly-active interval simply starts
+  being measured against whenever the last snapshot actually happened,
+  regardless of which mode was active then. Avoids a snapshot burst
+  every time someone flips modes on the dashboard.
+- **Timelapse frames are meant to be kept, not rotated on a schedule** -
+  there's deliberately no "keep N days" setting. The only thing that
+  deletes old snapshots is a hardcoded disk-space safety net
+  (`CAMERA_LOW_DISK_THRESHOLD_MB` = 200MB free, in `camera_service.py`):
+  below that threshold it prunes the oldest snapshots and logs a warning
+  once (not every cycle, same as the sensor-failover logging pattern
+  above). This exists because a full SD card would take down the whole
+  Pi - including climate control, the actually safety-critical part of
+  this project - not because timelapses are meant to be short-lived.
+  Same "hardcoded guardrail, not a UI setting" treatment as climate.py's
+  own runtime cutoffs - see "Tuning knobs that stay hardcoded" in
+  README.md.
+- Snapshot metadata lives in a new `camera_snapshots` SQLite table (ts
+  PRIMARY KEY, mode, filename), matching the whole-second integer `ts`
+  used as the actual JPEG's filename too - so a snapshot's DB row and
+  its file on disk can never disagree about which one it is, and the
+  `/api/camera/snapshot/<int:ts>.jpg` route can look a row up directly
+  from the integer in the URL with no separate mapping.
+- **Not tested against real hardware** - built and reasoned through, and
+  syntax-checked plus smoke-tested against a mocked capture device (see
+  Open threads), but this session had no physical USB webcam or Pi
+  available. Verify the actual device-open/resolution/JPEG-quality
+  behavior for real before trusting it unattended.
+
 ## Established workflows / things that look like bugs but aren't
 
 - Deployment is via dragging files into GitHub's web UI, not git CLI
@@ -231,3 +304,20 @@ pattern has been consistent: tie things to identity, never to role.
   have unverified exact class names (follow the established
   convention but weren't checked against real source) - confirm before
   actually switching to either.
+- **[resolved, 2026-09-12]** `config.json` had drifted back into git
+  tracking with no `.gitignore` entry, contradicting this file's own
+  claim that it wasn't tracked - see the dated correction note under
+  "Current state" above. Re-fixed; watch for it recurring via the
+  drag-and-drop upload workflow.
+- **[open, 2026-09-12]** New USB webcam feature (`add-webcam` branch:
+  `camera_service.py`, `discover_camera.py`, the Camera dashboard page,
+  per-mode `snapshot_interval_minutes`) has NOT been run against real
+  hardware - no physical webcam or Pi was available this session. Only
+  verified: `py_compile` on every new/changed file, and a smoke test
+  against a mocked `cv2.VideoCapture` exercising the main loop's frame-
+  write/snapshot-gating/never-mode/disk-guard logic. Needs real-Pi
+  verification before relying on it: actual device open by index vs.
+  by-id path, real resolution/quality behavior, and whether the
+  watchdog/reopen timing constants (60s stall timeout, reopen after 10
+  consecutive failures) feel right against a real USB webcam's actual
+  failure patterns rather than a simulated one.

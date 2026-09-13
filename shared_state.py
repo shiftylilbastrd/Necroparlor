@@ -27,6 +27,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DB_PATH = os.path.join(BASE_DIR, "dermestid.db")
 
+# Camera output - written by camera_service.py, read by webapp.py. Not
+# git-tracked (runtime data, like the DB) - see .gitignore.
+CAMERA_DIR = os.path.join(BASE_DIR, "camera")
+CAMERA_LIVE_PATH = os.path.join(CAMERA_DIR, "latest.jpg")
+CAMERA_TIMELAPSE_DIR = os.path.join(CAMERA_DIR, "timelapse")
+
 # Used to anchor chart bucket boundaries to local midnight rather than
 # UTC midnight (see _local_utc_offset_seconds in get_history) - hardcoded
 # rather than reading the Pi's own system timezone, since that's one
@@ -81,19 +87,43 @@ DEFAULT_CONFIG = {
         "wired_temp_offset": 0.0,
         "wired_humidity_offset": 0.0,
     },
+    # USB webcam settings for camera_service.py (optional feature - only
+    # relevant if that service is installed/enabled, same as the BLE
+    # listener). "device" is either a plain integer index ("0", "1", ...
+    # matching /dev/videoN) or a full /dev path - a by-id path
+    # (/dev/v4l/by-id/...) is more robust than a bare index if you ever
+    # have more than one USB device, since indices can shuffle across a
+    # reboot depending on enumeration order, a by-id symlink won't.
+    # Resolution/quality are configurable (unlike most of climate.py's
+    # tuning knobs) because they directly trade off against SD card
+    # space for the timelapse - see snapshot_interval_minutes below.
+    "camera": {
+        "device": "0",
+        "width": 1280,
+        "height": 720,
+        "jpeg_quality": 80,
+        "live_capture_interval_seconds": 2,
+    },
     "modes": {
         "dormant": {
             # Cold enough to slow metabolism way down (less feeding,
             # less breeding) without risking cold-killing the colony.
             "low_temp_f": 55.0,
             "high_temp_f": 60.0,
-            "humidity_setpoint": 40.0
+            "humidity_setpoint": 40.0,
+            # Timelapse snapshot cadence for this mode - 0 means never
+            # (no snapshots captured while in this mode). Per-mode
+            # rather than a single global setting, since a mode you
+            # barely visit (dormant) plausibly warrants a different
+            # cadence than one you're actively watching (ready).
+            "snapshot_interval_minutes": 0
         },
         "ready": {
             # Warm/humid enough for active feeding and breeding.
             "low_temp_f": 78.0,
             "high_temp_f": 85.0,
-            "humidity_setpoint": 50.0
+            "humidity_setpoint": 50.0,
+            "snapshot_interval_minutes": 0
         },
         "cleaning": {
             # Same thermal target as "ready" (colony stays active and
@@ -104,7 +134,8 @@ DEFAULT_CONFIG = {
             "high_temp_f": 85.0,
             "humidity_setpoint": 50.0,
             "vent_interval_minutes": 30,
-            "vent_duration_minutes": 5
+            "vent_duration_minutes": 5,
+            "snapshot_interval_minutes": 0
         }
     }
 }
@@ -114,8 +145,26 @@ TEMP_BOUNDS_F = (40.0, 100.0)
 HUMIDITY_BOUNDS = (10.0, 90.0)
 VENT_INTERVAL_BOUNDS = (5, 240)   # minutes
 VENT_DURATION_BOUNDS = (1, 60)    # minutes
+# 0 is the sentinel for "never" (no timelapse capture in that mode) and
+# is validated separately from this range, same pattern as the update-
+# branch/interval validators below.
+SNAPSHOT_INTERVAL_BOUNDS = (1, 1440)  # minutes, when not 0/never
+
+CAMERA_WIDTH_BOUNDS = (160, 1920)
+CAMERA_HEIGHT_BOUNDS = (120, 1080)
+CAMERA_QUALITY_BOUNDS = (30, 95)   # JPEG quality - below 30 is visibly
+                                    # useless, above 95 has negligible
+                                    # visual benefit for a large size cost
+CAMERA_LIVE_INTERVAL_BOUNDS = (1, 30)  # seconds
 
 MAC_ADDRESS_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+# Accepts a bare device index ("0", "1") or a /dev path, including a
+# by-id symlink (/dev/v4l/by-id/usb-...). Not used in a shell command
+# (cv2.VideoCapture takes it directly), so this is a sanity check
+# against garbage input, not a shell-injection guard - still kept
+# reasonably strict since there's no legitimate reason for a device
+# string to contain anything outside this set.
+CAMERA_DEVICE_RE = re.compile(r"^[A-Za-z0-9_/.-]{1,255}$")
 
 # Registry of supported BLE sensor brands for the passive listener
 # (ble_listener.py). Each entry names a PyPI package and the class
@@ -166,6 +215,41 @@ def validate_ble_sensor_type(sensor_type):
 
 
 
+def validate_camera_settings(values):
+    """Validates the USB webcam device/resolution/quality settings for
+    saving. Returns (cleaned_dict, None) on success or (None, error) on
+    failure. Deliberately doesn't try to open the device to confirm it
+    actually exists/works - this just sanity-checks the shape of the
+    input; camera_service.py logs a clear error on its own if the
+    configured device can't actually be opened."""
+    device = values.get("device", "0")
+    if not isinstance(device, str) or not CAMERA_DEVICE_RE.match(device):
+        return None, "device must be a device index (e.g. '0') or a /dev path"
+    try:
+        width = int(values.get("width", 1280))
+        height = int(values.get("height", 720))
+        quality = int(values.get("jpeg_quality", 80))
+        live_interval = int(values.get("live_capture_interval_seconds", 2))
+    except (TypeError, ValueError):
+        return None, "width, height, jpeg_quality, and live_capture_interval_seconds must be whole numbers"
+    if not (CAMERA_WIDTH_BOUNDS[0] <= width <= CAMERA_WIDTH_BOUNDS[1]):
+        return None, f"width must be between {CAMERA_WIDTH_BOUNDS[0]} and {CAMERA_WIDTH_BOUNDS[1]}"
+    if not (CAMERA_HEIGHT_BOUNDS[0] <= height <= CAMERA_HEIGHT_BOUNDS[1]):
+        return None, f"height must be between {CAMERA_HEIGHT_BOUNDS[0]} and {CAMERA_HEIGHT_BOUNDS[1]}"
+    if not (CAMERA_QUALITY_BOUNDS[0] <= quality <= CAMERA_QUALITY_BOUNDS[1]):
+        return None, f"jpeg_quality must be between {CAMERA_QUALITY_BOUNDS[0]} and {CAMERA_QUALITY_BOUNDS[1]}"
+    if not (CAMERA_LIVE_INTERVAL_BOUNDS[0] <= live_interval <= CAMERA_LIVE_INTERVAL_BOUNDS[1]):
+        return None, (f"live_capture_interval_seconds must be between "
+                       f"{CAMERA_LIVE_INTERVAL_BOUNDS[0]} and {CAMERA_LIVE_INTERVAL_BOUNDS[1]}")
+    return {
+        "device": device,
+        "width": width,
+        "height": height,
+        "jpeg_quality": quality,
+        "live_capture_interval_seconds": live_interval,
+    }, None
+
+
 CALIBRATION_KEYS = (
     "internal_temp_offset", "internal_humidity_offset",
     "ble_temp_offset", "ble_humidity_offset",
@@ -205,6 +289,22 @@ def _atomic_write(path, data_str):
     os.replace(tmp_path, path)
 
 
+def atomic_write_bytes(path, data_bytes):
+    """Same write-tmp-then-rename pattern as _atomic_write, for binary
+    data - used by camera_service.py so webapp.py (or a browser
+    fetching /api/camera/latest.jpg directly) never reads a half-written
+    JPEG. Public (no leading underscore) since it's used from a
+    different module, unlike the JSON-specific version above."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "wb") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(data_bytes)
+        f.flush()
+        os.fsync(f.fileno())
+        fcntl.flock(f, fcntl.LOCK_UN)
+    os.replace(tmp_path, path)
+
+
 def load_config():
     if not os.path.exists(CONFIG_PATH):
         save_config(DEFAULT_CONFIG)
@@ -235,10 +335,16 @@ def load_config():
     # Backfill any keys/modes added in later versions of this script so
     # an old config.json on disk doesn't crash a newer climate.py.
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
-    merged.update({k: v for k, v in data.items() if k not in ("modes", "calibration")})
+    merged.update({k: v for k, v in data.items() if k not in ("modes", "calibration", "camera")})
     for mode_name, defaults in DEFAULT_CONFIG["modes"].items():
         merged["modes"][mode_name] = {**defaults, **data.get("modes", {}).get(mode_name, {})}
     merged["calibration"] = {**DEFAULT_CONFIG["calibration"], **data.get("calibration", {})}
+    # Shallow-merged like calibration above (not replaced outright like
+    # most top-level keys) so a config.json from before this field
+    # existed - or one that only ever saved a subset of camera keys -
+    # still backfills whichever camera settings it's missing from
+    # DEFAULT_CONFIG, rather than silently losing them.
+    merged["camera"] = {**DEFAULT_CONFIG["camera"], **data.get("camera", {})}
     return merged
 
 
@@ -286,6 +392,18 @@ def validate_setpoints(mode, values):
             return None, "vent_duration_minutes should be shorter than vent_interval_minutes"
         cleaned["vent_interval_minutes"] = interval
         cleaned["vent_duration_minutes"] = duration
+
+    # Timelapse cadence applies to every mode, not just cleaning - 0 is
+    # the "never" sentinel and is deliberately exempt from
+    # SNAPSHOT_INTERVAL_BOUNDS (which only constrains the non-zero case).
+    try:
+        snapshot_interval = int(values.get("snapshot_interval_minutes", 0))
+    except (TypeError, ValueError):
+        return None, "snapshot_interval_minutes must be a whole number"
+    if snapshot_interval != 0 and not (SNAPSHOT_INTERVAL_BOUNDS[0] <= snapshot_interval <= SNAPSHOT_INTERVAL_BOUNDS[1]):
+        return None, (f"snapshot_interval_minutes must be 0 (never) or between "
+                       f"{SNAPSHOT_INTERVAL_BOUNDS[0]} and {SNAPSHOT_INTERVAL_BOUNDS[1]}")
+    cleaned["snapshot_interval_minutes"] = snapshot_interval
 
     return cleaned, None
 
@@ -355,6 +473,13 @@ def init_db():
         )
     """)
     _migrate_update_state_columns(conn)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS camera_snapshots (
+            ts REAL PRIMARY KEY,
+            mode TEXT,
+            filename TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -770,3 +895,95 @@ def get_recent_events(limit=50, level=None, before_ts=None):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [{"ts": r[0], "level": r[1], "message": r[2]} for r in rows]
+
+
+# --------------------------------------------------------------------------
+# Camera / timelapse (written by camera_service.py, read by webapp.py)
+# --------------------------------------------------------------------------
+
+def save_camera_snapshot(mode, jpeg_bytes):
+    """Writes a timelapse frame to disk under CAMERA_TIMELAPSE_DIR and
+    records it in the DB in one call, keyed by the same WHOLE-SECOND
+    timestamp used as both the DB primary key and the filename - so the
+    two can never disagree about which row a given file belongs to, and
+    webapp.py's /api/camera/snapshot/<int:ts>.jpg route can look a row
+    up directly by the integer it was given in the URL with no separate
+    lookup table or fractional-second rounding to worry about. (Whole
+    seconds are more than enough resolution for a snapshot cadence
+    measured in minutes.) INSERT OR REPLACE mirrors log_reading()'s
+    handling of its own ts-keyed table, for the same reason: two calls
+    landing in the same second should overwrite, not raise.
+
+    Not wrapped in the atomic-write-then-rename pattern used for the
+    live frame (CAMERA_LIVE_PATH) - each timelapse file has its own
+    unique path, so there's no reader that could ever observe a half-
+    written *different* file the way a reader of the single shared
+    latest.jpg path could."""
+    os.makedirs(CAMERA_TIMELAPSE_DIR, exist_ok=True)
+    ts = int(time.time())
+    filename = f"{ts}.jpg"
+    with open(os.path.join(CAMERA_TIMELAPSE_DIR, filename), "wb") as f:
+        f.write(jpeg_bytes)
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO camera_snapshots (ts, mode, filename) VALUES (?,?,?)", (ts, mode, filename))
+    conn.commit()
+    conn.close()
+    return ts, filename
+
+
+def get_camera_snapshots(limit=50, before_ts=None):
+    """Same before_ts cursor-pagination pattern as get_recent_events/
+    get_readings_table, for the Camera page's timelapse gallery."""
+    conn = get_db()
+    query = "SELECT ts, mode, filename FROM camera_snapshots WHERE 1=1"
+    params = []
+    if before_ts:
+        query += " AND ts < ?"
+        params.append(before_ts)
+    query += " ORDER BY ts DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [{"ts": r[0], "mode": r[1], "filename": r[2]} for r in rows]
+
+
+def get_camera_snapshot(ts):
+    conn = get_db()
+    row = conn.execute("SELECT ts, mode, filename FROM camera_snapshots WHERE ts = ?", (ts,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"ts": row[0], "mode": row[1], "filename": row[2]}
+
+
+def get_camera_snapshot_count():
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) FROM camera_snapshots").fetchone()[0]
+    conn.close()
+    return count
+
+
+def prune_oldest_camera_snapshots(n):
+    """Deletes the n oldest timelapse snapshots (DB row + file).
+
+    This exists purely as a disk-space SAFETY NET for camera_service.py,
+    not a day-to-day retention policy - the whole point of a timelapse
+    is to keep frames, so this only fires when free disk space actually
+    drops below a hardcoded threshold (see CAMERA_LOW_DISK_* in
+    camera_service.py), the same "safety guardrail, not a setting"
+    philosophy as climate.py's heater/fan runtime cutoffs. Returns how
+    many were actually removed (can be fewer than n if there aren't
+    that many yet)."""
+    conn = get_db()
+    rows = conn.execute("SELECT ts, filename FROM camera_snapshots ORDER BY ts ASC LIMIT ?", (n,)).fetchall()
+    removed = 0
+    for ts, filename in rows:
+        try:
+            os.remove(os.path.join(CAMERA_TIMELAPSE_DIR, filename))
+        except FileNotFoundError:
+            pass
+        conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
+        removed += 1
+    conn.commit()
+    conn.close()
+    return removed

@@ -2,6 +2,8 @@
 dermestid.db
 dermestid.db-shm
 dermestid.db-wal
+config.json
+camera/
 
 # Logs
 logs/

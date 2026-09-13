@@ -44,11 +44,13 @@ else
     echo "Update found: ${BEFORE:0:7} -> ${AFTER:0:7}"
 fi
 
-# config.json is tracked in git but also gets rewritten by the dashboard
-# (setpoints, sensor source, etc.) - stash any such local changes before
-# pulling OR switching branches so they can't conflict, then restore
-# them afterward. A branch switch can fail on uncommitted changes just
-# as easily as a pull can - same treatment for both.
+# config.json itself is NOT git-tracked (see .gitignore) specifically so
+# the dashboard's own live rewrites of it (setpoints, sensor sources,
+# camera settings, etc.) can never conflict with an incoming update -
+# untracked files are simply left alone by checkout/pull. This stash is
+# a general safety net for anything ELSE that might have local
+# uncommitted changes to a tracked file, which a pull or branch switch
+# could otherwise fail on.
 STASHED=0
 if ! git diff --quiet || ! git diff --cached --quiet; then
     echo "Local changes detected (likely config.json from the dashboard) - stashing"
@@ -82,7 +84,7 @@ echo "Restarting climate control..."
 if ! sudo -n systemctl restart dermestid-climate.service; then
     echo "ERROR: passwordless sudo failed for dermestid-climate.service."
     echo "The code has already been updated (git pull succeeded) - just needs a manual restart:"
-    echo "  sudo systemctl restart dermestid-climate.service dermestid-web.service dermestid-ble.service"
+    echo "  sudo systemctl restart dermestid-climate.service dermestid-web.service dermestid-ble.service dermestid-camera.service"
     echo "See README.md 'Optional: automatic updates from GitHub' for the one-time visudo setup to avoid this going forward."
     exit 1
 fi
@@ -92,7 +94,17 @@ if systemctl is-enabled --quiet dermestid-ble.service 2>/dev/null; then
     if ! sudo -n systemctl restart dermestid-ble.service; then
         echo "ERROR: passwordless sudo failed for dermestid-ble.service."
         echo "(dermestid-climate.service was already restarted successfully above)"
-        echo "Run manually: sudo systemctl restart dermestid-ble.service dermestid-web.service"
+        echo "Run manually: sudo systemctl restart dermestid-ble.service dermestid-web.service dermestid-camera.service"
+        exit 1
+    fi
+fi
+
+if systemctl is-enabled --quiet dermestid-camera.service 2>/dev/null; then
+    echo "Restarting camera service (currently enabled)..."
+    if ! sudo -n systemctl restart dermestid-camera.service; then
+        echo "ERROR: passwordless sudo failed for dermestid-camera.service."
+        echo "(dermestid-climate.service was already restarted successfully above)"
+        echo "Run manually: sudo systemctl restart dermestid-camera.service dermestid-web.service"
         exit 1
     fi
 fi

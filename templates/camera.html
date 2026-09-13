@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Camera - Dermestid Enclosure{% endblock %}
+{% block head_extra %}
+<style>
+  .camera-frame {
+    width: 100%; border-radius: 8px; border: 1px solid var(--panel-border);
+    background: #000; display: block; aspect-ratio: 4 / 3; object-fit: contain;
+  }
+  .camera-unavailable {
+    display: none; background: rgba(217,83,79,0.15); border: 1px solid var(--danger);
+    color: #ffb3b0; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 0.9rem;
+  }
+  .snapshot-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px; margin-top: 12px;
+  }
+  .snapshot-item { border-radius: 8px; overflow: hidden; border: 1px solid var(--panel-border); }
+  .snapshot-item img { width: 100%; display: block; aspect-ratio: 4 / 3; object-fit: cover; }
+  .snapshot-caption { font-size: 0.72rem; color: var(--text-dim); padding: 5px 7px; background: var(--panel); }
+</style>
+{% endblock %}
+{% block content %}
+
+<h1>Camera</h1>
+<div class="subtitle">Live view and timelapse history</div>
+
+<div class="camera-unavailable" id="cameraUnavailable">
+  No recent frame from the camera - check camera_service.py is running and the device is connected.
+</div>
+
+<div class="grid">
+  <div class="card" style="grid-column: 1 / -1; max-width:640px;">
+    <h2>Live</h2>
+    <img class="camera-frame" id="liveFrame" alt="Live camera view">
+    <div class="stat-sub" id="liveStatus" style="margin-top:8px;">Loading...</div>
+  </div>
+</div>
+
+<div class="section-title">Timelapse</div>
+<div class="stat-sub" id="timelapseStatus" style="margin-bottom:8px;"></div>
+<div class="snapshot-grid" id="snapshotGrid"></div>
+<div style="text-align:center; margin-top:14px;">
+  <button id="loadMoreBtn" onclick="loadMoreSnapshots()" style="display:none;">Load more</button>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const SNAPSHOT_PAGE_SIZE = 24;
+let oldestLoadedTs = null;
+
+function fmtAge(seconds) {
+  if (seconds == null) return 'never';
+  if (seconds < 60) return `${Math.round(seconds)}s ago`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+  return `${Math.round(seconds / 3600)}h ago`;
+}
+
+function fmtDateTime(ts) {
+  return new Date(ts * 1000).toLocaleString([], {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+}
+
+async function refreshLive() {
+  try {
+    const res = await fetch('/api/camera/status');
+    const data = await res.json();
+    document.getElementById('cameraUnavailable').style.display = data.available ? 'none' : 'block';
+    const modeLabels = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+    const modeLabel = modeLabels[data.current_mode] || data.current_mode || '?';
+    const snapshotNote = data.snapshot_interval_minutes
+      ? `timelapse every ${data.snapshot_interval_minutes}min in ${modeLabel} mode`
+      : `timelapse off in ${modeLabel} mode`;
+    document.getElementById('liveStatus').textContent =
+      `${data.available ? 'Live' : 'Stale'} - last frame ${fmtAge(data.age_seconds)} - ${snapshotNote} - ${Math.round(data.disk_free_mb)}MB free`;
+    if (data.available) {
+      document.getElementById('liveFrame').src = '/api/camera/latest.jpg?t=' + Date.now();
+    }
+  } catch (e) {
+    document.getElementById('cameraUnavailable').style.display = 'block';
+  }
+}
+
+function renderSnapshots(snapshots, append) {
+  const container = document.getElementById('snapshotGrid');
+  const modeLabels = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+  const html = snapshots.map(s => `
+    <div class="snapshot-item">
+      <img src="${s.url}" loading="lazy" alt="Timelapse frame">
+      <div class="snapshot-caption">${fmtDateTime(s.ts)} · ${modeLabels[s.mode] || s.mode}</div>
+    </div>
+  `).join('');
+  if (append) {
+    container.insertAdjacentHTML('beforeend', html);
+  } else {
+    container.innerHTML = html;
+  }
+  if (snapshots.length > 0) {
+    oldestLoadedTs = snapshots[snapshots.length - 1].ts;
+  }
+  document.getElementById('loadMoreBtn').style.display = snapshots.length < SNAPSHOT_PAGE_SIZE ? 'none' : 'inline-block';
+}
+
+async function fetchSnapshots(beforeTs) {
+  let url = `/api/camera/snapshots?limit=${SNAPSHOT_PAGE_SIZE}`;
+  if (beforeTs) url += `&before=${beforeTs}`;
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function loadSnapshots() {
+  oldestLoadedTs = null;
+  const snapshots = await fetchSnapshots(null);
+  renderSnapshots(snapshots, false);
+  const statusEl = document.getElementById('timelapseStatus');
+  if (snapshots.length === 0) {
+    statusEl.textContent = 'No timelapse frames saved yet - set a snapshot interval for the current mode on the Config page to start one.';
+    document.getElementById('snapshotGrid').innerHTML = '';
+  } else {
+    statusEl.textContent = '';
+  }
+}
+
+async function loadMoreSnapshots() {
+  const snapshots = await fetchSnapshots(oldestLoadedTs);
+  renderSnapshots(snapshots, true);
+}
+
+refreshLive();
+loadSnapshots();
+setInterval(refreshLive, 3000);
+</script>
+{% endblock %}
