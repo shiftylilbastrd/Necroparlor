@@ -101,8 +101,12 @@ function fanState(fanOn, ventOn) {
   return `<span class="fan-state off" title="Off">○</span>`;
 }
 function srcAbbrev(src) {
-  if (src === 'ble' || src === 'sensorpush') return 'BLE';  // 'sensorpush' is the old stored value, for historical rows
-  if (src === 'local_gpio') return 'Wired';
+  // Labels match the "External"/"Fallback" naming already used for these
+  // two sensors' own columns (and the Home page tiles) - this used to say
+  // "BLE"/"Wired" here specifically, which named the *technology* instead
+  // of matching the tile/column each one actually belongs to.
+  if (src === 'ble' || src === 'sensorpush') return 'Ext';  // 'sensorpush' is the old stored value, for historical rows
+  if (src === 'local_gpio') return 'FB';
   return '<span class="null-cell">--</span>';
 }
 

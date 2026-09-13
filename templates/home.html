@@ -7,12 +7,10 @@
   .header-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }
   .header-row h1 { margin: 0; }
   .status-badges { display: flex; gap: 8px; flex-wrap: wrap; }
-  .door-badge, .output-badge {
+  .output-badge {
     display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px;
     font-weight: 700; font-size: 0.9rem; border: 1px solid var(--panel-border); flex-shrink: 0;
   }
-  .door-badge.open { background: rgba(217,83,79,0.15); color: var(--danger); border-color: rgba(217,83,79,0.45); }
-  .door-badge.closed { background: rgba(79,178,134,0.12); color: var(--accent); border-color: rgba(79,178,134,0.35); }
   .output-badge.on { background: rgba(79,178,134,0.15); color: var(--accent); border-color: rgba(79,178,134,0.45); }
   .output-badge.off { background: rgba(147,160,171,0.08); color: var(--text-dim); border-color: var(--panel-border); }
   .badge-icon { display: inline-block; transition: opacity 0.25s, filter 0.25s; }
@@ -60,7 +58,7 @@
 <div class="header-row">
   <h1>🪲 Dermestid Enclosure</h1>
   <div class="status-badges">
-    <div class="door-badge closed" id="doorBadge">🚪 <span id="doorBadgeLabel">--</span></div>
+    <div class="output-badge off" id="lightBadge" title="Internal light"><span class="badge-icon" id="lightIcon">💡</span> Light</div>
     <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon">🌀</span> Fan</div>
     <div class="output-badge off" id="heaterBadge" title="Heater"><span class="badge-icon" id="heaterIcon">🔥</span> Heater</div>
     <div class="output-badge off" id="dehumBadge" title="Dehumidifier"><span class="badge-icon" id="dehumIcon">💧</span> Dehum</div>
@@ -249,17 +247,6 @@ async function refreshStatus() {
 
   updateModeUI(data.config.current_mode);
 
-  const doorBadge = document.getElementById('doorBadge');
-  const doorLabel = document.getElementById('doorBadgeLabel');
-  if (data.door_status) {
-    const isOpen = data.door_status.is_open;
-    doorBadge.className = 'door-badge ' + (isOpen ? 'open' : 'closed');
-    doorLabel.textContent = isOpen ? 'Open' : 'Closed';
-  } else {
-    doorBadge.className = 'door-badge closed';
-    doorLabel.textContent = 'unknown';
-  }
-
   // Resyncs the light icon from config.json's own light_override_until
   // rather than trusting whatever toggleLight() last set locally - picks
   // up the override expiring on its own (see LIGHT_OVERRIDE_DURATION_SECONDS
@@ -267,6 +254,14 @@ async function refreshStatus() {
   const overrideUntil = (data.config && data.config.light_override_until) || 0;
   lightOverrideActive = overrideUntil > (Date.now() / 1000);
   updateLightButton();
+
+  // The header badge shows the light's actual physical on/off state, same
+  // as the Fan/Heater/Dehum badges - it's on whenever the door is open OR
+  // the override above is active (climate.py's light_loop() ORs these same
+  // two conditions - see PIN_LIGHT there), not just whether an override
+  // happens to be set right now.
+  const doorOpenNow = !!(data.door_status && data.door_status.is_open);
+  outputBadge('lightBadge', 'lightIcon', doorOpenNow || lightOverrideActive, false);
 
   const batteryWrap = document.getElementById('statBleBatteryWrap');
   if (data.ble_status && data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {

@@ -1138,3 +1138,49 @@ pattern has been consistent: tie things to identity, never to role.
       by recreating the device object on every retry. This is a genuine
       improvement to both sensors' resilience to ordinary single-attempt
       flakiness, independent of the GPIO4 hardware fault above.
+    - **[UPDATE, 2026-09-13]** Turned out the "GPIO4 is dead on this Pi's
+      silicon" conclusion above was likely wrong, or at least incomplete
+      - the Pi is currently mounted in an Argon ONE V2 case (temporary,
+      not used in final deployment) whose internal riser board the Pi's
+      GPIO header plugs through, which sits in the electrical path
+      even after unplugging a wire at the case's own breakout. After
+      properly rewiring the fallback probe's DATA line to GPIO5/pin 29
+      (confirmed done correctly this time), it started producing data -
+      intermittently, which is the documented-normal DHT22 flakiness
+      this codebase already expects (see `read_temp_and_humidity_f`'s
+      own docstring), not a remaining problem. Root cause is most likely
+      the Argon case's pass-through connector rather than genuine Pi
+      board damage, but this hasn't been definitively confirmed by
+      testing outside the case yet - worth doing before deciding whether
+      GPIO4 is safe to use again once the case is out of the picture for
+      final deployment.
+    - **UI fix, same investigation**: the Data page's raw readings table
+      showed "BLE"/"Wired" in the Active source column while every
+      other column and the Home page tiles already say "External"/
+      "Fallback" for these same two sensors - inconsistent naming
+      (technology vs. tile identity) noticed while watching this table
+      during the fix above. `templates/data.html`'s `srcAbbrev()` now
+      returns "Ext"/"FB" to match.
+- **[open, 2026-09-13]** Three header/nav UI requests, done together:
+  - **Door badge replaced with a light badge.** The header used to show
+    a door open/closed badge (initially just recolored to grayscale-when-
+    closed per an earlier request, then replaced outright here rather
+    than kept). It's now a `Light` badge using the same `.output-badge`
+    on/off styling as Fan/Heater/Dehum, reflecting the light's actual
+    physical on/off state - `is_open || lightOverrideActive`, mirroring
+    the exact same OR climate.py's `light_loop()` uses for `PIN_LIGHT`
+    - not just whether the manual override (the existing 💡 button on
+    the live-view card, unchanged) happens to be set.
+  - **Door-open is now a large global banner**, styled like the existing
+    update-available banner (reusing the `.banner` danger/red style
+    already used for the stale-sensor and camera-unavailable warnings on
+    Home) and living in `base.html` so it shows on every page, not just
+    Home - matches the update banner's "regardless of which page you're
+    on" behavior, since an open enclosure matters no matter which tab
+    you're looking at. Polled every 15s (`/api/status`) - faster than the
+    update banner's 60s, since this is time-sensitive in a way an
+    available software update isn't.
+  - **Nav bar is now sticky** (`position: sticky; top: 0` on
+    `nav.topnav`) so switching pages (Home/Logs/Data/Timelapse/Config)
+    doesn't require scrolling back to the top first.
+  - Not yet confirmed working on real hardware/deployed.

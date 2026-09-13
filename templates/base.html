@@ -30,6 +30,7 @@
   nav.topnav {
     display: flex; gap: 4px; border-bottom: 1px solid var(--panel-border);
     padding: 0 20px; background: var(--panel);
+    position: sticky; top: 0; z-index: 30;
   }
   nav.topnav a {
     display: block; padding: 14px 16px; color: var(--text-dim); text-decoration: none;
@@ -133,6 +134,7 @@
   <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
 </nav>
 <div class="page">
+<div class="banner" id="globalDoorBanner">🚪 Enclosure door is open</div>
 <div class="update-banner" id="globalUpdateBanner">
   🔄 An update is available<span id="globalUpdateDetail"></span> - <a href="/config">go to Config to apply it</a>.
 </div>
@@ -159,6 +161,22 @@ async function checkGlobalUpdateBanner() {
 }
 checkGlobalUpdateBanner();
 setInterval(checkGlobalUpdateBanner, 60000);
+
+// Same idea, but for the door - shown on every page (not just Home) since
+// an open enclosure matters regardless of which tab you're looking at.
+// Polled faster than the update banner (matches climate.py's own
+// LOOP_INTERVAL) since this is time-sensitive in a way an available
+// software update isn't.
+async function checkGlobalDoorBanner() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    const banner = document.getElementById('globalDoorBanner');
+    banner.style.display = (data.door_status && data.door_status.is_open) ? 'block' : 'none';
+  } catch (e) { /* status endpoint not reachable - fail quietly, try again next tick */ }
+}
+checkGlobalDoorBanner();
+setInterval(checkGlobalDoorBanner, 15000);
 </script>
 </body>
 </html>
