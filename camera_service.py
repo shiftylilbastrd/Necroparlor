@@ -33,6 +33,15 @@ a restart (same reasoning as climate.py re-reading its own config):
     changed; the new interval simply starts being measured against
     whenever the last snapshot actually happened.
 
+When the CURRENT MODE CHANGES, whatever frames were just accumulated for
+the mode being left get compiled into an actual .mp4 via ffmpeg (a
+"session" video - e.g. one video per visit to Cleaning mode), then the
+raw frames that went into it are deleted - the video is the lasting
+record from then on, not a growing pile of loose JPEGs. See
+maybe_compile_session()/compile_session_video() below for the full
+reasoning (session-boundary tracking, why compiling runs in a background
+thread, the concat-demuxer approach, and the too-few-frames case).
+
 A hardcoded, non-configurable disk-space safety net (see
 CAMERA_LOW_DISK_THRESHOLD_MB below) prunes the OLDEST timelapse frames
 if free space gets dangerously low - the whole point of a timelapse is
@@ -49,6 +58,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import shutil
+import subprocess
+import threading
 import time
 
 import cv2
@@ -91,6 +102,172 @@ CAMERA_LOW_DISK_THRESHOLD_MB = 200
 CAMERA_LOW_DISK_PRUNE_COUNT = 20
 
 _low_disk_warned = False
+
+# A session shorter than this many frames doesn't get compiled - a couple
+# of frames from an accidental few-second mode toggle would just produce
+# a flickering fraction-of-a-second clip, not something worth keeping as
+# its own video. Its frames are simply left in camera_snapshots (not
+# deleted) - they'll naturally be included in whatever session next
+# actually finishes for that mode, per get_earliest_camera_snapshot_ts's
+# invariant (see shared_state.py). No data is lost either way.
+MINIMUM_FRAMES_FOR_VIDEO = 3
+
+# Playback speed of a compiled session video, in frames per second of
+# OUTPUT video - unrelated to the capture cadence (snapshot_interval_
+# minutes), which is minutes between frames, not fps. 12fps keeps even a
+# several-day session down to a short, actually-watchable clip (e.g. a
+# 3-day Cleaning session on a 5-minute interval is ~864 frames -> 72s of
+# video) without needing to be a dashboard setting; edit this constant
+# directly if you want a different pace.
+TIMELAPSE_VIDEO_FPS = 12
+
+# Safety cap on the ffmpeg subprocess itself, same watchdog philosophy as
+# the rest of this file - compiling runs in a background thread (see
+# maybe_compile_session), so a hang here can't block live-view capture,
+# but it should still never be allowed to run forever.
+COMPILE_TIMEOUT_SECONDS = 300
+
+# Which modes currently have a compile running in a background thread -
+# guards against a rapidly-flapping mode triggering two overlapping
+# compiles (and therefore two competing deletes) for the same frames.
+# The rare case where this actually skips a compile just leaves that
+# mode's frames in place for the next successful compile to pick up -
+# same "no data lost" reasoning as the too-few-frames case above.
+_compiling_modes = set()
+_compiling_lock = threading.Lock()
+
+
+def maybe_compile_session(mode, start_ts, end_ts):
+    """Called once, right when the current mode changes away from
+    `mode` - decides whether there's enough freshly-accumulated timelapse
+    footage from that just-ended session to bother compiling, and if so
+    kicks the actual ffmpeg work off in a background thread so it can
+    never stall the live-view capture loop above (an ffmpeg encode of a
+    long session is a real multi-second CPU task - fine as a rare,
+    one-off event per mode change, not fine if it froze live view for
+    that whole time)."""
+    frames = state.get_camera_snapshots_in_range(mode, start_ts, end_ts)
+    if len(frames) < MINIMUM_FRAMES_FOR_VIDEO:
+        return
+    with _compiling_lock:
+        if mode in _compiling_modes:
+            logging.warning(f"Timelapse: a {mode} compile is already running - "
+                             "leaving this session's frames for the next one")
+            return
+        _compiling_modes.add(mode)
+
+    def run():
+        try:
+            compile_session_video(mode, start_ts, end_ts, frames)
+        finally:
+            with _compiling_lock:
+                _compiling_modes.discard(mode)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def compile_session_video(mode, start_ts, end_ts, frames):
+    """Stitches one mode-session's already-captured JPEG frames into a
+    single .mp4 via ffmpeg's concat demuxer (the standard way to turn an
+    arbitrary sequence of same-size still images into a video - the
+    image2 sequence demuxer needs consecutively-numbered filenames, which
+    these epoch-timestamp names aren't), keeps a copy of one frame as a
+    poster thumbnail for the gallery, records it all via
+    shared_state.save_timelapse_video(), and then deletes the raw frames
+    that went into it - the video is the lasting record from here on,
+    not a second, redundant copy of every frame sitting alongside it on
+    a Pi's small SD card. If anything goes wrong, the raw frames are left
+    untouched so nothing is ever lost to a failed compile."""
+    if not shutil.which("ffmpeg"):
+        state.log_event(
+            "warning",
+            f"Timelapse: ffmpeg not found - can't compile the {mode} session that just "
+            f"ended ({len(frames)} frames). Install it with: sudo apt install ffmpeg. "
+            "The raw frames are kept, and this session's video can't be recovered "
+            "retroactively once a future compile succeeds and deletes them, so install "
+            "ffmpeg before too many more sessions pass if you want this feature."
+        )
+        return
+
+    os.makedirs(state.CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
+    video_filename = f"{mode}_{int(start_ts)}_{int(end_ts)}.mp4"
+    poster_filename = f"{mode}_{int(start_ts)}_{int(end_ts)}.jpg"
+    video_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, video_filename)
+    poster_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, poster_filename)
+    list_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{int(time.time())}.txt")
+
+    frame_duration = 1.0 / TIMELAPSE_VIDEO_FPS
+    with open(list_path, "w") as f:
+        for frame in frames:
+            frame_path = os.path.join(state.CAMERA_TIMELAPSE_DIR, frame["filename"])
+            # ffmpeg's concat demuxer has its own tiny quoting format for
+            # this list file - single quotes around the path, with a
+            # literal single quote escaped as '\''. Irrelevant for our
+            # own epoch-integer.jpg filenames in practice, but cheap
+            # insurance against ever choking on a stray character.
+            escaped = frame_path.replace("'", "'\\''")
+            f.write(f"file '{escaped}'\nduration {frame_duration}\n")
+        # concat demuxer quirk: `duration` on the LAST entry is ignored
+        # unless that same file is also listed once more after it, with
+        # no duration of its own.
+        last_escaped = os.path.join(state.CAMERA_TIMELAPSE_DIR, frames[-1]["filename"]).replace("'", "'\\''")
+        f.write(f"file '{last_escaped}'\n")
+
+    try:
+        # -r here is an OUTPUT constant frame rate, not a passthrough of
+        # the concat list's per-frame `duration` timing - deliberately
+        # NOT combined with -vsync/-fps_mode vfr, which newer ffmpeg
+        # rejects outright as contradictory with an explicit -r
+        # ("One of -r/-fpsmax was specified together a non-CFR -vsync").
+        # Letting ffmpeg resample each held-frame's duration to a fixed
+        # CFR output is exactly what's wanted here anyway, since
+        # TIMELAPSE_VIDEO_FPS is the real knob for playback speed.
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+             "-pix_fmt", "yuv420p", "-r", str(TIMELAPSE_VIDEO_FPS), video_path],
+            capture_output=True, text=True, timeout=COMPILE_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        state.log_event("error", f"Timelapse: ffmpeg timed out compiling {mode} session "
+                                  f"({len(frames)} frames) after {COMPILE_TIMEOUT_SECONDS}s - raw frames kept.")
+        os.remove(list_path)
+        return
+    finally:
+        if os.path.exists(list_path):
+            os.remove(list_path)
+
+    if result.returncode != 0 or not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+        state.log_event(
+            "error",
+            f"Timelapse: ffmpeg failed compiling {mode} session ({len(frames)} frames) - "
+            f"raw frames kept. {result.stderr[-500:] if result.stderr else ''}"
+        )
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        return
+
+    # Reuse an already-captured frame as the poster thumbnail (the middle
+    # one reads as more representative of the session than the first)
+    # rather than asking ffmpeg to re-decode the video just to grab one
+    # frame back out of it.
+    middle_frame_path = os.path.join(state.CAMERA_TIMELAPSE_DIR, frames[len(frames) // 2]["filename"])
+    try:
+        shutil.copyfile(middle_frame_path, poster_path)
+    except FileNotFoundError:
+        poster_filename = None
+
+    duration_seconds = len(frames) / TIMELAPSE_VIDEO_FPS
+    file_size_bytes = os.path.getsize(video_path)
+    state.save_timelapse_video(mode, start_ts, end_ts, len(frames), video_filename,
+                                poster_filename, duration_seconds, file_size_bytes)
+    # The video now IS the record of this session - the raw frames that
+    # went into it would just be redundant disk usage from here on.
+    state.delete_camera_snapshots([f["ts"] for f in frames])
+    state.log_event(
+        "info",
+        f"Timelapse: compiled a {duration_seconds:.0f}s video from {len(frames)} {mode} "
+        f"frames ({file_size_bytes / (1024 * 1024):.1f}MB)"
+    )
 
 
 def open_capture(device, width, height):
@@ -159,6 +336,18 @@ def main():
     consecutive_failures = 0
     camera_was_available = cap.isOpened()
 
+    # Session-boundary tracking for timelapse video compiling (see
+    # maybe_compile_session above). last_mode/session_start_ts start from
+    # whatever's ALREADY sitting in camera_snapshots for the mode we're
+    # coming up in, not from "now" - that's what makes this correct
+    # across a service restart mid-session: nothing is asked to survive
+    # in memory, it's reconstructed from the DB's own invariant that
+    # camera_snapshots only ever holds a mode's not-yet-compiled frames.
+    last_mode = config.get("current_mode", "ready")
+    session_start_ts = state.get_earliest_camera_snapshot_ts(last_mode)
+    if session_start_ts is None:
+        session_start_ts = time.time()
+
     try:
         while True:
             # Re-read config every cycle - a mode switch or a settings
@@ -171,6 +360,12 @@ def main():
             current_mode = config.get("current_mode", "ready")
             mode_settings = config.get("modes", {}).get(current_mode, {})
             snapshot_interval_minutes = mode_settings.get("snapshot_interval_minutes", 0)
+
+            if current_mode != last_mode:
+                transition_time = time.time()
+                maybe_compile_session(last_mode, session_start_ts, transition_time)
+                last_mode = current_mode
+                session_start_ts = transition_time
 
             ok, frame = cap.read() if cap.isOpened() else (False, None)
 

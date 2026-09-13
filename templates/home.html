@@ -40,6 +40,10 @@
   .tile-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
   .tile-side { text-align: right; flex-shrink: 0; }
   .active-tag { font-size: 0.7rem; font-weight: 600; color: var(--accent); vertical-align: middle; }
+  .home-live-frame {
+    width: 100%; max-width: 640px; border-radius: 8px; border: 1px solid var(--panel-border);
+    background: #000; display: block; aspect-ratio: 4 / 3; object-fit: contain;
+  }
 </style>
 {% endblock %}
 {% block content %}
@@ -102,6 +106,17 @@
     <div class="stat-sub" id="statWiredHumidity">-- %RH</div>
     <div class="stat-sub" id="statWiredUpdated" style="margin-top:6px;">Updated: --</div>
   </div>
+</div>
+
+<div class="section-title">Live view</div>
+<div class="banner" id="cameraUnavailableBanner" style="display:none;">
+  No recent camera frame - check the camera service on the Pi, or see the Timelapse page for more.
+</div>
+<div class="card" style="max-width:640px;">
+  <img class="home-live-frame" id="homeLiveFrame" alt="Live camera view"
+       src="/api/camera/stream.mjpg"
+       onerror="setTimeout(reconnectHomeStream, 2000)">
+  <div class="stat-sub" id="homeLiveStatus" style="margin-top:8px;"></div>
 </div>
 
 <div class="section-title">History</div>
@@ -368,9 +383,34 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
   });
 }
 
+// The <img> holds one long-lived MJPEG streaming connection (see
+// /api/camera/stream.mjpg on the webapp side) rather than being reloaded
+// on a timer - it only needs reconnecting if that connection actually
+// drops (the web service restarting mid-stream is the main way that
+// happens).
+function reconnectHomeStream() {
+  document.getElementById('homeLiveFrame').src = '/api/camera/stream.mjpg?t=' + Date.now();
+}
+
+async function refreshCameraStatus() {
+  try {
+    const res = await fetch('/api/camera/status');
+    const data = await res.json();
+    document.getElementById('cameraUnavailableBanner').style.display = data.available ? 'none' : 'block';
+    document.getElementById('homeLiveStatus').textContent = data.available
+      ? `Live - last frame ${Math.round(data.age_seconds)}s ago`
+      : 'Camera feed unavailable';
+  } catch (e) {
+    document.getElementById('cameraUnavailableBanner').style.display = 'block';
+    document.getElementById('homeLiveStatus').textContent = '';
+  }
+}
+
 refreshStatus();
 refreshHistory();
+refreshCameraStatus();
 setInterval(refreshStatus, 5000);
 setInterval(refreshHistory, 60000);
+setInterval(refreshCameraStatus, 5000);
 </script>
 {% endblock %}

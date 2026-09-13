@@ -92,6 +92,8 @@ Requires Python 3.11+, which is the default on current Raspberry Pi OS (Bookworm
    ```
    Warm the one you want in your hand and watch which address's temperature climbs, then note that address (looks like `AA:BB:CC:DD:EE:FF`). Ctrl+C to stop.
 
+   The Config page's External card has its own **Discover** button that shows the same information without SSHing in - a clean table of address, temp/humidity, signal, and how recently each was heard, click a row to fill in the address field below. It's read-only against `ble_listener.py`'s own already-running scan (`/api/ble-discover` just reads what that listener already saved to the database), not a second independent scan - starting a second `BleakScanner` against the same Bluetooth adapter is exactly what caused a real stuck-`bluetoothd` incident on this Pi once, so the dashboard button deliberately never does that. This does mean it only shows sensors of whatever brand is currently selected in the dropdown above it (same limitation the CLI script has, since both use the identical decoder) - warming the sensor in your hand still helps pick it out if more than one address shows up.
+
 2. **Set it on the dashboard** (Config page's External card - address field plus a brand dropdown), or by hand-editing `config.json`:
    ```json
    "ble_mac": "AA:BB:CC:DD:EE:FF",
@@ -160,6 +162,8 @@ pip3 install opencv-python-headless --break-system-packages
    ```
    This tries `/dev/video0` through `/dev/video9`, saves a sample JPEG for each one that actually opens and reads a frame, and tells you which index each came from. Some webcams register more than one `/dev/videoN` node (one for actual video, one for metadata) - look at the saved images to tell which index is the real camera.
 
+   The Config page's Camera card has its own **Discover** button that does the exact same probing without SSHing in - it shows each working index as a small thumbnail (so you can tell which one is actually pointed into the enclosure) with its resolution, click one to fill in the device field below. Nothing is saved to disk this way (the sample frame comes back inline as the button's own result, not a file next to the script), so repeated clicks don't leave old `discover_camera_N.jpg` files scattered around the project directory. It also handles the one thing the CLI version leaves to you: if `dermestid-camera.service` is already running, it's holding the real camera device open (most webcams only allow one client at a time), so the button briefly stops that service, probes, then starts it again - this needs the two extra `sudoers` lines from the "one-click apply" section above (`stop`/`start dermestid-camera.service`); without them Discover still runs, it just won't see whichever index the service already has open.
+
 2. **Set it on the dashboard** (Config page's Camera card), or by hand-editing `config.json`:
    ```json
    "camera": {
@@ -177,11 +181,19 @@ pip3 install opencv-python-headless --break-system-packages
    python3 camera_service.py
    ```
 
-**Live view** (`/camera` page): the service captures a frame every `live_capture_interval_seconds` and atomically overwrites a single `camera/latest.jpg`; the dashboard's `/api/camera/stream.mjpg` endpoint re-reads that file on its own short timer and relays it to the browser as an MJPEG (`multipart/x-mixed-replace`) stream, which a plain `<img>` tag renders natively as continuously-updating video - no codec, player, or JS polling loop needed. It's a genuine live feed, not a still-image slideshow, while still only ever having ONE process (`camera_service.py`) touch the actual USB device: a real webcam typically only accepts one client connection at a time anyway, so every browser tab gets its own independent relay of the same shared file rather than opening the camera itself. (This is also why `app.run()` in `webapp.py` needs `threaded=True` - a stream holds its HTTP connection open indefinitely, which would otherwise block every other page on the dashboard behind it.)
+**Live view** (Home page, between the sensor tiles and the History chart): the service captures a frame every `live_capture_interval_seconds` and atomically overwrites a single `camera/latest.jpg`; the dashboard's `/api/camera/stream.mjpg` endpoint re-reads that file on its own short timer and relays it to the browser as an MJPEG (`multipart/x-mixed-replace`) stream, which a plain `<img>` tag renders natively as continuously-updating video - no codec, player, or JS polling loop needed. It's a genuine live feed, not a still-image slideshow, while still only ever having ONE process (`camera_service.py`) touch the actual USB device: a real webcam typically only accepts one client connection at a time anyway, so every browser tab gets its own independent relay of the same shared file rather than opening the camera itself. (This is also why `app.run()` in `webapp.py` needs `threaded=True` - a stream holds its HTTP connection open indefinitely, which would otherwise block every other page on the dashboard behind it.) The live view is the actual point of the camera feature - being able to look in on the enclosure the same way you'd walk over and look yourself.
 
-**Timelapse**: each of the three modes (Dormant/Ready/Cleaning) has its own `snapshot_interval_minutes` on the Config page, right next to that mode's setpoints - `0` means never (no timelapse capture while in that mode). Whichever mode is currently active is the one whose interval applies; switching modes doesn't itself trigger an immediate snapshot, it just changes how often future ones happen. Saved frames accumulate under `camera/timelapse/` (and a matching `camera_snapshots` row in `dermestid.db`) and are browsable, newest first, on the Camera page - same "Load more" pagination as the Logs and Data pages.
+**Timelapse** (its own page, renamed from "Camera"): each of the three modes (Dormant/Ready/Cleaning) has its own `snapshot_interval_minutes` on the Config page, right next to that mode's setpoints - `0` means never (no timelapse capture while in that mode). Whichever mode is currently active is the one whose interval applies; switching modes doesn't itself trigger an immediate snapshot, it just changes how often future ones happen.
 
-**Disk space**: timelapse frames are meant to be kept, not aggressively pruned - that's the whole point of a timelapse - so there's no day-to-day retention/rotation setting. What exists instead is a hardcoded safety net: if free disk space drops below 200MB, the service deletes the oldest saved snapshots (logging a warning, once, not every cycle) to keep the SD card from actually filling up and taking the whole Pi down - which would also kill climate control, the actually safety-critical part of this project. If you see that warning regularly, lower the snapshot interval, resolution, or JPEG quality rather than relying on it to keep bailing you out.
+Unlike the live view, this isn't just a nice-to-have gallery of stills - every time the enclosure leaves a mode that was capturing snapshots (a mode change, or `camera_service.py` restarting mid-session and correctly recovering where that session started), the frames from that session are automatically compiled into an actual `.mp4` video with `ffmpeg` (at a fixed `TIMELAPSE_VIDEO_FPS`, currently 12), so a multi-hour cleaning session plays back in a few seconds - the intended use is showing someone the whole process, not scrubbing through hundreds of individual JPEGs by hand. Compiling happens in a background thread so it never blocks the live-capture loop, and needs at least `MINIMUM_FRAMES_FOR_VIDEO` (3) frames to bother - a session with fewer than that (interval set too long, or the mode change happened almost immediately) is skipped rather than producing a near-empty video. Requires `ffmpeg` on the Pi:
+```bash
+sudo apt install ffmpeg
+```
+If `ffmpeg` isn't installed, compiling is skipped with a logged warning rather than crashing the service - the raw frames for that session are simply left in place (see disk space below) until it's installed and a future session compiles normally.
+
+The Timelapse page lists every compiled video, newest first (poster thumbnail, mode, duration, frame count, file size), with a lightbox player, per-video Download/Delete, and multi-select for bulk download or delete - same "Load more" pagination as the Logs and Data pages.
+
+**Disk space**: a session's raw frames are deleted automatically once they're successfully compiled into that session's video - the video is what's meant to be kept, not the frames it was built from, so there's no separate retention setting for finished videos to worry about day-to-day. Before compiling happens (the current, still-in-progress session, or if `ffmpeg` is missing), the same hardcoded safety net as before still applies: if free disk space drops below 200MB, the service deletes the oldest saved snapshots (logging a warning, once, not every cycle) to keep the SD card from actually filling up and taking the whole Pi down - which would also kill climate control, the actually safety-critical part of this project. If you see that warning regularly, lower the snapshot interval, resolution, or JPEG quality rather than relying on it to keep bailing you out.
 
 ```bash
 sudo cp systemd/dermestid-camera.service /etc/systemd/system/
@@ -239,9 +251,13 @@ pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-climate.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-web.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-ble.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-camera.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl stop dermestid-camera.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl start dermestid-camera.service
 ```
 
 (Run `which systemctl` first and double-check it matches `/usr/bin/systemctl` — if your system has it somewhere else, use that exact path instead, since `sudoers` rules must match exactly.)
+
+The `stop`/`start` pair (as opposed to `restart`) is for the Config page's camera **Discover** button (see the Camera section below) — it needs to briefly stop `dermestid-camera.service` so a probing script can open the USB device itself (most UVC webcams only allow one client at a time), then start it again afterward. Without these two lines, Discover still runs, it just won't be able to see whichever index the service already has open — everything else keeps working.
 
 ```bash
 chmod +x auto_update.sh

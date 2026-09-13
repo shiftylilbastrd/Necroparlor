@@ -10,6 +10,7 @@ only. Don't port-forward it to the internet.
 """
 import time
 import os
+import json
 import shutil
 import subprocess
 import threading
@@ -41,6 +42,14 @@ CAMERA_STALE_MULTIPLIER = 5
 # push more HTTP writes per viewer than that even if capture is faster.
 STREAM_RELAY_INTERVAL = 0.15
 
+# How recent a BLE reading has to be to show up in the Config page's
+# "Discover" list - generous relative to how often sensors actually
+# broadcast (a few seconds to a minute depending on brand), so a device
+# that's still physically present doesn't drop off the list between
+# clicks, while a sensor that was removed or had its battery pulled
+# eventually stops cluttering it.
+BLE_DISCOVER_FRESHNESS_SECONDS = 600
+
 
 @app.route("/")
 def home():
@@ -62,9 +71,9 @@ def config_page():
     return render_template("config.html", active_page="config")
 
 
-@app.route("/camera")
-def camera_page():
-    return render_template("camera.html", active_page="camera")
+@app.route("/timelapse")
+def timelapse_page():
+    return render_template("timelapse.html", active_page="timelapse")
 
 
 @app.route("/api/status")
@@ -136,6 +145,34 @@ def api_set_ble_mac():
     state.log_event("info", f"BLE sensor address {'set to ' + mac if mac else 'cleared'} "
                              f"(brand: {state.BLE_SENSOR_LIBRARIES[sensor_type]['label']})")
     return jsonify(config)
+
+
+@app.route("/api/ble-discover")
+def api_ble_discover():
+    """Clean, read-only view of the BLE sensors ble_listener.py's own
+    already-running scan has heard recently - for the Config page's
+    Discover button, so finding a sensor's address doesn't require SSHing
+    in and running discover_ble_sensor.py from the CLI.
+
+    Deliberately NOT a new scan of its own: ble_listener.py already saves
+    a DB row for every matching-brand device it decodes an advertisement
+    from (state.get_all_ble_readings(), "useful for the discovery helper"
+    per its own docstring - this route is that helper). Spinning up a
+    second, independent BleakScanner from a web request would instead
+    have this process and the persistent listener both opening/closing
+    BLE discovery sessions against the same BlueZ adapter - exactly the
+    kind of scan start/stop churn that's already caused a real stuck-
+    bluetoothd incident on this Pi once (see PROJECT_STATUS.md's Tier-3
+    BLE entry). Reading the existing listener's own data avoids that
+    risk entirely, at the cost of only showing devices the brand's
+    decoder can actually parse (same limitation discover_ble_sensor.py
+    already has - it uses the identical decoder)."""
+    cutoff = time.time() - BLE_DISCOVER_FRESHNESS_SECONDS
+    readings = [r for r in state.get_all_ble_readings() if r["ts"] and r["ts"] >= cutoff]
+    for r in readings:
+        r["age_seconds"] = time.time() - r["ts"]
+    readings.sort(key=lambda r: r["age_seconds"])
+    return jsonify(readings)
 
 
 @app.route("/api/calibration", methods=["POST"])
@@ -265,6 +302,66 @@ def api_camera_snapshot(ts):
     return send_file(os.path.join(state.CAMERA_TIMELAPSE_DIR, row["filename"]), mimetype="image/jpeg")
 
 
+@app.route("/api/timelapse/videos")
+def api_timelapse_videos():
+    """Paginated compiled-video gallery listing for the Timelapse page -
+    same before_ts cursor pattern as /api/events and /api/camera/snapshots."""
+    limit = request.args.get("limit", default=24, type=int)
+    before = request.args.get("before", default=None, type=float)
+    videos = state.get_timelapse_videos(limit=limit, before_ts=before)
+    for v in videos:
+        v["url"] = f"/api/timelapse/video/{v['id']}.mp4"
+        v["poster_url"] = f"/api/timelapse/poster/{v['id']}.jpg" if v["poster_filename"] else None
+    return jsonify(videos)
+
+
+@app.route("/api/timelapse/video/<int:video_id>.mp4")
+def api_timelapse_video_file(video_id):
+    row = state.get_timelapse_video(video_id)
+    if not row:
+        abort(404)
+    path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, row["filename"])
+    if not os.path.exists(path):
+        abort(404)
+    # as_attachment lets this same URL serve both inline <video> playback
+    # (browsers ignore Content-Disposition for that) and the gallery's
+    # "Download" link/button - no separate download-only route needed.
+    return send_file(path, mimetype="video/mp4", as_attachment=False, download_name=row["filename"])
+
+
+@app.route("/api/timelapse/poster/<int:video_id>.jpg")
+def api_timelapse_poster(video_id):
+    row = state.get_timelapse_video(video_id)
+    if not row or not row["poster_filename"]:
+        abort(404)
+    path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, row["poster_filename"])
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="image/jpeg")
+
+
+@app.route("/api/timelapse/video/<int:video_id>", methods=["DELETE"])
+def api_timelapse_video_delete(video_id):
+    if not state.delete_timelapse_video(video_id):
+        abort(404)
+    state.log_event("info", f"Timelapse video #{video_id} deleted via dashboard")
+    return jsonify({"deleted": video_id})
+
+
+@app.route("/api/timelapse/videos/delete-many", methods=["POST"])
+def api_timelapse_videos_delete_many():
+    """Bulk delete for the gallery's multi-select checkboxes - one call
+    instead of the browser firing N separate DELETE requests."""
+    body = request.get_json(force=True, silent=True) or {}
+    id_list = body.get("id_list")
+    if not isinstance(id_list, list) or not id_list:
+        return jsonify({"error": "id_list must be a non-empty list"}), 400
+    deleted = [vid for vid in id_list if state.delete_timelapse_video(vid)]
+    if deleted:
+        state.log_event("info", f"{len(deleted)} timelapse video(s) deleted via dashboard")
+    return jsonify({"deleted": deleted, "not_found": [vid for vid in id_list if vid not in deleted]})
+
+
 @app.route("/api/camera-settings", methods=["POST"])
 def api_set_camera_settings():
     body = request.get_json(force=True, silent=True) or {}
@@ -277,6 +374,64 @@ def api_set_camera_settings():
     state.log_event("info", "Camera settings updated - restart the camera service "
                              "for a device/resolution change to take effect")
     return jsonify(config)
+
+
+CAMERA_DISCOVER_TIMEOUT_SECONDS = 30
+
+
+@app.route("/api/camera-discover", methods=["POST"])
+def api_camera_discover():
+    """Runs discover_camera.py --json for the Config page's Discover
+    button, so finding the right /dev/videoN index doesn't require
+    SSHing in and running it from the CLI.
+
+    Deliberately shells out to the script rather than importing cv2
+    directly into this process: webapp.py has stayed cv2-free on
+    purpose so far (a missing/broken opencv install can't take down the
+    whole dashboard, only the camera-specific features - this already
+    mattered once this session, when a stale-template bug got
+    misdiagnosed as a camera dependency problem before the real cause
+    was found). A subprocess keeps that property; if cv2 is missing or
+    broken, only this one request fails.
+
+    Also stops dermestid-camera.service first (if installed) and
+    restarts it afterward: that service holds the real camera device
+    open continuously, and most UVC webcams only allow one client at a
+    time, so without this the current in-use index just wouldn't show
+    up in the scan at all - not a crash, just a silently confusing
+    "no camera found" result. Both systemctl calls are best-effort
+    (sudo -n, non-interactive) - if the service isn't installed, or the
+    Pi's sudoers isn't set up for it yet, they simply fail quietly and
+    discovery still runs, it just might not see whichever index the
+    service was already holding."""
+    subprocess.run(["sudo", "-n", "systemctl", "stop", "dermestid-camera.service"],
+                    capture_output=True, timeout=15)
+    try:
+        result = subprocess.run(
+            ["python3", os.path.join(state.BASE_DIR, "discover_camera.py"), "--json"],
+            capture_output=True, text=True, timeout=CAMERA_DISCOVER_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": f"Discovery timed out after {CAMERA_DISCOVER_TIMEOUT_SECONDS}s"}), 500
+    finally:
+        subprocess.run(["sudo", "-n", "systemctl", "start", "dermestid-camera.service"],
+                        capture_output=True, timeout=15)
+
+    if result.returncode != 0:
+        return jsonify({"error": f"discover_camera.py failed: {(result.stderr or '')[-500:]}"}), 500
+    try:
+        devices = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return jsonify({"error": "Could not parse discovery output - see logs/camera.log or run "
+                                  "discover_camera.py manually on the Pi."}), 500
+
+    response = {"devices": devices}
+    if not devices:
+        response["hint"] = ("No camera found on indices 0-9. If dermestid-camera.service is "
+                             "installed but the Pi's sudoers isn't set up to let the dashboard "
+                             "stop/restart it (see README), the in-use index won't show up here - "
+                             "check README's sudoers section, or stop the service by hand first.")
+    return jsonify(response)
 
 
 @app.route("/api/history")

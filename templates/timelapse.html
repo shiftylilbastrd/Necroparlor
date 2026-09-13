@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}Timelapse - Dermestid Enclosure{% endblock %}
+{% block head_extra %}
+<style>
+  .video-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px; margin-top: 12px;
+  }
+  .video-card {
+    position: relative; border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--panel-border); background: var(--panel);
+  }
+  .video-card.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .video-thumb-wrap {
+    position: relative; aspect-ratio: 4 / 3; background: #000; cursor: pointer;
+  }
+  .video-thumb-wrap img { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .video-thumb-wrap .no-poster {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: var(--text-dim); font-size: 0.8rem;
+  }
+  .play-badge {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 2rem; color: rgba(255,255,255,0.85); text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    pointer-events: none;
+  }
+  .video-select {
+    position: absolute; top: 8px; left: 8px; width: 20px; height: 20px; z-index: 2; cursor: pointer;
+  }
+  .video-caption { font-size: 0.75rem; color: var(--text-dim); padding: 6px 8px; }
+  .video-caption strong { color: var(--text); }
+  .video-actions { display: flex; gap: 6px; padding: 0 8px 8px; }
+  .video-actions a, .video-actions button {
+    font-size: 0.75rem; padding: 4px 8px; flex: 1; text-align: center; text-decoration: none;
+  }
+  .bulk-bar {
+    display: none; align-items: center; gap: 10px; margin: 10px 0;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 14px;
+  }
+  .bulk-bar.visible { display: flex; }
+  #videoLightbox {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    z-index: 50; align-items: center; justify-content: center; padding: 20px;
+  }
+  #videoLightbox.visible { display: flex; }
+  #videoLightbox video { max-width: 100%; max-height: 90vh; border-radius: 8px; }
+  #videoLightboxClose {
+    position: absolute; top: 16px; right: 20px; font-size: 1.6rem; color: #fff;
+    background: none; border: none; cursor: pointer;
+  }
+</style>
+{% endblock %}
+{% block content %}
+
+<h1>Timelapse</h1>
+<div class="subtitle">Compiled videos, one per mode session - live view moved to the Home page</div>
+
+<div class="bulk-bar" id="bulkBar">
+  <span id="bulkCount"></span>
+  <button onclick="downloadSelected()">Download selected</button>
+  <button onclick="deleteSelected()" style="color:var(--danger);">Delete selected</button>
+  <button onclick="clearSelection()">Clear</button>
+</div>
+
+<div class="stat-sub" id="timelapseStatus" style="margin-bottom:8px;"></div>
+<div class="video-grid" id="videoGrid"></div>
+<div style="text-align:center; margin-top:14px;">
+  <button id="loadMoreBtn" onclick="loadMoreVideos()" style="display:none;">Load more</button>
+</div>
+
+<div id="videoLightbox" onclick="if (event.target === this) closeLightbox()">
+  <button id="videoLightboxClose" onclick="closeLightbox()">&times;</button>
+  <video id="lightboxVideo" controls autoplay></video>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const VIDEO_PAGE_SIZE = 24;
+const MODE_LABELS = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+let oldestLoadedTs = null;
+let selectedIds = new Set();
+let videosById = {};
+
+function fmtDateTime(ts) {
+  return new Date(ts * 1000).toLocaleString([], {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+}
+
+function fmtDuration(seconds) {
+  seconds = Math.round(seconds);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function fmtSize(bytes) {
+  if (bytes == null) return '';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function renderVideos(videos, append) {
+  videosById = append ? videosById : {};
+  videos.forEach(v => { videosById[v.id] = v; });
+
+  const container = document.getElementById('videoGrid');
+  const html = videos.map(v => {
+    const thumb = v.poster_url
+      ? `<img src="${v.poster_url}" loading="lazy" alt="Timelapse thumbnail">`
+      : `<div class="no-poster">No preview</div>`;
+    return `
+      <div class="video-card" id="video-card-${v.id}">
+        <input type="checkbox" class="video-select" onclick="toggleSelect(${v.id}, this.checked)">
+        <div class="video-thumb-wrap" onclick="openLightbox(${v.id})">
+          ${thumb}
+          <div class="play-badge">&#9654;</div>
+        </div>
+        <div class="video-caption">
+          <strong>${MODE_LABELS[v.mode] || v.mode}</strong> · ${fmtDateTime(v.start_ts)}<br>
+          ${fmtDuration(v.duration_seconds)} · ${v.frame_count} frames · ${fmtSize(v.file_size_bytes)}
+        </div>
+        <div class="video-actions">
+          <a href="${v.url}" download>Download</a>
+          <button onclick="deleteOne(${v.id})" style="color:var(--danger);">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  if (append) {
+    container.insertAdjacentHTML('beforeend', html);
+  } else {
+    container.innerHTML = html;
+  }
+  if (videos.length > 0) {
+    oldestLoadedTs = videos[videos.length - 1].ts;
+  }
+  document.getElementById('loadMoreBtn').style.display = videos.length < VIDEO_PAGE_SIZE ? 'none' : 'inline-block';
+}
+
+async function fetchVideos(beforeTs) {
+  let url = `/api/timelapse/videos?limit=${VIDEO_PAGE_SIZE}`;
+  if (beforeTs) url += `&before=${beforeTs}`;
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function loadVideos() {
+  oldestLoadedTs = null;
+  selectedIds.clear();
+  updateBulkBar();
+  const videos = await fetchVideos(null);
+  renderVideos(videos, false);
+  const statusEl = document.getElementById('timelapseStatus');
+  if (videos.length === 0) {
+    statusEl.textContent = 'No timelapse videos yet - a video is compiled automatically the next time the ' +
+      'enclosure leaves a mode that has a snapshot interval set on the Config page.';
+  } else {
+    statusEl.textContent = '';
+  }
+}
+
+async function loadMoreVideos() {
+  const videos = await fetchVideos(oldestLoadedTs);
+  renderVideos(videos, true);
+}
+
+function toggleSelect(id, checked) {
+  if (checked) selectedIds.add(id); else selectedIds.delete(id);
+  document.getElementById(`video-card-${id}`).classList.toggle('selected', checked);
+  updateBulkBar();
+}
+
+function clearSelection() {
+  selectedIds.forEach(id => {
+    const card = document.getElementById(`video-card-${id}`);
+    if (card) {
+      card.classList.remove('selected');
+      card.querySelector('.video-select').checked = false;
+    }
+  });
+  selectedIds.clear();
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const bar = document.getElementById('bulkBar');
+  bar.classList.toggle('visible', selectedIds.size > 0);
+  document.getElementById('bulkCount').textContent = `${selectedIds.size} selected`;
+}
+
+async function deleteOne(id) {
+  const res = await fetch(`/api/timelapse/video/${id}`, {method: 'DELETE'});
+  if (res.ok) {
+    document.getElementById(`video-card-${id}`).remove();
+    selectedIds.delete(id);
+    updateBulkBar();
+  }
+}
+
+async function deleteSelected() {
+  const ids = Array.from(selectedIds);
+  if (ids.length === 0) return;
+  const res = await fetch('/api/timelapse/videos/delete-many', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id_list: ids})
+  });
+  const data = await res.json();
+  (data.deleted || []).forEach(id => {
+    const card = document.getElementById(`video-card-${id}`);
+    if (card) card.remove();
+    selectedIds.delete(id);
+  });
+  updateBulkBar();
+}
+
+// Browsers won't let a script bundle multiple files into one save
+// dialog - the standard workaround for "download several files at once"
+// is exactly this: fire each download individually through a throwaway
+// <a download> click, staggered slightly so the browser's popup/
+// multi-download throttling doesn't silently drop any of them.
+function downloadSelected() {
+  Array.from(selectedIds).forEach((id, i) => {
+    setTimeout(() => {
+      const v = videosById[id];
+      if (!v) return;
+      const a = document.createElement('a');
+      a.href = v.url;
+      a.download = v.filename || '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }, i * 400);
+  });
+}
+
+function openLightbox(id) {
+  const v = videosById[id];
+  if (!v) return;
+  document.getElementById('lightboxVideo').src = v.url;
+  document.getElementById('videoLightbox').classList.add('visible');
+}
+
+function closeLightbox() {
+  const video = document.getElementById('lightboxVideo');
+  video.pause();
+  video.src = '';
+  document.getElementById('videoLightbox').classList.remove('visible');
+}
+
+loadVideos();
+</script>
+{% endblock %}

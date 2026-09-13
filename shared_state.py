@@ -32,6 +32,7 @@ DB_PATH = os.path.join(BASE_DIR, "dermestid.db")
 CAMERA_DIR = os.path.join(BASE_DIR, "camera")
 CAMERA_LIVE_PATH = os.path.join(CAMERA_DIR, "latest.jpg")
 CAMERA_TIMELAPSE_DIR = os.path.join(CAMERA_DIR, "timelapse")
+CAMERA_TIMELAPSE_VIDEOS_DIR = os.path.join(CAMERA_DIR, "timelapse_videos")
 
 # Used to anchor chart bucket boundaries to local midnight rather than
 # UTC midnight (see _local_utc_offset_seconds in get_history) - hardcoded
@@ -486,6 +487,20 @@ def init_db():
             ts REAL PRIMARY KEY,
             mode TEXT,
             filename TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timelapse_videos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL,
+            mode TEXT,
+            start_ts REAL,
+            end_ts REAL,
+            frame_count INTEGER,
+            filename TEXT,
+            poster_filename TEXT,
+            duration_seconds REAL,
+            file_size_bytes INTEGER
         )
     """)
     conn.commit()
@@ -995,3 +1010,152 @@ def prune_oldest_camera_snapshots(n):
     conn.commit()
     conn.close()
     return removed
+
+
+def get_earliest_camera_snapshot_ts(mode):
+    """The oldest not-yet-compiled frame currently sitting in
+    camera_snapshots for this mode, or None if there isn't one.
+
+    camera_service.py deletes a mode's snapshot rows the moment they're
+    successfully compiled into a timelapse video (see
+    save_timelapse_video/delete raw frames below), so whatever's left in
+    this table for a given mode is, by construction, exactly that mode's
+    CURRENT in-progress session - nothing here has been compiled yet.
+    That invariant is what lets camera_service.py recover the right
+    session start time across a service restart (a deploy, a crash, a
+    manual restart) without needing to persist any extra state of its
+    own: it just asks "what's the oldest uncompiled frame for the mode
+    we're in right now?" instead of trusting an in-memory variable that
+    a restart would have reset."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT MIN(ts) FROM camera_snapshots WHERE mode = ?", (mode,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row and row[0] is not None else None
+
+
+def get_camera_snapshots_in_range(mode, start_ts, end_ts):
+    """All of one mode's timelapse frames within [start_ts, end_ts],
+    oldest first - the exact input a session's ffmpeg compile needs, in
+    playback order."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT ts, mode, filename FROM camera_snapshots "
+        "WHERE mode = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+        (mode, start_ts, end_ts)
+    ).fetchall()
+    conn.close()
+    return [{"ts": r[0], "mode": r[1], "filename": r[2]} for r in rows]
+
+
+def delete_camera_snapshots(ts_list):
+    """Deletes specific timelapse frames (DB row + file) by timestamp -
+    used after a successful video compile, when the raw frames that went
+    into it are no longer needed (the video is now the lasting record;
+    see camera_service.py's compile step for why keeping both
+    indefinitely isn't worth the disk space on a Pi's SD card)."""
+    if not ts_list:
+        return 0
+    conn = get_db()
+    removed = 0
+    for ts in ts_list:
+        row = conn.execute("SELECT filename FROM camera_snapshots WHERE ts = ?", (ts,)).fetchone()
+        if row:
+            try:
+                os.remove(os.path.join(CAMERA_TIMELAPSE_DIR, row[0]))
+            except FileNotFoundError:
+                pass
+            conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
+            removed += 1
+    conn.commit()
+    conn.close()
+    return removed
+
+
+def save_timelapse_video(mode, start_ts, end_ts, frame_count, filename, poster_filename,
+                          duration_seconds, file_size_bytes):
+    """Records a compiled session video - one row per completed
+    ffmpeg compile (see camera_service.py). Deliberately keyed by an
+    ordinary autoincrement id, NOT by timestamp like camera_snapshots/
+    ble_readings are - compiling now happens in its own background
+    thread per mode (see maybe_compile_session), so two different modes'
+    sessions can legitimately finish compiling within the same wall-clock
+    second; a timestamp-keyed INSERT OR REPLACE would silently make the
+    second one overwrite the first instead of both existing (caught by a
+    smoke test before this ever shipped). `ts` is kept as a plain column
+    for display/sorting/pagination, just no longer unique. Returns the
+    new row's id, which is what the download/poster/delete routes
+    actually address a video by."""
+    os.makedirs(CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
+    conn = get_db()
+    ts = time.time()
+    cursor = conn.execute(
+        "INSERT INTO timelapse_videos "
+        "(ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, duration_seconds, file_size_bytes) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, duration_seconds, file_size_bytes)
+    )
+    conn.commit()
+    video_id = cursor.lastrowid
+    conn.close()
+    return video_id
+
+
+def get_timelapse_videos(limit=50, before_ts=None):
+    """Same before_ts cursor-pagination pattern as get_recent_events/
+    get_camera_snapshots, for the Timelapse page's video gallery. Still
+    paginates by `ts` (compile time), not `id` - either works since they
+    sort identically, but ts is the one already meaningful to a caller
+    building a "load older" cursor."""
+    conn = get_db()
+    query = ("SELECT id, ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, "
+              "duration_seconds, file_size_bytes FROM timelapse_videos WHERE 1=1")
+    params = []
+    if before_ts:
+        query += " AND ts < ?"
+        params.append(before_ts)
+    query += " ORDER BY ts DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "ts": r[1], "mode": r[2], "start_ts": r[3], "end_ts": r[4], "frame_count": r[5],
+         "filename": r[6], "poster_filename": r[7], "duration_seconds": r[8], "file_size_bytes": r[9]}
+        for r in rows
+    ]
+
+
+def get_timelapse_video(video_id):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, "
+        "duration_seconds, file_size_bytes FROM timelapse_videos WHERE id = ?",
+        (video_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "ts": row[1], "mode": row[2], "start_ts": row[3], "end_ts": row[4], "frame_count": row[5],
+            "filename": row[6], "poster_filename": row[7], "duration_seconds": row[8], "file_size_bytes": row[9]}
+
+
+def delete_timelapse_video(video_id):
+    """Deletes one compiled video (DB row + the .mp4 and its poster .jpg).
+    Returns True if a row was actually found and removed."""
+    conn = get_db()
+    row = conn.execute("SELECT filename, poster_filename FROM timelapse_videos WHERE id = ?", (video_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    filename, poster_filename = row
+    for name in (filename, poster_filename):
+        if name:
+            try:
+                os.remove(os.path.join(CAMERA_TIMELAPSE_VIDEOS_DIR, name))
+            except FileNotFoundError:
+                pass
+    conn.execute("DELETE FROM timelapse_videos WHERE id = ?", (video_id,))
+    conn.commit()
+    conn.close()
+    return True

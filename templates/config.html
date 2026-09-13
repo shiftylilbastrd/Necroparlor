@@ -1,5 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Config - Dermestid Enclosure{% endblock %}
+{% block head_extra %}
+<style>
+  .camera-discover-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 8px;
+  }
+  .camera-discover-item {
+    cursor: pointer; border: 2px solid var(--panel-border); border-radius: 6px;
+    overflow: hidden; background: #10151a; text-align: center;
+  }
+  .camera-discover-item.selected { border-color: var(--accent); }
+  .camera-discover-item img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
+  .camera-discover-item .idx-label { font-size: 0.75rem; padding: 4px; color: var(--text-dim); }
+</style>
+{% endblock %}
 {% block content %}
 
 <h1>Configuration</h1>
@@ -42,13 +57,29 @@
     <div class="field" style="margin-top:10px;">
       <label>BLE address</label>
       <input type="text" id="bleMacInput" placeholder="AA:BB:CC:DD:EE:FF">
-      <div class="stat-sub" style="margin-top:6px;">
-        Run <code>python3 discover_ble_sensor.py</code> on the Pi to find it.
-      </div>
       <div class="stat-sub" id="bleSignal" style="margin-top:6px;">Signal: --</div>
     </div>
     <button class="save-btn" onclick="saveBleMac()">Save</button>
+    <button class="save-btn" onclick="discoverBleSensors()" id="bleDiscoverBtn" style="margin-left:6px;">Discover</button>
     <div class="save-msg" id="bleMacMsg"></div>
+    <div id="bleDiscoverResults" style="margin-top:10px; display:none;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead>
+          <tr style="text-align:left; color:var(--text-dim);">
+            <th style="padding:4px 6px 4px 0;">Address</th>
+            <th style="padding:4px 6px;">Temp / RH</th>
+            <th style="padding:4px 6px;">Signal</th>
+            <th style="padding:4px 0 4px 6px;">Last seen</th>
+          </tr>
+        </thead>
+        <tbody id="bleDiscoverRows"></tbody>
+      </table>
+      <div class="stat-sub" id="bleDiscoverEmpty" style="display:none; margin-top:6px;">
+        No BLE sensors of the selected brand heard recently. Make sure the sensor is powered, nearby, and that
+        "Sensor brand" above matches it - warming one in your hand for a minute makes it easier to spot which
+        address reacts if more than one shows up.
+      </div>
+    </div>
     <div class="field" style="margin-top:14px;">
       <label>Calibration offset (temp °F / humidity %RH)</label>
       <div style="display:flex; gap:8px;">
@@ -75,7 +106,7 @@
   </div>
 </div>
 
-<div class="section-title">Camera</div>
+<div class="section-title">Camera &amp; software updates</div>
 <div class="grid">
   <div class="card" style="max-width:420px;">
     <h2>USB webcam</h2>
@@ -86,9 +117,12 @@
     <div class="field">
       <label>Device (index, e.g. "0", or a /dev path)</label>
       <input type="text" id="cameraDeviceInput" placeholder="0">
-      <div class="stat-sub" style="margin-top:6px;">
-        Run <code>python3 discover_camera.py</code> on the Pi to find it.
-      </div>
+    </div>
+    <button class="save-btn" onclick="discoverCameras()" id="cameraDiscoverBtn" style="margin-top:2px;">Discover</button>
+    <div id="cameraDiscoverResults" style="margin-top:10px; display:none;">
+      <div class="camera-discover-grid" id="cameraDiscoverGrid"></div>
+      <div class="stat-sub" id="cameraDiscoverEmpty" style="display:none; margin-top:6px;"></div>
+      <div class="stat-sub" id="cameraDiscoverHint" style="margin-top:6px; display:none;"></div>
     </div>
     <div class="field" style="margin-top:10px;">
       <label>Resolution (width x height)</label>
@@ -108,31 +142,31 @@
     <button class="save-btn" onclick="saveCameraSettings()">Save</button>
     <div class="save-msg" id="cameraSettingsMsg"></div>
   </div>
-</div>
 
-<div class="section-title">Software updates</div>
-<div class="card" style="max-width:420px;">
-  <div class="field">
-    <label>Branch to track</label>
-    <select id="updateBranchSelect" onchange="onBranchSelectChange()"></select>
-    <div class="stat-sub" id="updateBranchWarning" style="margin-top:6px; display:none; color:var(--warn);">
-      ⚠ Non-main branches are for deliberate testing - running code that hasn't gone through the same scrutiny as main. Switching back to main after testing is recommended, not something to leave changed long-term. A branch switch also can't automatically handle deeper structural changes (like a renamed systemd service) - check that branch's own notes for any manual steps.
+  <div class="card" style="max-width:420px;">
+    <h2>Software updates</h2>
+    <div class="field">
+      <label>Branch to track</label>
+      <select id="updateBranchSelect" onchange="onBranchSelectChange()"></select>
+      <div class="stat-sub" id="updateBranchWarning" style="margin-top:6px; display:none; color:var(--warn);">
+        ⚠ Non-main branches are for deliberate testing - running code that hasn't gone through the same scrutiny as main. Switching back to main after testing is recommended, not something to leave changed long-term. A branch switch also can't automatically handle deeper structural changes (like a renamed systemd service) - check that branch's own notes for any manual steps.
+      </div>
     </div>
-  </div>
-  <button class="save-btn" style="margin-top:8px;" onclick="saveUpdateBranch()">Save branch</button>
-  <div class="save-msg" id="updateBranchMsg"></div>
+    <button class="save-btn" style="margin-top:8px;" onclick="saveUpdateBranch()">Save branch</button>
+    <div class="save-msg" id="updateBranchMsg"></div>
 
-  <div class="field" style="margin-top:14px;">
-    <label>Check for updates every (minutes)</label>
-    <input type="number" id="updateIntervalInput" min="1" max="1440">
-  </div>
-  <button class="save-btn" onclick="saveUpdateInterval()">Save interval</button>
-  <div class="save-msg" id="updateIntervalMsg"></div>
+    <div class="field" style="margin-top:14px;">
+      <label>Check for updates every (minutes)</label>
+      <input type="number" id="updateIntervalInput" min="1" max="1440">
+    </div>
+    <button class="save-btn" onclick="saveUpdateInterval()">Save interval</button>
+    <div class="save-msg" id="updateIntervalMsg"></div>
 
-  <div class="stat-sub" id="updateStatusText" style="margin-top:14px;">Checking...</div>
-  <button class="save-btn" id="checkNowBtn" onclick="checkForUpdateNow()" style="margin-top:10px;">Check now</button>
-  <button class="save-btn" id="applyUpdateBtn" onclick="applyUpdate()" style="margin-top:10px; display:none;">Update now</button>
-  <div class="save-msg" id="applyUpdateMsg"></div>
+    <div class="stat-sub" id="updateStatusText" style="margin-top:14px;">Checking...</div>
+    <button class="save-btn" id="checkNowBtn" onclick="checkForUpdateNow()" style="margin-top:10px;">Check now</button>
+    <button class="save-btn" id="applyUpdateBtn" onclick="applyUpdate()" style="margin-top:10px; display:none;">Update now</button>
+    <div class="save-msg" id="applyUpdateMsg"></div>
+  </div>
 </div>
 
 {% endblock %}
@@ -258,6 +292,103 @@ async function saveBleMac() {
     msg.className = 'save-msg ok';
     setTimeout(() => { msg.textContent = ''; }, 4000);
   }
+}
+
+function fmtBleAge(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s ago`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+  return `${Math.round(seconds / 3600)}h ago`;
+}
+
+async function discoverBleSensors() {
+  const btn = document.getElementById('bleDiscoverBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Scanning...';
+  try {
+    const res = await fetch('/api/ble-discover');
+    const readings = await res.json();
+    const rowsEl = document.getElementById('bleDiscoverRows');
+    const emptyEl = document.getElementById('bleDiscoverEmpty');
+    document.getElementById('bleDiscoverResults').style.display = 'block';
+    if (readings.length === 0) {
+      rowsEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+    } else {
+      emptyEl.style.display = 'none';
+      rowsEl.innerHTML = readings.map(r => `
+        <tr style="cursor:pointer; border-top:1px solid var(--panel-border);"
+            onclick="document.getElementById('bleMacInput').value='${r.address}'">
+          <td style="padding:5px 6px 5px 0; font-family:monospace;">${r.address}</td>
+          <td style="padding:5px 6px;">${r.temp_f.toFixed(1)}°F / ${r.humidity.toFixed(0)}%RH</td>
+          <td style="padding:5px 6px;">${r.rssi}dBm</td>
+          <td style="padding:5px 0 5px 6px;">${fmtBleAge(r.age_seconds)}</td>
+        </tr>
+      `).join('');
+    }
+  } catch (e) {
+    document.getElementById('bleDiscoverResults').style.display = 'block';
+    document.getElementById('bleDiscoverRows').innerHTML = '';
+    document.getElementById('bleDiscoverEmpty').style.display = 'block';
+    document.getElementById('bleDiscoverEmpty').textContent = 'Discovery failed - see the Logs page or try again.';
+  }
+  btn.disabled = false;
+  btn.textContent = originalText;
+}
+
+async function discoverCameras() {
+  const btn = document.getElementById('cameraDiscoverBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Scanning... (stops the camera service briefly)';
+  const resultsEl = document.getElementById('cameraDiscoverResults');
+  const gridEl = document.getElementById('cameraDiscoverGrid');
+  const emptyEl = document.getElementById('cameraDiscoverEmpty');
+  const hintEl = document.getElementById('cameraDiscoverHint');
+  try {
+    const res = await fetch('/api/camera-discover', {method: 'POST'});
+    const data = await res.json();
+    resultsEl.style.display = 'block';
+    if (!res.ok) {
+      gridEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = data.error || 'Discovery failed - see the Logs page or try again.';
+      hintEl.style.display = 'none';
+      return;
+    }
+    const devices = data.devices || [];
+    if (devices.length === 0) {
+      gridEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = 'No camera found on indices 0-9.';
+      hintEl.style.display = data.hint ? 'block' : 'none';
+      hintEl.textContent = data.hint || '';
+    } else {
+      emptyEl.style.display = 'none';
+      hintEl.style.display = 'none';
+      gridEl.innerHTML = devices.map(d => `
+        <div class="camera-discover-item" id="cam-discover-${d.index}" onclick="selectCameraIndex(${d.index})">
+          <img src="data:image/jpeg;base64,${d.image_b64}" alt="/dev/video${d.index} sample frame">
+          <div class="idx-label">#${d.index} · ${d.width}x${d.height}</div>
+        </div>
+      `).join('');
+    }
+  } catch (e) {
+    resultsEl.style.display = 'block';
+    gridEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = 'Discovery failed - see the Logs page or try again.';
+    hintEl.style.display = 'none';
+  }
+  btn.disabled = false;
+  btn.textContent = originalText;
+}
+
+function selectCameraIndex(index) {
+  document.getElementById('cameraDeviceInput').value = index;
+  document.querySelectorAll('.camera-discover-item').forEach(el => el.classList.remove('selected'));
+  const chosen = document.getElementById(`cam-discover-${index}`);
+  if (chosen) chosen.classList.add('selected');
 }
 
 async function saveInternalSource() {

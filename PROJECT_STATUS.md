@@ -24,6 +24,30 @@ rather than just editing it silently.
   adding an optional USB webcam - live view + per-mode timelapse. See
   the "Camera / timelapse" load-bearing-decisions section below. Not
   yet run against real hardware - see Open threads.
+- **Pi 4 8GB migration decided but not yet executed** (2026-09-13): the
+  project is moving from the Pi 3B+ to a spare Pi 4 8GB as the sole
+  processor - user's own suggestion, given the project is still in
+  development (rewiring/reflashing isn't costly right now), the Pi 4
+  has far more headroom for the camera work (including `camera-streamer`
+  if that gets integrated later), GPIO pinout is identical across the
+  3/4 family so sensor/relay wiring doesn't change, and the Pi 4's more
+  robust power delivery may also resolve the Tier-3 BLE/under-voltage
+  issue below (shared power rail theory). **Plan is to move the existing
+  SD card into the Pi 4, not re-flash/re-clone** - Raspberry Pi OS
+  images auto-detect the board via device-tree at boot and support the
+  whole 3/4/Zero2 family from one image, so this should just work.
+  Pending user confirmation after doing this "in the morning": check
+  `cat /proc/device-tree/model` (should now say Pi 4), `vcgencmd
+  get_throttled` (watching specifically for the under-voltage bits
+  clearing now that it's off the 3B+'s power budget), and that all
+  three services (`dermestid-climate`, `dermestid-ble`,
+  `dermestid-web`) came up clean. **`camera-streamer` (ayufan's, a
+  native binary alternative to the hand-rolled MJPEG relay - see the
+  superseded live-view entry below for why it wasn't used initially) is
+  deliberately not yet integrated into the dashboard** - the plan is to
+  verify it runs standalone on the Pi 4 first, then write dashboard
+  integration code against its actual observed API behavior, not
+  against documentation alone.
 - The Pi should have `dermestid-ble.service` installed and enabled
   (replacing the old `dermestid-sensorpush.service`, which should be
   stopped/disabled/removed). Sudoers should authorize
@@ -271,6 +295,86 @@ pattern has been consistent: tie things to identity, never to role.
 - **Hardware verification status** - see the dated webcam entry under
   "Open threads" below for current state; this has moved past "no real
   hardware available" and into real-Pi testing as of 2026-09-13.
+- **[added, 2026-09-13] Timelapse now compiles real `.mp4` video files,
+  not just a renamed still-frame gallery** - explicit request, and
+  explicitly the "compile real video files" option over a
+  frame-gallery-with-a-new-name alternative that was also offered.
+  `camera_service.py` tracks the current mode-session's start time in
+  memory (`session_start_ts`); on every mode change it hands the just-
+  ended session's frame range to `maybe_compile_session()`, which
+  runs `ffmpeg` (concat demuxer, fixed `TIMELAPSE_VIDEO_FPS`=12, CFR via
+  `-r` only - **do not add `-vsync vfr` alongside `-r`, ffmpeg 6.1.1+
+  rejects that combination as contradictory, caught by a real smoke
+  test**) in a background thread so a multi-second encode never blocks
+  the live-capture loop, guarded by a `_compiling_modes` set +
+  `threading.Lock()` against two overlapping compiles for the same
+  mode. Requires at least `MINIMUM_FRAMES_FOR_VIDEO` (3) frames or the
+  session is skipped entirely (too short to bother). If `ffmpeg` isn't
+  installed, compiling is skipped with a logged warning, not a crash -
+  see README's Camera section for the `apt install ffmpeg` step.
+- **Zero persisted session-boundary state, by design.** Nothing records
+  "session started at time T" to disk - `camera_service.py` recovers it
+  on every startup (including after a restart mid-session) via
+  `get_earliest_camera_snapshot_ts(mode)`, which relies on a database
+  invariant: `camera_snapshots` always holds exactly the CURRENT,
+  not-yet-compiled session's frames for a given mode, because a
+  successful compile deletes the frames it just consumed
+  (`delete_camera_snapshots`). This is why frame deletion-after-compile
+  isn't just disk-space hygiene - it's load-bearing for session-boundary
+  recovery across a restart. Don't add code that leaves compiled frames
+  in `camera_snapshots` "just in case" without also updating this
+  recovery logic.
+- **`timelapse_videos` uses an autoincrement integer `id` primary key,
+  not `ts REAL PRIMARY KEY`** - the first version used `ts` (with
+  `INSERT OR REPLACE`) to match `camera_snapshots`' convention, but a
+  real smoke test caught a same-second collision: two different modes'
+  background compile threads finishing within the same wall-clock
+  second silently overwrote one row with the other. Every route/helper
+  keys off `id`, not `ts`, as a result (`/api/timelapse/video/<id>`,
+  etc.) - don't "simplify" this back to `ts` without re-introducing that
+  bug.
+- **Page reorg (2026-09-13, explicit request):** the live MJPEG stream
+  moved from its own page onto the Home page (between the sensor tiles
+  and the History chart) - it's the actual point of the camera feature,
+  wanted at a glance without a page navigation. What used to be the
+  Camera page is renamed **Timelapse** and now shows only the compiled-
+  video gallery (poster thumbnails, per-video download/delete, checkbox
+  multi-select for bulk download/delete) - it no longer shows a live
+  feed or raw uncompiled frames at all. The Config page's "Camera" and
+  "Software updates" sections were merged into one side-by-side
+  `Camera & software updates` section (explicit request: "place the
+  software update tile next to the camera time[sic - tile]").
+- **Discovery buttons on the Config page (2026-09-13, explicit
+  request)** - "a clean display of the discover_*.py output without
+  having to use the cli," for both the external BLE sensor and the
+  camera:
+  - **BLE**: `/api/ble-discover` is deliberately read-only against
+    `ble_listener.py`'s own already-saved readings
+    (`get_all_ble_readings()`), NOT a second `BleakScanner` scan. Two
+    independent scanners hitting the same BlueZ adapter concurrently is
+    exactly the kind of start/stop churn that caused the Tier-3
+    stuck-`bluetoothd` incident documented below - this was a
+    deliberate design constraint, not an oversight, and any future
+    change to this endpoint needs to preserve "never starts its own
+    scan."
+  - **Camera**: `/api/camera-discover` shells out to
+    `discover_camera.py --json` (factored into a shared `probe_devices()`
+    function so the CLI and the web route can't drift apart) rather than
+    importing `cv2` into `webapp.py` directly - `webapp.py` has
+    deliberately stayed `cv2`-free, so a broken/missing opencv install
+    can only break the camera-specific feature, never the whole
+    dashboard (this property already mattered once this session: the
+    missing-Camera-nav-link bug was initially suspected to be a `cv2`
+    problem before the real cause - stale duplicate templates - was
+    found). It also stops `dermestid-camera.service` before probing and
+    restarts it after (in a `finally`, so a failed or timed-out probe
+    still restarts the service) - most UVC webcams only allow one open
+    client, so without this the service's own in-use index would never
+    show up in the scan. Needs two new `sudoers` lines
+    (`stop`/`start dermestid-camera.service`, alongside the existing
+    `restart` line) - see README's sudoers section; without them,
+    discovery still runs, it just won't see whichever index the service
+    already has open (a warning `hint` field in the response says so).
 
 ## Established workflows / things that look like bugs but aren't
 
@@ -395,3 +499,22 @@ pattern has been consistent: tie things to identity, never to role.
   config.json`, `git stash drop` (the unrecoverable conflicted stash
   entry), plus removing a couple of stray files
   (`.git_update.lock`-adjacent junk from mangled terminal pastes).
+- **[open, 2026-09-13]** Full feature batch implemented and
+  unit/smoke-tested (in the dev sandbox, not on real hardware yet):
+  Home-page live feed, Camera page renamed to Timelapse with real
+  ffmpeg-compiled `.mp4` videos (download/delete/multi-select), merged
+  Config-page Camera+updates section, and Discover buttons for both the
+  BLE sensor and the camera device. See the dated Camera/timelapse
+  load-bearing entries above for the design decisions. Two real bugs
+  were caught and fixed by smoke tests before this shipped (the
+  `-vsync vfr` + `-r` ffmpeg conflict, and the `timelapse_videos`
+  same-second primary-key collision) - both described above. **Still
+  needed before this is done:** deploy to the Pi (after the Pi 4
+  migration above) and verify for real - the MJPEG live feed rendering
+  smoothly on the Home page, a full mode-change actually triggering a
+  video compile, the Timelapse page's download/delete/bulk actions
+  against a real video file, and both Discover buttons against real
+  hardware (the camera one specifically needs the two new `sudoers`
+  lines added on the Pi, or it'll silently only find indices the camera
+  service isn't already holding open). `config.json`'s camera block
+  needs no migration for this batch - no key was renamed.
