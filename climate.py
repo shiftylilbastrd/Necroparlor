@@ -192,8 +192,8 @@ def set_servo_angle(angle):
 _dht_devices = {}  # GPIO pin number -> adafruit_dht.DHT22 instance, created lazily
 
 
-def _get_dht_device(pin):
-    if pin not in _dht_devices:
+def _get_dht_device(pin, force_new=False):
+    if force_new or pin not in _dht_devices:
         board_pin = getattr(board, f"D{pin}")
         _dht_devices[pin] = adafruit_dht.DHT22(board_pin, use_pulseio=False)
     return _dht_devices[pin]
@@ -235,11 +235,30 @@ def read_temp_and_humidity_f(pin):
     project runs with use_pulseio=False, since pulseio isn't available on
     Raspberry Pi) can occasionally raise other exception types too, and
     those shouldn't be able to crash the whole control loop.
+
+    IMPORTANT retry-timing fix: adafruit_dht's DHTBase.measure() enforces
+    its own ~2 second minimum interval between physical reads *per device
+    instance* - if called again sooner than that, it does NOT re-trigger a
+    real read, it just silently re-returns whatever self._temperature/
+    self._humidity already held (None, on a device that has never had a
+    successful read yet) with no exception raised at all. DHT_READ_RETRY_
+    DELAY_SECONDS is only 0.5s, so without recreating the device object,
+    attempts 2 and 3 below were never doing a real bitbang read - they
+    were instantly echoing attempt 1's already-failed (None) result back,
+    three times faster than the sensor's own minimum sample interval
+    allows. That's exactly the "device returned None for temperature/
+    humidity" pattern seen in the logs. A fresh adafruit_dht.DHT22
+    instance has _last_called reset to 0, so measure() always treats it
+    as a first read and actually re-triggers the protocol - so we
+    recreate the device on every retry (attempt > 0), not just once per
+    pin. This makes DHT_READ_RETRIES do what it was meant to do: real
+    independent physical attempts, not one real attempt disguised as
+    three.
     """
     last_error = None
     for attempt in range(DHT_READ_RETRIES):
         try:
-            device = _get_dht_device(pin)
+            device = _get_dht_device(pin, force_new=(attempt > 0))
             temp_c = device.temperature
             humidity = device.humidity
         except Exception as exc:

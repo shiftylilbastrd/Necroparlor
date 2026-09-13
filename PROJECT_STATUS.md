@@ -1024,3 +1024,69 @@ pattern has been consistent: tie things to identity, never to role.
   - **Not yet deployed** - same restart requirements as the Pi-health
     batch directly above (this shipped in the same push, before that
     batch had been deployed/tested on real hardware yet either).
+- **[open, 2026-09-13]** Wired/fallback external DHT22 (GPIO4,
+  `PIN_EXTERNAL_TEMP`) investigation - user provided fresh
+  `journalctl -u dermestid-climate.service` output after the DHT-
+  failure-logging fix went in. Findings:
+  - GPIO4 failed on **every single cycle** in the ~5 minute window shown
+    (100% failure rate), always with "device returned None for
+    temperature/humidity" - not a raised exception. GPIO27 (internal)
+    also failed for the first ~3 cycles right after the service
+    restart, then recovered - a previously-unknown data point, since
+    only the external probe had been suspected before.
+  - **Found and fixed a real bug while investigating**: pulled
+    `adafruit_dht`'s actual source (v4.0.12) and confirmed
+    `DHTBase.measure()` enforces its own ~2s minimum interval between
+    physical reads *per device instance* - if called again sooner, it
+    does NOT re-trigger a real read, it silently re-returns whatever
+    `self._temperature`/`self._humidity` already held (`None` on a
+    device that's never had a successful read) with no exception at
+    all. `DHT_READ_RETRY_DELAY_SECONDS` is only 0.5s, so attempts 2 and
+    3 inside `read_temp_and_humidity_f()` were never doing a real
+    bitbang read - they were instantly echoing attempt 1's already-
+    failed result back, faster than the sensor's own minimum sample
+    interval allows. This exactly matches the "returned None" pattern
+    in the logs, and means `DHT_READ_RETRIES=3` was effectively 1 real
+    attempt per cycle, not 3. **Fixed** in `climate.py`:
+    `_get_dht_device(pin, force_new=...)` now recreates the device
+    object on every retry (`attempt > 0`), not just once per pin - a
+    fresh instance has `_last_called` reset to 0, so `measure()` always
+    performs a genuine new physical read. This affects both sensors
+    equally and is a real robustness improvement regardless of the
+    GPIO4 mystery below, but does NOT by itself explain a 100%,
+    cycle-over-cycle failure rate sustained across ~17 independent
+    cycles - each of those was already a genuine fresh physical attempt
+    15s apart (well over the library's 2s minimum), so this bug was
+    only ever wasting the *within-call* retries, not masking 17
+    real successes.
+  - **Leading hardware hypothesis, not yet confirmed**: GPIO4 (physical
+    pin 7) is the Raspberry Pi's **default 1-Wire bus pin** - enabling
+    1-Wire (via `raspi-config` or a `dtoverlay=w1-gpio` line in
+    `/boot/firmware/config.txt`, e.g. for a DS18B20) claims GPIO4 for
+    the kernel's `w1-gpio` driver by default unless a `gpiopin=`
+    override is set. A DHT22 uses a completely different single-wire
+    timing protocol, so if that overlay is active, every single bitbang
+    attempt on GPIO4 would fail consistently - not flaky, not
+    intermittent, matching the observed 100% failure rate exactly -
+    regardless of the wiring itself being correct (already confirmed
+    earlier this session: physical pin 7 = GPIO4, pin 9 = GND, pin 17 =
+    3.3V). This would also explain the "External: 84.4F/47.6%" reading
+    logged moments before the restart: `climate.py`'s failover logic
+    uses BLE as the active external source whenever it's fresh, falling
+    back to wired automatically - so that reading was very likely
+    sourced from BLE the whole time, with GPIO4 silently failing
+    underneath even then. **Not yet checked** - needs the user to run,
+    on the Pi itself: `cat /boot/firmware/config.txt | grep -i w1`,
+    `ls /sys/bus/w1/devices/ 2>/dev/null`, and `lsmod | grep w1` (or
+    check Interface Options -> 1-Wire in `raspi-config`). If 1-Wire is
+    enabled, disabling it (or moving whatever uses it to a different
+    `gpiopin=`) is the fix.
+  - **Fallback hypothesis if 1-Wire isn't it**: a bare (4-pin, no
+    onboard PCB) DHT22 needs its own external ~10k ohm pull-up resistor
+    between VCC and the data line per the datasheet; many 3-pin
+    breakout modules include this on-board, a bare sensor does not. If
+    the internal sensor (GPIO27) is a breakout module and the external/
+    wired one is a bare sensor without an added pull-up, that alone
+    would produce exactly this kind of persistent, one-sided failure.
+    Worth confirming which type of DHT22 is on the wired external run,
+    and whether a pull-up resistor was added.
