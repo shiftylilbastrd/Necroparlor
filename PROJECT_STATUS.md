@@ -294,8 +294,18 @@ pattern has been consistent: tie things to identity, never to role.
   fixed - worth a fresh look if it recurs.
 - **[open]** Tier-3 BLE failure (deep bluetoothd stuck state,
   `systemctl restart bluetooth` insufficient, needs a full reboot) -
-  happened twice this session. No automatic recovery built yet;
-  revisit if it keeps recurring.
+  happened twice this session, then a third time (2026-09-13) on real
+  hardware right after the USB webcam was first plugged in and opened.
+  `vcgencmd get_throttled` showed `0x50000` (under-voltage + ARM freq
+  capping *have occurred* since boot, sticky bits - not necessarily
+  active at the moment checked), and `dmesg` showed only the usual
+  stuck-scanning BLE errors, no camera/USB errors. Circumstantial but
+  plausible: the webcam's current draw caused a brief under-voltage
+  event that also knocked the BT/Wi-Fi combo chip into this same stuck
+  state (shared power rail). A reboot fixed it again. No automatic
+  recovery built yet; if this keeps coinciding with the webcam
+  specifically, a powered USB hub for the webcam is the likely real
+  fix rather than another BLE-side workaround.
 - **[open]** SHT31 upgrade for the internal sensor is under
   consideration, motivated by real DHT22 reliability issues even after
   the retry-logic fix. Probe form factor (PTFE vs. ceramic vs. metal
@@ -309,15 +319,44 @@ pattern has been consistent: tie things to identity, never to role.
   claim that it wasn't tracked - see the dated correction note under
   "Current state" above. Re-fixed; watch for it recurring via the
   drag-and-drop upload workflow.
-- **[open, 2026-09-12]** New USB webcam feature (`add-webcam` branch:
-  `camera_service.py`, `discover_camera.py`, the Camera dashboard page,
-  per-mode `snapshot_interval_minutes`) has NOT been run against real
-  hardware - no physical webcam or Pi was available this session. Only
-  verified: `py_compile` on every new/changed file, and a smoke test
-  against a mocked `cv2.VideoCapture` exercising the main loop's frame-
-  write/snapshot-gating/never-mode/disk-guard logic. Needs real-Pi
-  verification before relying on it: actual device open by index vs.
-  by-id path, real resolution/quality behavior, and whether the
+- **[open, 2026-09-13]** New USB webcam feature (`add-webcam` branch)
+  now partially verified on real hardware (Logitech C922, Pi 3B+):
+  `discover_camera.py` found it at `/dev/video0` fine, `pip install
+  opencv-python-headless --break-system-packages` was needed (not
+  preinstalled), and `camera_service.py` ran and wrote `latest.jpg`
+  successfully in a first foreground test. Since then: (1) the service
+  died silently with no error/shutdown logged, suspected SIGHUP from
+  the SSH session dropping (unlike `climate.py`, it has no signal
+  handler) - needs to run as the actual `dermestid-camera.service`
+  systemd unit instead of foreground testing, not yet done; (2) after
+  the Tier-3 BLE incident above and the following reboot, the Camera
+  page still does not appear in the dashboard UI at all - not yet
+  root-caused. `webapp.py`/`shared_state.py` don't import `cv2` so a
+  missing dependency there isn't the cause; next to check: whether
+  `dermestid-web.service` is actually serving the current `add-webcam`
+  commit (`sudo systemctl status`/`journalctl -u dermestid-web.service`),
+  and whether `templates/camera.html` and the nav link in
+  `templates/base.html` are actually present on disk on the Pi. Still
+  unverified: real resolution/quality behavior and whether the
   watchdog/reopen timing constants (60s stall timeout, reopen after 10
-  consecutive failures) feel right against a real USB webcam's actual
-  failure patterns rather than a simulated one.
+  consecutive failures) feel right against a real webcam's actual
+  failure patterns.
+- **[resolved, 2026-09-13]** `auto_update.sh` could wedge the repo into
+  a broken, permanently-failing state when switching branches across
+  the point where `config.json` went from git-tracked to untracked
+  (see the `config.json` entry above) - git sees the incoming branch
+  delete the file while the safety-net stash simultaneously modifies
+  it, a real conflict it can't auto-resolve; a failed `stash pop` then
+  left the index in a half-merged state that made every subsequent run
+  fail at the same step (`error: could not write index`), even for a
+  plain pull that shouldn't have touched `config.json` at all. Fixed by
+  taking `config.json` out of git's hands entirely: it's now backed up
+  out-of-band (`$HOME/.dermestid_config_backup.json`) and force-
+  untracked (`git rm --cached -f`) before the stash step ever runs, and
+  restored + re-untracked after checkout/pull completes, regardless of
+  whether the branch landed on tracks it. Recovering the Pi's already-
+  wedged index required a one-time manual fix: `git restore --staged
+  auto_update.sh` (harmless queued mode-bit change), `git rm --cached
+  config.json`, `git stash drop` (the unrecoverable conflicted stash
+  entry), plus removing a couple of stray files
+  (`.git_update.lock`-adjacent junk from mangled terminal pastes).

@@ -44,16 +44,40 @@ else
     echo "Update found: ${BEFORE:0:7} -> ${AFTER:0:7}"
 fi
 
-# config.json itself is NOT git-tracked (see .gitignore) specifically so
-# the dashboard's own live rewrites of it (setpoints, sensor sources,
-# camera settings, etc.) can never conflict with an incoming update -
-# untracked files are simply left alone by checkout/pull. This stash is
-# a general safety net for anything ELSE that might have local
-# uncommitted changes to a tracked file, which a pull or branch switch
-# could otherwise fail on.
+# config.json is meant to be local machine state, never git-tracked (see
+# .gitignore), specifically so the dashboard's own live rewrites of it
+# (setpoints, sensor sources, camera settings, etc.) can never conflict
+# with an incoming update. That untracking only exists starting on the
+# add-webcam branch, though - every older branch (main included, until
+# this is merged) still has config.json in its committed tree. Switching
+# between "tracks it" and "doesn't track it" is not a normal update from
+# git's point of view: git sees the incoming branch delete the file while
+# a stash simultaneously modifies it, a real conflict it can't
+# auto-resolve, and a failed stash-pop here leaves the index in a broken
+# half-merged state that then blocks every subsequent run at this same
+# step (this happened in practice - see PROJECT_STATUS.md).
+#
+# So config.json is handled entirely outside of git now, every run,
+# regardless of which branch is tracking it: back up whatever is
+# currently on disk, let checkout/pull do whatever it wants to any
+# tracked copy, then force the backup back into place and make sure it's
+# untracked again. This can never conflict with a stash because
+# config.json is removed from the index (if present) before the stash
+# below ever looks at it.
+CONFIG_BACKUP="$HOME/.dermestid_config_backup.json"
+if [ -f config.json ]; then
+    cp config.json "$CONFIG_BACKUP"
+fi
+if git ls-files --error-unmatch config.json >/dev/null 2>&1; then
+    git rm --cached -f --quiet config.json
+fi
+
+# General safety net for anything ELSE that might have local uncommitted
+# changes to a tracked file (config.json can no longer be one, per
+# above), which a pull or branch switch could otherwise fail on.
 STASHED=0
 if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "Local changes detected (likely config.json from the dashboard) - stashing"
+    echo "Local changes detected in a tracked file - stashing"
     git stash push --quiet -m "auto-update: preserving local changes"
     STASHED=1
 fi
@@ -77,6 +101,18 @@ if [ "$STASHED" = "1" ]; then
     else
         echo "WARNING: local changes could not be automatically restored (conflict)."
         echo "Run 'git stash list' and 'git stash show -p' on the Pi to recover them by hand."
+    fi
+fi
+
+# Restore the live config regardless of what the branch we just landed on
+# tracks - if it still has config.json in its tree (e.g. main, pre-merge),
+# checkout/pull just wrote that stale committed copy over ours; put the
+# real one back and strip it from the index again so it stays untracked
+# from here on, this run and every future one.
+if [ -f "$CONFIG_BACKUP" ]; then
+    cp "$CONFIG_BACKUP" config.json
+    if git ls-files --error-unmatch config.json >/dev/null 2>&1; then
+        git rm --cached -f --quiet config.json
     fi
 fi
 
