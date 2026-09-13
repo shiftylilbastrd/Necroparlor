@@ -278,9 +278,27 @@ def open_capture(device, width, height):
     `device` is either a plain integer index as a string (most USB
     webcams show up as /dev/video0, i.e. index 0) or a path (e.g. a
     /dev/v4l/by-id/... symlink - more stable across reboots than a bare
-    index if more than one USB video device is ever connected)."""
+    index if more than one USB video device is ever connected).
+
+    Forces MJPG as the capture format, requested BEFORE the resolution
+    (some V4L2 drivers only honor a format change if it's set first).
+    Without this, OpenCV/V4L2 is free to negotiate an uncompressed
+    format (commonly YUYV) once a high resolution is requested - a raw
+    1920x1080 YUYV frame is ~4MB, and over USB2 that alone caps real
+    throughput to a handful of fps no matter what camera.live_capture_fps
+    is set to in config.json, since cap.read() just blocks until the
+    hardware/bus can deliver the next one. This was diagnosed
+    2026-09-13 from an actual screen-recorded live feed (see
+    PROJECT_STATUS.md): real content only updated ~4.5x/sec with
+    noticeable jitter even at live_capture_fps=20, meaning the config
+    knob was never the bottleneck. MJPG frames at the same resolution
+    are roughly 10-20x smaller, which should let the actual hardware
+    ceiling be much higher if the camera supports it at all - if a
+    connected camera doesn't support MJPG, this is a harmless no-op and
+    behavior is unchanged from before."""
     cam_id = int(device) if device.isdigit() else device
     cap = cv2.VideoCapture(cam_id)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     if width:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     if height:
@@ -336,6 +354,18 @@ def main():
     consecutive_failures = 0
     camera_was_available = cap.isOpened()
 
+    # Real, measured capture rate - see save_camera_stats()'s docstring
+    # in shared_state.py for why this exists (config.json's
+    # live_capture_fps is what's ASKED for, this is what's actually
+    # happening). An EMA rather than a plain per-cycle 1/interval so a
+    # single unusually fast or slow cycle doesn't make the dashboard
+    # number jump around - ALPHA is a "how quickly should this react to
+    # a real change" tradeoff, not a tuned constant worth exposing.
+    _FPS_EMA_ALPHA = 0.3
+    actual_fps_ema = None
+    last_capture_time = None
+    last_stats_write_time = 0.0
+
     # Session-boundary tracking for timelapse video compiling (see
     # maybe_compile_session above). last_mode/session_start_ts start from
     # whatever's ALREADY sitting in camera_snapshots for the mode we're
@@ -376,10 +406,36 @@ def main():
 
             if ok:
                 consecutive_failures = 0
-                last_success_time = time.time()
+                now = time.time()
+                last_success_time = now
                 if not camera_was_available:
                     state.log_event("info", "Camera reconnected - frames are being captured again")
                     camera_was_available = True
+
+                # Measure the ACTUAL interval between successful reads,
+                # not the requested one - this is what exposes a gap
+                # between live_capture_fps and what the hardware/USB
+                # bus can really deliver (see open_capture()'s docstring
+                # and PROJECT_STATUS.md's 2026-09-13 entry). Skips the
+                # very first frame (nothing to measure an interval
+                # against yet) and any interval that's absurdly small/
+                # zero (clock weirdness, not a real 1000fps camera).
+                if last_capture_time is not None:
+                    dt = now - last_capture_time
+                    if dt > 0.001:
+                        instant_fps = 1.0 / dt
+                        actual_fps_ema = (instant_fps if actual_fps_ema is None
+                                           else (_FPS_EMA_ALPHA * instant_fps
+                                                 + (1 - _FPS_EMA_ALPHA) * actual_fps_ema))
+                last_capture_time = now
+
+                # Written about once/sec regardless of how fast frames
+                # are actually coming in - this is a status readout for
+                # the dashboard, not something that needs to be as fresh
+                # as the live JPEG itself.
+                if actual_fps_ema is not None and (now - last_stats_write_time) >= 1.0:
+                    state.save_camera_stats(actual_fps_ema, live_fps)
+                    last_stats_write_time = now
 
                 encode_ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
                 if encode_ok:

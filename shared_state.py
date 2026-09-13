@@ -34,6 +34,12 @@ CAMERA_DIR = os.path.join(BASE_DIR, "camera")
 CAMERA_LIVE_PATH = os.path.join(CAMERA_DIR, "latest.jpg")
 CAMERA_TIMELAPSE_DIR = os.path.join(CAMERA_DIR, "timelapse")
 CAMERA_TIMELAPSE_VIDEOS_DIR = os.path.join(CAMERA_DIR, "timelapse_videos")
+# camera_service.py's own measured real-world capture rate (see
+# save_camera_stats()/get_camera_stats() below) - separate from
+# CAMERA_LIVE_PATH since this is tiny/JSON and rewritten on a different
+# cadence (about once/sec) than the JPEG itself (as fast as
+# live_capture_fps allows).
+CAMERA_STATS_PATH = os.path.join(CAMERA_DIR, "stats.json")
 
 # Used to anchor chart bucket boundaries to local midnight rather than
 # UTC midnight (see _local_utc_offset_seconds in get_history) - hardcoded
@@ -806,6 +812,50 @@ def get_pi_health():
         pass
 
     return result
+
+
+# How old camera/stats.json can be before get_camera_stats() treats it as
+# stale (camera_service.py not running, or wedged) rather than showing a
+# real-looking-but-frozen number - same "silence should read as unknown,
+# not as a stale success" reasoning as the stale-reading check elsewhere.
+CAMERA_STATS_MAX_AGE_SECONDS = 30
+
+
+def save_camera_stats(actual_fps, target_fps):
+    """Called by camera_service.py roughly once/sec (not every captured
+    frame - see its own comment) with the REAL, MEASURED time between
+    successful frame captures, as an exponential moving average -
+    distinct from target_fps (config.json's camera.live_capture_fps,
+    what was *asked* for). The two can differ a lot: this is exactly
+    what surfaced the 2026-09-13 finding that the camera's actual
+    delivery rate was hardware/USB-bandwidth-capped well below whatever
+    live_capture_fps was set to (see PROJECT_STATUS.md) - a gap no
+    config value alone could ever reveal, only a real measurement.
+
+    Written to its own tiny JSON file rather than into config.json
+    (runtime-measured, not a setting - would be wrong to have it survive
+    a config.json restore/edit) or the SQLite DB (this isn't a climate
+    reading, and doesn't need indefinite history - just "what's true
+    right now")."""
+    atomic_write_bytes(CAMERA_STATS_PATH, json.dumps({
+        "actual_fps": round(actual_fps, 2) if actual_fps is not None else None,
+        "target_fps": target_fps,
+        "ts": time.time(),
+    }).encode())
+
+
+def get_camera_stats():
+    """Returns None if camera_service.py has never written this file yet,
+    or hasn't in a while (see CAMERA_STATS_MAX_AGE_SECONDS) - callers
+    should treat that the same as "unknown," not as "0 fps."""
+    try:
+        with open(CAMERA_STATS_PATH, "r") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if time.time() - data.get("ts", 0) > CAMERA_STATS_MAX_AGE_SECONDS:
+        return None
+    return data
 
 
 def log_event(level, message):

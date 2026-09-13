@@ -94,6 +94,17 @@ def probe_devices(save_files=True, out_dir=None):
         if not cap.isOpened():
             cap.release()
             continue
+        # Force MJPG before requesting a resolution - same reasoning as
+        # camera_service.py's open_capture() (see its docstring): without
+        # this, OpenCV/V4L2 can silently negotiate an uncompressed format
+        # at high resolutions, which this probe would then report as
+        # "supported" even though camera_service.py (which forces MJPG
+        # too, as of 2026-09-13) might behave very differently at that
+        # same resolution in practice. Keeping this probe's request
+        # identical to what the real capture loop asks for is what makes
+        # "supported by this camera" here actually mean "supported the
+        # way this project will really use it."
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         # Without an explicit request, OpenCV/V4L2 hands back whatever
         # resolution the driver defaults to - commonly 640x480 for UVC
         # webcams - which isn't the camera's actual capability, just its

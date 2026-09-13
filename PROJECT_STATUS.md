@@ -1269,3 +1269,78 @@ pattern has been consistent: tie things to identity, never to role.
     `dermestid-web.service` needs a restart to pick up the `webapp.py` /
     `config.html` changes (config.json itself needs no manual edit - the
     new key just starts empty and fills in the next time Discover runs).
+
+- **[2026-09-13] Live-feed jitter root-caused to camera capture format,
+  not fps settings - likely fix applied, not yet verified on hardware**
+  - Context: user had already tried raising `live_capture_fps` 5→10 and
+    it didn't reduce perceived jitter (a real, useful negative result -
+    see the fps-bounds entry above). Config was later pushed to 20/20
+    for both `live_capture_fps` and `stream_relay_fps` for a real test.
+  - User uploaded a short screen recording of the live feed at those
+    settings. Rather than eyeballing it, analyzed it quantitatively:
+    downsampled every decoded frame and measured actual pixel-content
+    changes (not the screen recording's own 30fps container rate, which
+    is irrelevant - a recording can hit 30fps while replaying the exact
+    same still image most of the time). Real content only updated ~4.5x/
+    sec on average (~0.224s between changes), with real jitter on top
+    (~0.13-0.23s typical, occasional stalls to 0.6-0.77s) - i.e.
+    genuinely unmoved from the old ~5fps behavior despite both fps
+    settings being raised to 20. This confirms neither fps setting was
+    ever the actual bottleneck.
+  - **Likely root cause**: `camera_service.py`'s `open_capture()` never
+    told OpenCV/V4L2 which pixel format to capture in. Left unset, many
+    UVC webcams get negotiated into an uncompressed format (commonly
+    YUYV) once a high resolution is requested - a raw 1920x1080 YUYV
+    frame is ~4MB/frame, and over USB2 bandwidth that alone caps real
+    frame delivery to roughly the range observed, independent of
+    `live_capture_fps`/`stream_relay_fps`, since `cap.read()` simply
+    blocks until the hardware/bus can deliver the next frame. This
+    matches every observed symptom: pinned near 5fps, real jitter, and
+    completely unmoved by the earlier 5→10 and 10→20 config changes.
+  - **Fix applied** (not yet confirmed on real hardware): force MJPG as
+    the capture format via `cap.set(cv2.CAP_PROP_FOURCC, ...)`, set
+    BEFORE the resolution request (some V4L2 drivers only honor a format
+    change if it comes first) - in both `camera_service.py`'s
+    `open_capture()` (the actual capture loop) and `discover_camera.py`'s
+    `probe_devices()` (so Discover's "supported resolutions" reflect the
+    same format the real capture loop will use, not a possibly-different
+    negotiated format). MJPG frames are roughly 10-20x smaller than raw
+    at the same resolution, which should let the real hardware ceiling
+    be much higher if the connected camera supports MJPG at all - if it
+    doesn't, `.set()` on an unsupported fourcc is a harmless no-op
+    (confirmed: tested against a non-existent device index, raised no
+    exception), so this can't make things worse than before.
+  - **Also added real fps telemetry**, since eyeballing screen recordings
+    isn't a sustainable way to verify this: `camera_service.py` now
+    measures the actual wall-clock interval between successful
+    `cap.read()`s (EMA-smoothed, `_FPS_EMA_ALPHA = 0.3`) and writes it to
+    a small `camera/stats.json` (not git-tracked, like `camera/latest.jpg`)
+    roughly once/sec via `shared_state.save_camera_stats()`/
+    `get_camera_stats()` (returns `None` if the file is missing or more
+    than `CAMERA_STATS_MAX_AGE_SECONDS` (30s) old, so a dead
+    `dermestid-camera.service` reads as "unknown," never a misleading
+    "0 fps"). `webapp.py`'s `/api/status` now includes this as
+    `camera_stats`, and the Home page's existing Pi-health line
+    (`updatePiHealth()`) now appends `camera: X.X fps actual (target Y)`
+    when available - so tuning `live_capture_fps` going forward can be
+    judged against what's REALLY happening, not just what was configured
+    (this is exactly the gap that made the earlier 5→10→20 config
+    changes look like they weren't working - they may have been correct
+    changes, just invisible against a hardware ceiling with no way to
+    measure it before now).
+  - Verified before pushing: `python3 -m py_compile` on all four touched
+    `.py` files, a Jinja2 parse check on all six templates, a smoke test
+    confirming `cap.set(CAP_PROP_FOURCC, ...)` on an unopened/nonexistent
+    device raises no exception, and a round-trip test of
+    `save_camera_stats()`/`get_camera_stats()` including the staleness
+    path.
+  - **Not yet confirmed working on real hardware.** To test: pull,
+    restart `dermestid-camera.service` (and `dermestid-web.service` for
+    the `/api/status`/Home changes), open the live view, and watch the
+    new "camera: X.X fps actual" line on Home - if it climbs meaningfully
+    closer to the configured `live_capture_fps`, the MJPG fix worked; if
+    it's still pinned near ~5fps, the bottleneck is something else
+    (worth checking `v4l2-ctl --device=/dev/video0 --list-formats-ext`
+    on the Pi at that point to see what resolutions/fps the camera
+    actually advertises per format) and JPEG quality/resolution may need
+    to come down instead of fps going up.
