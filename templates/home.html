@@ -147,6 +147,12 @@
 {% endblock %}
 {% block scripts %}
 <script>
+// This page already polls /api/status every 5s for its own tiles (see
+// refreshStatus() below) - opt out of base.html's separate 15s door-banner
+// poll of the same endpoint, and drive that banner from this page's own
+// fetch instead (see the updateDoorBanner() call inside refreshStatus()).
+window.__doorStatusPolledElsewhere = true;
+
 let currentRangeHours = 24;
 let modeDropdownOpen = false;
 const MODE_NAMES = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
@@ -210,6 +216,7 @@ async function refreshStatus() {
   const res = await fetch('/api/status');
   const data = await res.json();
   document.getElementById('staleBanner').style.display = data.stale ? 'block' : 'none';
+  updateDoorBanner(data.door_status);
   const lastValid = data.last_valid_timestamps || {};
 
   if (data.latest) {

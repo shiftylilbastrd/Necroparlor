@@ -1184,3 +1184,19 @@ pattern has been consistent: tie things to identity, never to role.
     `nav.topnav`) so switching pages (Home/Logs/Data/Timelapse/Config)
     doesn't require scrolling back to the top first.
   - Not yet confirmed working on real hardware/deployed.
+  - **Follow-up fix, same day**: user asked whether it'd be lighter-weight
+    to have the door/update banners "part of the header for paging" -
+    they already are (`base.html` is the one shared layout every page
+    extends, not duplicated per-page), but the question surfaced a real
+    redundant-fetch bug: Home already polls `/api/status` every 5s for
+    its own tiles, and the new door-banner code in `base.html` was
+    *also* independently polling the same endpoint every 15s - doubling
+    that page's request rate for no benefit, since Home's own faster
+    poll already has everything the banner needs. Fixed by exposing
+    `updateDoorBanner()` as a standalone global function in `base.html`
+    and having Home set `window.__doorStatusPolledElsewhere = true`
+    (checked before `base.html`'s trailing script sets up its own
+    fetch+interval) so Home drives the banner from its existing 5s poll
+    instead of a second, separate one. Every other page (Logs/Data/
+    Timelapse/Config) still gets the base.html-driven 15s poll, since
+    they don't otherwise fetch `/api/status` at all.

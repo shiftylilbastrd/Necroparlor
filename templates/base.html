@@ -164,19 +164,29 @@ setInterval(checkGlobalUpdateBanner, 60000);
 
 // Same idea, but for the door - shown on every page (not just Home) since
 // an open enclosure matters regardless of which tab you're looking at.
-// Polled faster than the update banner (matches climate.py's own
-// LOOP_INTERVAL) since this is time-sensitive in a way an available
-// software update isn't.
+// updateDoorBanner() is a standalone global function (not folded into the
+// fetch below) so a page that already polls /api/status itself - Home,
+// every 5s, faster than this page's own 15s - can drive the banner
+// straight from that existing response instead of this script *also*
+// polling the same endpoint independently, which would just double the
+// request rate on that one page for no benefit (a page's own {% block
+// scripts %} always runs before this trailing block, so it can set
+// window.__doorStatusPolledElsewhere = true in time to opt out below).
+function updateDoorBanner(doorStatus) {
+  document.getElementById('globalDoorBanner').style.display =
+    (doorStatus && doorStatus.is_open) ? 'block' : 'none';
+}
 async function checkGlobalDoorBanner() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    const banner = document.getElementById('globalDoorBanner');
-    banner.style.display = (data.door_status && data.door_status.is_open) ? 'block' : 'none';
+    updateDoorBanner(data.door_status);
   } catch (e) { /* status endpoint not reachable - fail quietly, try again next tick */ }
 }
-checkGlobalDoorBanner();
-setInterval(checkGlobalDoorBanner, 15000);
+if (!window.__doorStatusPolledElsewhere) {
+  checkGlobalDoorBanner();
+  setInterval(checkGlobalDoorBanner, 15000);
+}
 </script>
 </body>
 </html>
