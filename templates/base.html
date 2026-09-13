@@ -169,8 +169,8 @@ setInterval(checkGlobalUpdateBanner, 60000);
 // every 5s, faster than this page's own 15s - can drive the banner
 // straight from that existing response instead of this script *also*
 // polling the same endpoint independently, which would just double the
-// request rate on that one page for no benefit (a page's own {% block
-// scripts %} always runs before this trailing block, so it can set
+// request rate on that one page for no benefit (a page's own overridable
+// script block always runs before this trailing script, so it can set
 // window.__doorStatusPolledElsewhere = true in time to opt out below).
 function updateDoorBanner(doorStatus) {
   document.getElementById('globalDoorBanner').style.display =

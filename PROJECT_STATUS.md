@@ -1200,3 +1200,16 @@ pattern has been consistent: tie things to identity, never to role.
     instead of a second, separate one. Every other page (Logs/Data/
     Timelapse/Config) still gets the base.html-driven 15s poll, since
     they don't otherwise fetch `/api/status` at all.
+  - **Bug from this same edit, broke every page**: a code comment in
+    `base.html` literally contained the text `{% block` ... `%}` (talking
+    about the Jinja block-tag mechanism in prose) - Jinja2 scans the
+    entire raw template file for `{%`/`%}` before anything about HTML or
+    JS comments is understood, so it tried to parse that comment as a
+    real template tag and threw `TemplateSyntaxError: expected token
+    'name', got '//'` on every single page (all of them extend
+    `base.html`), a full Internal Server Error site-wide. Fixed by
+    rewording the comment to avoid literal `{%`/`%}` characters. Verified
+    this time with an actual Jinja2 parse check (`env.get_template()`)
+    against every template file, not just eyeballing the diff - worth
+    doing that check by default before pushing any template change from
+    now on, not only after something breaks.
