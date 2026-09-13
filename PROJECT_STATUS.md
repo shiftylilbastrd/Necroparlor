@@ -425,6 +425,46 @@ pattern has been consistent: tie things to identity, never to role.
   recovery built yet; if this keeps coinciding with the webcam
   specifically, a powered USB hub for the webcam is the likely real
   fix rather than another BLE-side workaround.
+- **[open, 2026-09-13, worse recurrence]** A fourth occurrence, and the
+  first that didn't self-clear: `dermestid-ble.service` was reported
+  missing external BLE data for ~12 hours straight, confirmed via
+  `journalctl` as a continuous restart loop (`restart counter` in the
+  hundreds - 267, 268... - by the time it was checked) - the
+  `WATCHDOG_TIMEOUT` (2min) "no reading decoded" trip firing and
+  restarting the service every single cycle with **zero** successful
+  reads the entire time, not the occasional stall-then-recover pattern
+  the watchdog was designed around. `vcgencmd get_throttled` again
+  showed `0x50000` (under-voltage/throttling occurred since boot,
+  sticky). Same conditions as before: still the Pi 3B+, webcam plugged
+  in and actively being tested (see the live-view performance entry
+  below). This is the strongest data point yet that this is a real,
+  recurring hardware limitation of running the webcam off the 3B+'s
+  power budget, not a one-off - the "wait for more data before building
+  auto-recovery" threshold from the original entry above arguably has
+  been met now. **Decision (2026-09-13): explicitly holding off on
+  Tier-3 auto-reboot logic until after the Pi 4 migration** - if the
+  migration's better power delivery makes this failure mode disappear
+  on its own (the leading theory), building auto-reboot logic now would
+  be wasted, and possibly risky, work. Revisit only if this recurs on
+  the Pi 4 too. **Separately noticed the same session**:
+  `dermestid-battery.service`'s log showed `"No SensorPush address
+  configured - nothing to check"` - `config.json`'s `ble_mac` was empty
+  at check time, which is why the dashboard's battery reading had gone
+  stale (56hr) independent of the listener's stuck state - not a timer/
+  service bug, just needs the address re-set (Config page's External
+  card, or the new Discover button once the listener is healthy again).
+- **[open, 2026-09-13]** Live view performance on the Pi 3B+ confirmed
+  poor with real hardware + real network (Chrome on desktop, same LAN):
+  "very slow and choppy," not the smooth video the MJPEG relay was
+  designed to deliver. Not yet root-caused to a specific bottleneck
+  (webcam capture rate, JPEG encode time, or Flask/Werkzeug relay
+  overhead specifically) - CPU contention with `climate.py` on a Pi 3B+
+  while also feeding the same webcam's power draw into the Tier-3 BLE
+  issue above is the leading theory, consistent with the tradeoff
+  already flagged in README's Camera section. Real fix is expected to
+  be the pending Pi 4 migration (more CPU/power headroom); not worth
+  chasing a 3B+-specific optimization (lower resolution/quality/fps as
+  a stopgap) given the migration is already imminent.
 - **[open]** SHT31 upgrade for the internal sensor is under
   consideration, motivated by real DHT22 reliability issues even after
   the retry-logic fix. Probe form factor (PTFE vs. ceramic vs. metal

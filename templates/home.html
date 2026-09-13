@@ -40,10 +40,11 @@
   .tile-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
   .tile-side { text-align: right; flex-shrink: 0; }
   .active-tag { font-size: 0.7rem; font-weight: 600; color: var(--accent); vertical-align: middle; }
-  .home-live-frame {
-    width: 100%; max-width: 640px; border-radius: 8px; border: 1px solid var(--panel-border);
-    background: #000; display: block; aspect-ratio: 4 / 3; object-fit: contain;
+  .live-frame-wrap {
+    width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--panel-border); background: #000;
   }
+  .home-live-frame { width: 100%; height: 100%; display: block; object-fit: cover; }
 </style>
 {% endblock %}
 {% block content %}
@@ -112,10 +113,12 @@
 <div class="banner" id="cameraUnavailableBanner" style="display:none;">
   No recent camera frame - check the camera service on the Pi, or see the Timelapse page for more.
 </div>
-<div class="card" style="max-width:640px;">
-  <img class="home-live-frame" id="homeLiveFrame" alt="Live camera view"
-       src="/api/camera/stream.mjpg"
-       onerror="setTimeout(reconnectHomeStream, 2000)">
+<div class="card">
+  <div class="live-frame-wrap">
+    <img class="home-live-frame" id="homeLiveFrame" alt="Live camera view"
+         src="/api/camera/stream.mjpg"
+         onerror="setTimeout(reconnectHomeStream, 2000)">
+  </div>
   <div class="stat-sub" id="homeLiveStatus" style="margin-top:8px;"></div>
 </div>
 
