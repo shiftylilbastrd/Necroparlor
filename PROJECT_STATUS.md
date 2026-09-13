@@ -446,7 +446,40 @@ pattern has been consistent: tie things to identity, never to role.
   migration's better power delivery makes this failure mode disappear
   on its own (the leading theory), building auto-reboot logic now would
   be wasted, and possibly risky, work. Revisit only if this recurs on
-  the Pi 4 too. **Separately, and initially misdiagnosed, in the same
+  the Pi 4 too. **`sudo systemctl restart bluetooth` alone confirmed
+  insufficient for this occurrence** (2026-09-13) - tried first as the
+  lighter-weight step; BLE still failed afterward, now with
+  `RuntimeError: Could not start BLE scan after 5 attempts` and
+  `[org.bluez.Error.InProgress] Operation already in progress` on every
+  attempt. Matches this project's very first Tier-3 note exactly
+  (`systemctl restart bluetooth` insufficient, needs a full reboot).
+  **A full `sudo reboot` was then tried and, for the first time ever on
+  this project, did NOT clear it either** - immediately after boot
+  (low PIDs, ~1000s, confirming a genuinely fresh boot), `ble_listener`
+  still hit the identical `[org.bluez.Error.InProgress] Operation
+  already in progress` on its very first scan attempt. Every prior
+  Tier-3 incident was cleared by a reboot; this is a new, worse tier.
+  **Leading new hypothesis**: `dermestid-sensorpush.service` - the old,
+  pre-genericization service that "Current state" above already notes
+  *should* have been stopped/disabled/removed on the Pi, but was never
+  actually confirmed done - is still enabled and starting at boot
+  alongside `dermestid-ble.service`. Two independent processes both
+  trying to open a BLE scan on the same adapter at boot would produce
+  exactly this symptom (immediate, permanent "already in progress" on
+  every attempt by either one, surviving a reboot because *both* come
+  back up every time). This would fit the pattern already established
+  twice this session (the battery service's stale `ExecStart`, the
+  stale root-level unit-file duplicates) of pre-rename artifacts never
+  being fully cleaned up on the Pi. Not yet confirmed - check with
+  `systemctl list-units --all --type=service | grep dermestid` and
+  `systemctl status dermestid-sensorpush.service`; if it's
+  loaded/enabled, `sudo systemctl stop dermestid-sensorpush.service &&
+  sudo systemctl disable dermestid-sensorpush.service` and reboot again
+  to test. If that's NOT it, the next-most-likely explanation shifts
+  toward actual Bluetooth hardware degradation from the repeated
+  under-voltage events, which would be a real argument for prioritizing
+  the Pi 4 migration immediately rather than continuing to troubleshoot
+  the 3B+'s BLE stack. **Separately, and initially misdiagnosed, in the same
   session**: `dermestid-battery.service`'s log showed `"No SensorPush
   address configured - nothing to check"`, first assumed to mean
   `config.json`'s `ble_mac` was genuinely empty - wrong. **The real
@@ -464,14 +497,19 @@ pattern has been consistent: tie things to identity, never to role.
   `/etc/systemd/system/dermestid-battery.service` still has its
   `ExecStart` pointing at the old `sensorpush_battery.py` from before
   the BLE-genericization rename, and was simply never re-installed
-  after `ble_battery.py` replaced it. **Not yet confirmed on the actual
-  Pi** - `cat /etc/systemd/system/dermestid-battery.service` was given
-  to the user to check; if `ExecStart` shows `sensorpush_battery.py`,
-  the fix is re-running the install step from README's Battery section
-  against the current `systemd/dermestid-battery.service`. This is the
-  same category of gap the Update-system section above already
-  documents ("structural changes... need manual steps"), just newly
-  observed for a script rename rather than a service rename.
+  after `ble_battery.py` replaced it. **Confirmed on the actual Pi
+  (2026-09-13)**: `ExecStart=/usr/bin/python3
+  /home/pi/dermestid/sensorpush_battery.py` - exactly as guessed. Fix
+  given to the user (re-copy `systemd/dermestid-battery.service` to
+  `/etc/systemd/system/`, `daemon-reload`, restart the timer) - not yet
+  confirmed applied. This is the same category of gap the Update-system
+  section above already documents ("structural changes... need manual
+  steps"), just newly observed for a script rename rather than a
+  service rename. **General takeaway worth remembering**: any future
+  rename of a script a systemd unit's `ExecStart` points at needs a
+  note in that feature's own docs to re-run the install step - the same
+  way `load_config()` migrations get a comment pointing at the
+  `sensorpush_mac` → `ble_mac` pattern for config keys.
   **Also found and fixed while investigating**: a second, separate
   instance of the stale-root-level-duplicate-file bug (see the
   `[resolved, 2026-09-13]` template-duplicates entry above) -
