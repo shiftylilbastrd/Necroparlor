@@ -167,17 +167,17 @@ pip3 install opencv-python-headless --break-system-packages
      "width": 1280,
      "height": 720,
      "jpeg_quality": 80,
-     "live_capture_interval_seconds": 2
+     "live_capture_interval_seconds": 0.2
    }
    ```
-   `device` can be a bare index (`"0"`) or a full path - a `/dev/v4l/by-id/...` symlink is more robust than a bare index if you ever have more than one USB video device connected, since indices can shuffle across a reboot depending on enumeration order but a by-id symlink won't. A device/resolution change needs the camera service restarted to take effect (read once at startup, same reasoning as the BLE sensor brand setting); quality and the live-view interval take effect within one cycle.
+   `device` can be a bare index (`"0"`) or a full path - a `/dev/v4l/by-id/...` symlink is more robust than a bare index if you ever have more than one USB video device connected, since indices can shuffle across a reboot depending on enumeration order but a by-id symlink won't. A device/resolution change needs the camera service restarted to take effect (read once at startup, same reasoning as the BLE sensor brand setting); quality and the live-view interval take effect within one cycle. `live_capture_interval_seconds` accepts sub-second values (e.g. `0.2` = ~5fps) - a Pi 3B+ shares this CPU with `climate.py`, the actually safety-critical part of this project, so raise the frame rate only after confirming there's real headroom (`top`, CPU temp under load), and lower resolution/quality first if there isn't.
 
 3. **Run it** alongside the other services:
    ```bash
    python3 camera_service.py
    ```
 
-**Live view** (`/camera` page): the service captures a frame every `live_capture_interval_seconds` and overwrites a single `camera/latest.jpg` - the dashboard just polls and displays whatever's currently there. This is deliberately a periodically-refreshed still, not a true video stream (MJPEG or similar): a real USB webcam typically only accepts one client connection at a time anyway, so a shared file that any number of dashboard viewers can read independently avoids that limitation entirely, at the cost of not being literally live-motion video.
+**Live view** (`/camera` page): the service captures a frame every `live_capture_interval_seconds` and atomically overwrites a single `camera/latest.jpg`; the dashboard's `/api/camera/stream.mjpg` endpoint re-reads that file on its own short timer and relays it to the browser as an MJPEG (`multipart/x-mixed-replace`) stream, which a plain `<img>` tag renders natively as continuously-updating video - no codec, player, or JS polling loop needed. It's a genuine live feed, not a still-image slideshow, while still only ever having ONE process (`camera_service.py`) touch the actual USB device: a real webcam typically only accepts one client connection at a time anyway, so every browser tab gets its own independent relay of the same shared file rather than opening the camera itself. (This is also why `app.run()` in `webapp.py` needs `threaded=True` - a stream holds its HTTP connection open indefinitely, which would otherwise block every other page on the dashboard behind it.)
 
 **Timelapse**: each of the three modes (Dormant/Ready/Cleaning) has its own `snapshot_interval_minutes` on the Config page, right next to that mode's setpoints - `0` means never (no timelapse capture while in that mode). Whichever mode is currently active is the one whose interval applies; switching modes doesn't itself trigger an immediate snapshot, it just changes how often future ones happen. Saved frames accumulate under `camera/timelapse/` (and a matching `camera_snapshots` row in `dermestid.db`) and are browsable, newest first, on the Camera page - same "Load more" pagination as the Logs and Data pages.
 

@@ -102,8 +102,8 @@
       <input type="number" min="30" max="95" id="cameraQualityInput">
     </div>
     <div class="field" style="margin-top:10px;">
-      <label>Live view refresh interval (seconds)</label>
-      <input type="number" min="1" max="30" id="cameraLiveIntervalInput">
+      <label>Live view frame interval (seconds, e.g. 0.2 = ~5fps)</label>
+      <input type="number" min="0.1" max="30" step="0.05" id="cameraLiveIntervalInput">
     </div>
     <button class="save-btn" onclick="saveCameraSettings()">Save</button>
     <div class="save-msg" id="cameraSettingsMsg"></div>
@@ -159,7 +159,7 @@ async function loadConfig() {
   document.getElementById('cameraWidthInput').value = cam.width ?? 1280;
   document.getElementById('cameraHeightInput').value = cam.height ?? 720;
   document.getElementById('cameraQualityInput').value = cam.jpeg_quality ?? 80;
-  document.getElementById('cameraLiveIntervalInput').value = cam.live_capture_interval_seconds ?? 2;
+  document.getElementById('cameraLiveIntervalInput').value = cam.live_capture_interval_seconds ?? 0.2;
 }
 
 async function saveCameraSettings() {
@@ -168,7 +168,7 @@ async function saveCameraSettings() {
     width: parseInt(document.getElementById('cameraWidthInput').value, 10),
     height: parseInt(document.getElementById('cameraHeightInput').value, 10),
     jpeg_quality: parseInt(document.getElementById('cameraQualityInput').value, 10),
-    live_capture_interval_seconds: parseInt(document.getElementById('cameraLiveIntervalInput').value, 10),
+    live_capture_interval_seconds: parseFloat(document.getElementById('cameraLiveIntervalInput').value),
   };
   const res = await fetch('/api/camera-settings', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)

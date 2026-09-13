@@ -213,13 +213,30 @@ pattern has been consistent: tie things to identity, never to role.
   has to keep capturing on schedule independent of the web process's own
   lifecycle, which restarts far more often (every applied update, per
   `auto_update.sh`) than a capture loop should be interrupted.
-- **Live view is a periodically-overwritten still (`camera/latest.jpg`),
-  not an MJPEG stream** - the dashboard just polls
-  `/api/camera/latest.jpg` on a timer, same pattern as the rest of this
-  dashboard's polled tiles (5s status polling, etc.), not a persistent
-  streaming connection. Simpler, and sidesteps the same multi-viewer
-  device-contention problem above; the tradeoff is genuinely-live motion
-  video is out of scope for now, on purpose.
+- **[superseded, 2026-09-13]** Live view started as a periodically-
+  overwritten still (`camera/latest.jpg`) that the dashboard just polled
+  on a timer, deliberately not real video, to sidestep the multi-viewer
+  device-contention problem below. Once actually seen on real hardware,
+  a stop-motion "live" view wasn't good enough - real video was
+  explicitly requested. Solved without touching the device-contention
+  reasoning at all: `camera_service.py` still writes the same single
+  `camera/latest.jpg`, now just much faster
+  (`live_capture_interval_seconds` default dropped from 2s to 0.2s,
+  bounds loosened from whole seconds to as low as 0.1s), and
+  `webapp.py` added `/api/camera/stream.mjpg`, which re-reads that same
+  file on its own short timer (`STREAM_RELAY_INTERVAL`, decoupled from
+  the capture rate) and relays it as a `multipart/x-mixed-replace`
+  stream - a plain `<img>` tag renders that as continuous video natively,
+  no player/codec/JS polling loop needed. Still exactly one process ever
+  opens the USB device; any number of browser tabs just get their own
+  relay of the same file. The one non-obvious catch this required:
+  `app.run()` needed `threaded=True` added, since a stream holds its
+  HTTP connection open indefinitely and Werkzeug's dev-server default is
+  one request at a time - without it, one open camera tab would have
+  silently frozen every other page on the dashboard. Real tradeoff that
+  remains: frame rate is a shared-CPU-with-`climate.py` budget on a Pi
+  3B+, so it's a config setting to tune per-hardware, not a bigger
+  default baked in - see README's Camera section.
 - **Timelapse interval is per-mode** (`snapshot_interval_minutes` inside
   each mode's block in `config.json`, alongside its setpoints), not a
   single global setting - explicit request, since a mode you barely
@@ -251,11 +268,9 @@ pattern has been consistent: tie things to identity, never to role.
   its file on disk can never disagree about which one it is, and the
   `/api/camera/snapshot/<int:ts>.jpg` route can look a row up directly
   from the integer in the URL with no separate mapping.
-- **Not tested against real hardware** - built and reasoned through, and
-  syntax-checked plus smoke-tested against a mocked capture device (see
-  Open threads), but this session had no physical USB webcam or Pi
-  available. Verify the actual device-open/resolution/JPEG-quality
-  behavior for real before trusting it unattended.
+- **Hardware verification status** - see the dated webcam entry under
+  "Open threads" below for current state; this has moved past "no real
+  hardware available" and into real-Pi testing as of 2026-09-13.
 
 ## Established workflows / things that look like bugs but aren't
 
@@ -324,23 +339,43 @@ pattern has been consistent: tie things to identity, never to role.
   `discover_camera.py` found it at `/dev/video0` fine, `pip install
   opencv-python-headless --break-system-packages` was needed (not
   preinstalled), and `camera_service.py` ran and wrote `latest.jpg`
-  successfully in a first foreground test. Since then: (1) the service
-  died silently with no error/shutdown logged, suspected SIGHUP from
-  the SSH session dropping (unlike `climate.py`, it has no signal
-  handler) - needs to run as the actual `dermestid-camera.service`
-  systemd unit instead of foreground testing, not yet done; (2) after
-  the Tier-3 BLE incident above and the following reboot, the Camera
-  page still does not appear in the dashboard UI at all - not yet
-  root-caused. `webapp.py`/`shared_state.py` don't import `cv2` so a
-  missing dependency there isn't the cause; next to check: whether
-  `dermestid-web.service` is actually serving the current `add-webcam`
-  commit (`sudo systemctl status`/`journalctl -u dermestid-web.service`),
-  and whether `templates/camera.html` and the nav link in
-  `templates/base.html` are actually present on disk on the Pi. Still
+  successfully in a first foreground test. The missing Camera nav link
+  (separate issue, now resolved - see the stale-duplicate-template entry
+  above) is no longer blocking. Still open: the service died silently
+  once with no error/shutdown logged, suspected SIGHUP from the SSH
+  session dropping (unlike `climate.py`, it has no signal handler) -
+  needs to run as the actual `dermestid-camera.service` systemd unit
+  instead of foreground testing, not yet done. Still
   unverified: real resolution/quality behavior and whether the
   watchdog/reopen timing constants (60s stall timeout, reopen after 10
   consecutive failures) feel right against a real webcam's actual
-  failure patterns.
+  failure patterns. Also now includes real MJPEG video streaming (see
+  the superseded live-view decision above, and the still-image-only
+  entry in `dermestid-camera.service`'s open questions) - pushed but
+  NOT yet verified on the Pi: whether ~5fps at 1280x720 is actually
+  smooth in a browser over the LAN, and whether it costs `climate.py`
+  any real CPU/temperature headroom on a Pi 3B+. Check both once
+  deployed; back off `live_capture_interval_seconds`, resolution, or
+  quality on the Config page if the Pi runs hot or climate control's
+  own timing gets sloppy.
+- **[resolved, 2026-09-13]** The Camera nav link never appeared in the UI
+  after the webcam feature shipped, even after service restarts and a
+  full reboot - root cause was a stale, unused **duplicate set of
+  template files sitting at the repo root** (`base.html`, `config.html`,
+  `data.html`, `home.html`, `logs.html`), separate from the real ones in
+  `templates/` that Flask actually renders (`Flask(__name__)` uses the
+  default `templates/` folder; nothing in the code ever references the
+  root copies). Their git history is "Add files via upload" commits -
+  the same drag-and-drop-to-GitHub's-web-UI workflow that caused the
+  `config.json` tracking drift above, most likely dropping a batch of
+  html edits into the repo root instead of into `templates/` at some
+  point in the past. The webcam feature's nav-link edit landed on the
+  dead root copy instead of the live `templates/base.html`, so it took
+  effect nowhere. Fixed by moving the edit to `templates/base.html` and
+  deleting the five stale root-level duplicates outright, so this can't
+  recur. If any dashboard page ever renders old/missing content after a
+  confirmed successful deploy again, check for a duplicate template at
+  the repo root before assuming a service restart or caching issue.
 - **[resolved, 2026-09-13]** `auto_update.sh` could wedge the repo into
   a broken, permanently-failing state when switching branches across
   the point where `config.json` went from git-tracked to untracked

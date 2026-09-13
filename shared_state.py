@@ -102,7 +102,7 @@ DEFAULT_CONFIG = {
         "width": 1280,
         "height": 720,
         "jpeg_quality": 80,
-        "live_capture_interval_seconds": 2,
+        "live_capture_interval_seconds": 0.2,
     },
     "modes": {
         "dormant": {
@@ -155,7 +155,9 @@ CAMERA_HEIGHT_BOUNDS = (120, 1080)
 CAMERA_QUALITY_BOUNDS = (30, 95)   # JPEG quality - below 30 is visibly
                                     # useless, above 95 has negligible
                                     # visual benefit for a large size cost
-CAMERA_LIVE_INTERVAL_BOUNDS = (1, 30)  # seconds
+CAMERA_LIVE_INTERVAL_BOUNDS = (0.1, 30)  # seconds - sub-second values are
+# what actually makes the Live page a video feed rather than a slideshow;
+# see camera_service.py's docstring for the Pi 3B+ CPU trade-off.
 
 MAC_ADDRESS_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 # Accepts a bare device index ("0", "1") or a /dev path, including a
@@ -229,9 +231,15 @@ def validate_camera_settings(values):
         width = int(values.get("width", 1280))
         height = int(values.get("height", 720))
         quality = int(values.get("jpeg_quality", 80))
-        live_interval = int(values.get("live_capture_interval_seconds", 2))
     except (TypeError, ValueError):
-        return None, "width, height, jpeg_quality, and live_capture_interval_seconds must be whole numbers"
+        return None, "width, height, and jpeg_quality must be whole numbers"
+    try:
+        # A float, not an int - sub-second values are the whole point (see
+        # CAMERA_LIVE_INTERVAL_BOUNDS). Rounded so tiny float noise from the
+        # Config page's number input doesn't accumulate into config.json.
+        live_interval = round(float(values.get("live_capture_interval_seconds", 0.2)), 2)
+    except (TypeError, ValueError):
+        return None, "live_capture_interval_seconds must be a number"
     if not (CAMERA_WIDTH_BOUNDS[0] <= width <= CAMERA_WIDTH_BOUNDS[1]):
         return None, f"width must be between {CAMERA_WIDTH_BOUNDS[0]} and {CAMERA_WIDTH_BOUNDS[1]}"
     if not (CAMERA_HEIGHT_BOUNDS[0] <= height <= CAMERA_HEIGHT_BOUNDS[1]):

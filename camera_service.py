@@ -10,13 +10,19 @@ config.json so a dashboard change takes effect within one cycle without
 a restart (same reasoning as climate.py re-reading its own config):
 
   - Live view: every `camera.live_capture_interval_seconds` (default
-    2s), grab a frame and atomically overwrite camera/latest.jpg.
-    webapp.py's /api/camera/latest.jpg just serves whatever's currently
-    there - deliberately NOT a per-viewer video stream, so multiple
-    simultaneous dashboard viewers never each try to open the USB
-    device themselves (most UVC webcams only support one client at a
-    time in the first place, so that would just break the second
-    viewer).
+    0.2s, i.e. ~5fps - a real live feed, not a slideshow), grab a frame
+    and atomically overwrite camera/latest.jpg. webapp.py relays that
+    same file to browsers as an MJPEG stream (/api/camera/stream.mjpg,
+    multipart/x-mixed-replace) - still just one process, this one,
+    ever opening the actual USB device, so any number of simultaneous
+    dashboard viewers never each try to grab it themselves (most UVC
+    webcams only support one client at a time in the first place, so
+    that would just break the second viewer). This is also why the
+    frame rate is a config setting rather than hardcoded fast: a Pi 3B+
+    shares this CPU with climate.py, the actually safety-critical part
+    of this project, so push it faster than the default only if you've
+    confirmed there's headroom (check `top`/CPU temp under load), and
+    back off resolution/quality first if not.
   - Timelapse: on the CURRENTLY ACTIVE MODE's own
     `snapshot_interval_minutes` (per-mode in config.json, 0 = never),
     save a permanent frame into camera/timelapse/ plus a DB row via
@@ -160,7 +166,7 @@ def main():
             # cycle, not require restarting this service.
             config = state.load_config()
             cam_cfg = config.get("camera", {})
-            interval_seconds = cam_cfg.get("live_capture_interval_seconds", 2)
+            interval_seconds = cam_cfg.get("live_capture_interval_seconds", 0.2)
             quality = cam_cfg.get("jpeg_quality", 80)
             current_mode = config.get("current_mode", "ready")
             mode_settings = config.get("modes", {}).get(current_mode, {})
@@ -213,7 +219,11 @@ def main():
                     )
                     os._exit(1)
 
-            time.sleep(max(1, interval_seconds))
+            # 0.05s floor (20fps hard ceiling), not interval_seconds' own
+            # 0.1s config-validation floor - protects against a corrupt or
+            # hand-edited config.json with an even smaller/zero/negative
+            # value pegging this loop (and a CPU core) at 100%.
+            time.sleep(max(0.05, interval_seconds))
     finally:
         cap.release()
 

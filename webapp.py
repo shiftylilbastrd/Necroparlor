@@ -16,7 +16,7 @@ import threading
 import logging
 import fcntl
 
-from flask import Flask, jsonify, request, render_template, send_file, abort
+from flask import Flask, jsonify, request, render_template, send_file, abort, Response
 
 import shared_state as state
 
@@ -30,6 +30,16 @@ app = Flask(__name__)
 # flag a deliberately slow 5s-interval setup, or too slowly notice a
 # genuinely dead 1s-interval one).
 CAMERA_STALE_MULTIPLIER = 5
+
+# How often /api/camera/stream.mjpg re-reads camera/latest.jpg and pushes
+# it to each connected browser tab, independent of how fast
+# camera_service.py itself is actually capturing (camera.
+# live_capture_interval_seconds). Decoupled on purpose: capture rate is a
+# Pi-CPU-vs-smoothness tradeoff for camera_service.py, this is a
+# per-viewer relay cost for webapp.py, and ~6-7fps is already smooth
+# enough to read as "live video" rather than a slideshow - no reason to
+# push more HTTP writes per viewer than that even if capture is faster.
+STREAM_RELAY_INTERVAL = 0.15
 
 
 @app.route("/")
@@ -162,7 +172,7 @@ def api_set_internal_source():
 def api_camera_status():
     config = state.load_config()
     cam_cfg = config.get("camera", {})
-    interval = cam_cfg.get("live_capture_interval_seconds", 2)
+    interval = cam_cfg.get("live_capture_interval_seconds", 0.2)
     available = False
     age_seconds = None
     if os.path.exists(state.CAMERA_LIVE_PATH):
@@ -190,6 +200,49 @@ def api_camera_latest():
     # rest of this dashboard's live-updating tiles.
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.route("/api/camera/stream.mjpg")
+def api_camera_stream():
+    """A genuine live video feed, not the old still-image polling - a
+    plain browser <img> tag renders a multipart/x-mixed-replace response
+    natively as continuously-updating video, no player/codec/JS polling
+    loop needed. This still doesn't touch the USB device itself: it just
+    re-reads camera/latest.jpg (the file camera_service.py is the sole
+    writer of) on a short timer and relays whatever's currently there
+    into this one HTTP connection. That's what keeps "only one process
+    ever opens the camera" true even with the dashboard open in several
+    browser tabs at once - each tab just gets its own independent relay
+    of the same file, same reasoning as the old polling endpoint, just
+    pushed from the server instead of pulled by the client.
+
+    Requires threaded=True on app.run() below - this request stays open
+    indefinitely, and the single-threaded dev-server default would let
+    one open camera tab freeze every other page on the dashboard for as
+    long as it stayed open.
+    """
+    def generate():
+        boundary = b"--frame"
+        while True:
+            try:
+                with open(state.CAMERA_LIVE_PATH, "rb") as f:
+                    frame = f.read()
+                yield (boundary + b"\r\n"
+                       b"Content-Type: image/jpeg\r\n"
+                       b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" +
+                       frame + b"\r\n")
+            except (FileNotFoundError, OSError):
+                # camera_service.py hasn't written a first frame yet, or
+                # isn't running - just keep retrying on the same schedule
+                # rather than ending the stream; the browser <img> will
+                # start showing frames the moment one appears on disk.
+                pass
+            time.sleep(STREAM_RELAY_INTERVAL)
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.route("/api/camera/snapshots")
@@ -477,4 +530,10 @@ def update_checker_loop():
 if __name__ == "__main__":
     state.init_db()
     threading.Thread(target=update_checker_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    # threaded=True is required, not optional, now that /api/camera/
+    # stream.mjpg holds its connection open indefinitely - Werkzeug's
+    # dev server otherwise handles one request at a time, so a single
+    # open camera tab would silently freeze every other page (status,
+    # config, logs...) on the whole dashboard for as long as it stayed
+    # open.
+    app.run(host="0.0.0.0", port=8080, debug=False, threaded=True)

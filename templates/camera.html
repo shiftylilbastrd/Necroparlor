@@ -31,7 +31,9 @@
 <div class="grid">
   <div class="card" style="grid-column: 1 / -1; max-width:640px;">
     <h2>Live</h2>
-    <img class="camera-frame" id="liveFrame" alt="Live camera view">
+    <img class="camera-frame" id="liveFrame" alt="Live camera view"
+         src="/api/camera/stream.mjpg"
+         onerror="setTimeout(reconnectStream, 2000)">
     <div class="stat-sub" id="liveStatus" style="margin-top:8px;">Loading...</div>
   </div>
 </div>
@@ -74,12 +76,17 @@ async function refreshLive() {
       : `timelapse off in ${modeLabel} mode`;
     document.getElementById('liveStatus').textContent =
       `${data.available ? 'Live' : 'Stale'} - last frame ${fmtAge(data.age_seconds)} - ${snapshotNote} - ${Math.round(data.disk_free_mb)}MB free`;
-    if (data.available) {
-      document.getElementById('liveFrame').src = '/api/camera/latest.jpg?t=' + Date.now();
-    }
   } catch (e) {
     document.getElementById('cameraUnavailable').style.display = 'block';
   }
+}
+
+// The <img> holds one long-lived streaming connection (see
+// /api/camera/stream.mjpg) rather than being reloaded on a timer - it
+// only needs reconnecting if that connection actually drops (the web
+// service restarting mid-stream is the main way that happens).
+function reconnectStream() {
+  document.getElementById('liveFrame').src = '/api/camera/stream.mjpg?t=' + Date.now();
 }
 
 function renderSnapshots(snapshots, append) {
