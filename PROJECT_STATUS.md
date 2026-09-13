@@ -446,13 +446,49 @@ pattern has been consistent: tie things to identity, never to role.
   migration's better power delivery makes this failure mode disappear
   on its own (the leading theory), building auto-reboot logic now would
   be wasted, and possibly risky, work. Revisit only if this recurs on
-  the Pi 4 too. **Separately noticed the same session**:
-  `dermestid-battery.service`'s log showed `"No SensorPush address
-  configured - nothing to check"` - `config.json`'s `ble_mac` was empty
-  at check time, which is why the dashboard's battery reading had gone
-  stale (56hr) independent of the listener's stuck state - not a timer/
-  service bug, just needs the address re-set (Config page's External
-  card, or the new Discover button once the listener is healthy again).
+  the Pi 4 too. **Separately, and initially misdiagnosed, in the same
+  session**: `dermestid-battery.service`'s log showed `"No SensorPush
+  address configured - nothing to check"`, first assumed to mean
+  `config.json`'s `ble_mac` was genuinely empty - wrong. **The real
+  cause: that exact log string only exists in `sensorpush_battery.py`
+  (the pre-genericization script, still present in the repo but fully
+  superseded), which checks the legacy `sensorpush_mac` config key -
+  not `ble_battery.py`'s current `"No BLE sensor address configured"`
+  wording checking `ble_mac`.** Confirmed by the user that the Config
+  page *does* show an address (`ble_mac` is populated) - so the battery
+  check that actually ran on the Pi was the old script, not the new
+  one. Since installing a systemd unit (`sudo cp .../*.service
+  /etc/systemd/system/` + `daemon-reload`) is a one-time manual step,
+  not something `git pull`/`auto_update.sh` ever touches, the most
+  likely explanation is the Pi's installed
+  `/etc/systemd/system/dermestid-battery.service` still has its
+  `ExecStart` pointing at the old `sensorpush_battery.py` from before
+  the BLE-genericization rename, and was simply never re-installed
+  after `ble_battery.py` replaced it. **Not yet confirmed on the actual
+  Pi** - `cat /etc/systemd/system/dermestid-battery.service` was given
+  to the user to check; if `ExecStart` shows `sensorpush_battery.py`,
+  the fix is re-running the install step from README's Battery section
+  against the current `systemd/dermestid-battery.service`. This is the
+  same category of gap the Update-system section above already
+  documents ("structural changes... need manual steps"), just newly
+  observed for a script rename rather than a service rename.
+  **Also found and fixed while investigating**: a second, separate
+  instance of the stale-root-level-duplicate-file bug (see the
+  `[resolved, 2026-09-13]` template-duplicates entry above) -
+  `dermestid-battery.service`, `dermestid-battery.timer`,
+  `dermestid-autoupdate.service`, `dermestid-autoupdate.timer`,
+  `dermestid-ble.service`, `dermestid-climate.service`, and
+  `dermestid-web.service` all had byte-identical stale copies sitting
+  at the repo root (same drag-and-drop-to-GitHub's-web-UI cause as the
+  template incident), separate from the real ones in `systemd/` that
+  the README's install commands actually reference. Confirmed
+  byte-identical before deleting, so this wasn't the cause of the
+  battery bug above - just the same latent clutter/confusion risk,
+  removed proactively. Deleted from the repo; **still needs manual
+  deletion from the user's local folder and, once pulled, from the
+  Pi's working copy** (the device bridge that pushes files to the
+  user's folder can't delete remotely, same limitation as the earlier
+  template cleanup).
 - **[open, 2026-09-13]** Live view performance on the Pi 3B+ confirmed
   poor with real hardware + real network (Chrome on desktop, same LAN):
   "very slow and choppy," not the smooth video the MJPEG relay was
