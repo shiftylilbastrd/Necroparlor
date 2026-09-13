@@ -128,19 +128,22 @@
       <div class="stat-sub" id="cameraDiscoverHint" style="margin-top:6px; display:none;"></div>
     </div>
     <div class="field" style="margin-top:10px;">
-      <label>Resolution (width x height)</label>
-      <div style="display:flex; gap:8px;">
-        <input type="number" id="cameraWidthInput" style="width:50%;" placeholder="1280">
-        <input type="number" id="cameraHeightInput" style="width:50%;" placeholder="720">
-      </div>
+      <label>Resolution</label>
+      <select id="cameraResolutionSelect"></select>
+      <div class="stat-sub" id="cameraResolutionHint">Common resolutions shown - click Discover above to narrow this to only what your camera actually supports.</div>
     </div>
     <div class="field" style="margin-top:10px;">
       <label>JPEG quality (30-95)</label>
       <input type="number" min="30" max="95" id="cameraQualityInput">
     </div>
     <div class="field" style="margin-top:10px;">
-      <label>Live view frame interval (seconds, e.g. 0.2 = ~5fps)</label>
-      <input type="number" min="0.1" max="30" step="0.05" id="cameraLiveIntervalInput">
+      <label>Live capture rate (frames/sec - HIGHER is faster/smoother, e.g. 5 = a frame every 0.2s)</label>
+      <input type="number" min="0.1" max="10" step="0.1" id="cameraFpsInput">
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>Stream relay rate (frames/sec sent to your browser - HIGHER is faster/smoother, e.g. 7 = a frame every ~0.14s)</label>
+      <input type="number" min="0.2" max="20" step="0.1" id="cameraRelayFpsInput">
+      <div class="stat-sub">How often each open dashboard tab gets a new frame - separate from the capture rate above. Takes effect immediately, no restart needed. Also see the CPU temp/load readout on the Home page while you test this.</div>
     </div>
     <button class="save-btn" onclick="saveCameraSettings()">Save</button>
     <div class="save-msg" id="cameraSettingsMsg"></div>
@@ -175,6 +178,34 @@
 {% endblock %}
 {% block scripts %}
 <script>
+// Keep in sync with discover_camera.py's COMMON_RESOLUTIONS - this is
+// the pre-Discover fallback list (and the list used if a discovered
+// device's own supported_resolutions ever comes back empty), so the
+// dropdown isn't blocked on having clicked Discover at least once.
+// Discover narrows this down to only what the actual connected camera
+// supports (see renderCameraDiscover/selectCameraIndex below).
+const COMMON_RESOLUTIONS = [
+  [3840, 2160], [2560, 1440], [1920, 1080], [1600, 1200],
+  [1280, 960], [1280, 720], [1024, 768], [800, 600],
+  [640, 480], [640, 360], [320, 240],
+];
+
+// Rebuilds the resolution <select>'s options from a list of [w, h]
+// pairs, always including the currently-configured value even if it
+// isn't one of them (e.g. a resolution set by hand-editing config.json)
+// so saving without touching this field can never silently change it.
+function populateResolutionOptions(resolutions, selectedW, selectedH) {
+  const select = document.getElementById('cameraResolutionSelect');
+  const pairs = resolutions.map(r => [r[0], r[1]]);
+  if (selectedW && selectedH && !pairs.some(([w, h]) => w === selectedW && h === selectedH)) {
+    pairs.unshift([selectedW, selectedH]);
+  }
+  select.innerHTML = pairs.map(([w, h]) => `<option value="${w}x${h}">${w}x${h}</option>`).join('');
+  if (selectedW && selectedH) {
+    select.value = `${selectedW}x${selectedH}`;
+  }
+}
+
 async function loadConfig() {
   const res = await fetch('/api/status');
   const data = await res.json();
@@ -193,19 +224,21 @@ async function loadConfig() {
 
   const cam = data.config.camera || {};
   document.getElementById('cameraDeviceInput').value = cam.device ?? '0';
-  document.getElementById('cameraWidthInput').value = cam.width ?? 1280;
-  document.getElementById('cameraHeightInput').value = cam.height ?? 720;
+  populateResolutionOptions(COMMON_RESOLUTIONS, cam.width ?? 1280, cam.height ?? 720);
   document.getElementById('cameraQualityInput').value = cam.jpeg_quality ?? 80;
-  document.getElementById('cameraLiveIntervalInput').value = cam.live_capture_interval_seconds ?? 0.2;
+  document.getElementById('cameraFpsInput').value = cam.live_capture_fps ?? 5;
+  document.getElementById('cameraRelayFpsInput').value = cam.stream_relay_fps ?? 7;
 }
 
 async function saveCameraSettings() {
+  const [resWidth, resHeight] = document.getElementById('cameraResolutionSelect').value.split('x').map(Number);
   const body = {
     device: document.getElementById('cameraDeviceInput').value.trim(),
-    width: parseInt(document.getElementById('cameraWidthInput').value, 10),
-    height: parseInt(document.getElementById('cameraHeightInput').value, 10),
+    width: resWidth,
+    height: resHeight,
     jpeg_quality: parseInt(document.getElementById('cameraQualityInput').value, 10),
-    live_capture_interval_seconds: parseFloat(document.getElementById('cameraLiveIntervalInput').value),
+    live_capture_fps: parseFloat(document.getElementById('cameraFpsInput').value),
+    stream_relay_fps: parseFloat(document.getElementById('cameraRelayFpsInput').value),
   };
   const res = await fetch('/api/camera-settings', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
@@ -410,18 +443,23 @@ let lastDiscoveredCameras = {};
 
 function selectCameraIndex(index) {
   document.getElementById('cameraDeviceInput').value = index;
-  // Discovery now requests a high resolution before reading the frame
-  // back (see discover_camera.py), so what it reports is the camera's
-  // actual negotiated capability, not just OpenCV's low default - worth
-  // using as the resolution fields' starting point rather than making
-  // the user look it up and type it in separately. Still just a
-  // starting point, not locked in: lower it from here for a CPU/
-  // bandwidth tradeoff on a Pi 3B+, same as README's Camera section
-  // already covers.
+  // discover_camera.py actually tests a list of common resolutions
+  // against this specific device (see probe_supported_resolutions) and
+  // reports back only the ones it genuinely supports - use THAT list
+  // for the dropdown instead of the generic COMMON_RESOLUTIONS fallback,
+  // so picking from it can't offer a resolution this camera doesn't
+  // actually have a mode for. Falls back to the generic list if an
+  // older discover_camera.py (or a probe that came back empty for some
+  // other reason) didn't provide one.
   const device = lastDiscoveredCameras[index];
   if (device) {
-    document.getElementById('cameraWidthInput').value = device.width;
-    document.getElementById('cameraHeightInput').value = device.height;
+    const resolutions = (device.supported_resolutions && device.supported_resolutions.length)
+      ? device.supported_resolutions : COMMON_RESOLUTIONS;
+    populateResolutionOptions(resolutions, device.width, device.height);
+    document.getElementById('cameraResolutionHint').textContent =
+      (device.supported_resolutions && device.supported_resolutions.length)
+        ? `Confirmed supported by this camera (${resolutions.length} mode${resolutions.length === 1 ? '' : 's'}).`
+        : 'Common resolutions shown - this camera\'s own supported list came back empty.';
   }
   document.querySelectorAll('.camera-discover-item').forEach(el => el.classList.remove('selected'));
   const chosen = document.getElementById(`cam-discover-${index}`);

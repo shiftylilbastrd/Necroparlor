@@ -130,6 +130,7 @@
             title="Turn light on">💡</button>
   </div>
   <div class="stat-sub" id="homeLiveStatus" style="margin-top:8px;"></div>
+  <div class="stat-sub" id="piHealthLine" style="margin-top:4px;" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings above. Useful while tuning the camera settings below: watch this doesn't climb into the warning range as you push the capture/relay interval faster."></div>
 </div>
 
 <div class="section-title">History</div>
@@ -242,6 +243,8 @@ async function refreshStatus() {
     outputBadge('fanBadge', 'fanIcon', !!data.latest.fan, true);
     outputBadge('heaterBadge', 'heaterIcon', !!data.latest.heater, false);
     outputBadge('dehumBadge', 'dehumIcon', !!data.latest.dehumidifier, false);
+
+    updatePiHealth(data.latest);
   }
 
   updateModeUI(data.config.current_mode);
@@ -280,6 +283,35 @@ function outputBadge(badgeId, iconId, on, spins) {
   const icon = document.getElementById(iconId);
   badge.className = 'output-badge ' + (on ? 'on' : 'off');
   icon.classList.toggle('spin', on && spins);
+}
+
+// The Pi's own CPU temp/load - sampled once per climate.py cycle (see
+// shared_state.get_pi_health()), unrelated to the enclosure's climate
+// readings above. Mainly useful while tuning the camera's capture/relay
+// interval on the Config page: watch this doesn't climb toward the
+// Pi's own thermal-throttle territory (~80°C/176°F) as you push those
+// faster. 70°C/158°F is "getting warm, keep an eye on it," not yet a
+// real problem - the Pi doesn't start throttling until several degrees
+// past that.
+const PI_TEMP_WARN_F = 158;
+const PI_TEMP_DANGER_F = 176;
+
+function updatePiHealth(latest) {
+  const el = document.getElementById('piHealthLine');
+  const tempF = latest.cpu_temp_f;
+  const load1m = latest.cpu_load_1m;
+  if (tempF === null || tempF === undefined) {
+    el.textContent = '';
+    return;
+  }
+  const tempC = (tempF - 32) * 5 / 9;
+  let parts = [`Pi: ${tempF.toFixed(1)}°F (${tempC.toFixed(1)}°C)`];
+  if (load1m !== null && load1m !== undefined) {
+    parts.push(`load ${load1m.toFixed(2)}`);
+  }
+  el.textContent = parts.join(' · ');
+  el.style.color = tempF >= PI_TEMP_DANGER_F ? 'var(--danger)'
+    : tempF >= PI_TEMP_WARN_F ? 'var(--warn)' : '';
 }
 
 function setRange(hours) {

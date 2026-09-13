@@ -764,11 +764,20 @@ def run_cycle():
         f"Door/Light: {'ON' if GPIO.input(PIN_LIGHT) == False else 'OFF'}"
     )
 
+    # Pi health (CPU temp/load) - entirely separate from the enclosure's
+    # own climate, sampled once per cycle purely for visibility into
+    # whether the Pi itself is under strain (e.g. while tuning the
+    # camera's capture/relay rate). Never fed into any control decision
+    # above - get_pi_health() already never raises, so no try/except
+    # needed here.
+    pi_health = state.get_pi_health()
+
     state.log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
                        fan_on, heater_on, humidity_on, vent_active,
                        ble_temp=ble_temp, ble_humidity=ble_humidity,
                        wired_temp=wired_temp, wired_humidity=wired_humidity,
-                       active_external_source=active_external_source)
+                       active_external_source=active_external_source,
+                       cpu_temp_f=pi_health["cpu_temp_f"], cpu_load_1m=pi_health["cpu_load_1m"])
 
     time.sleep(LOOP_INTERVAL)
 

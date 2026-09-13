@@ -32,15 +32,16 @@ app = Flask(__name__)
 # genuinely dead 1s-interval one).
 CAMERA_STALE_MULTIPLIER = 5
 
-# How often /api/camera/stream.mjpg re-reads camera/latest.jpg and pushes
-# it to each connected browser tab, independent of how fast
-# camera_service.py itself is actually capturing (camera.
-# live_capture_interval_seconds). Decoupled on purpose: capture rate is a
+# Fallback default (frames/sec) for /api/camera/stream.mjpg's relay rate,
+# only used if config.json's camera.stream_relay_fps is somehow missing
+# (e.g. a config.json written before that key existed, before load_config's
+# own DEFAULT_CONFIG backfill has run) - the actual value used every frame
+# comes from config.json now, a dashboard-tunable Config-page setting, not
+# this constant. Independent of how fast camera_service.py itself is
+# actually capturing (camera.live_capture_fps) - capture rate is a
 # Pi-CPU-vs-smoothness tradeoff for camera_service.py, this is a
-# per-viewer relay cost for webapp.py, and ~6-7fps is already smooth
-# enough to read as "live video" rather than a slideshow - no reason to
-# push more HTTP writes per viewer than that even if capture is faster.
-STREAM_RELAY_INTERVAL = 0.15
+# per-viewer relay cost for webapp.py.
+STREAM_RELAY_FPS_DEFAULT = 7
 
 # How recent a BLE reading has to be to show up in the Config page's
 # "Discover" list - generous relative to how often sensors actually
@@ -275,7 +276,8 @@ def api_set_internal_source():
 def api_camera_status():
     config = state.load_config()
     cam_cfg = config.get("camera", {})
-    interval = cam_cfg.get("live_capture_interval_seconds", 0.2)
+    live_fps = cam_cfg.get("live_capture_fps", 5)
+    interval = 1.0 / live_fps if live_fps > 0 else 0.2
     available = False
     age_seconds = None
     if os.path.exists(state.CAMERA_LIVE_PATH):
@@ -323,6 +325,14 @@ def api_camera_stream():
     indefinitely, and the single-threaded dev-server default would let
     one open camera tab freeze every other page on the dashboard for as
     long as it stayed open.
+
+    The relay rate is read from config.json's camera.stream_relay_fps
+    every frame (falling back to STREAM_RELAY_FPS_DEFAULT above if that
+    key is somehow missing) rather than being a fixed constant - a
+    dashboard change to it takes effect on this already-open
+    connection's very next frame, no reconnect needed, same "re-read
+    every cycle" pattern climate.py and camera_service.py already use
+    for their own config-driven timings.
     """
     def generate():
         boundary = b"--frame"
@@ -340,7 +350,9 @@ def api_camera_stream():
                 # rather than ending the stream; the browser <img> will
                 # start showing frames the moment one appears on disk.
                 pass
-            time.sleep(STREAM_RELAY_INTERVAL)
+            relay_fps = state.load_config().get("camera", {}).get(
+                "stream_relay_fps", STREAM_RELAY_FPS_DEFAULT)
+            time.sleep(1.0 / relay_fps if relay_fps > 0 else 1.0 / STREAM_RELAY_FPS_DEFAULT)
     return Response(
         generate(),
         mimetype="multipart/x-mixed-replace; boundary=frame",
@@ -432,10 +444,12 @@ def api_timelapse_videos_delete_many():
 def api_set_camera_settings():
     """device/width/height are only read once at camera_service.py's own
     startup (see its main()), so a change to any of those three is
-    restarted automatically here. jpeg_quality and
-    live_capture_interval_seconds are re-read from config.json every
-    capture cycle, so those apply on their own within a second or two -
-    restarting for them would just be a pointless live-view interruption."""
+    restarted automatically here. jpeg_quality and live_capture_fps are
+    re-read from config.json every capture cycle by camera_service.py,
+    and stream_relay_fps is read every frame by webapp.py's own
+    api_camera_stream - all three apply on their own within a second or
+    two, so restarting for any of them would just be a pointless
+    live-view interruption."""
     body = request.get_json(force=True, silent=True) or {}
     cleaned, error = state.validate_camera_settings(body)
     if error:

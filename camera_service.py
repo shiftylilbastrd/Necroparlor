@@ -9,9 +9,9 @@ Two independent things happen on the same loop, both driven by
 config.json so a dashboard change takes effect within one cycle without
 a restart (same reasoning as climate.py re-reading its own config):
 
-  - Live view: every `camera.live_capture_interval_seconds` (default
-    0.2s, i.e. ~5fps - a real live feed, not a slideshow), grab a frame
-    and atomically overwrite camera/latest.jpg. webapp.py relays that
+  - Live view: `camera.live_capture_fps` times a second (default 5fps -
+    a real live feed, not a slideshow), grab a frame and atomically
+    overwrite camera/latest.jpg. webapp.py relays that
     same file to browsers as an MJPEG stream (/api/camera/stream.mjpg,
     multipart/x-mixed-replace) - still just one process, this one,
     ever opening the actual USB device, so any number of simultaneous
@@ -355,7 +355,12 @@ def main():
             # cycle, not require restarting this service.
             config = state.load_config()
             cam_cfg = config.get("camera", {})
-            interval_seconds = cam_cfg.get("live_capture_interval_seconds", 0.2)
+            # config.json stores this as frames/sec now (see shared_state's
+            # DEFAULT_CONFIG comment for why) - this loop still just needs
+            # a sleep duration, so convert once per cycle rather than
+            # threading fps through the rest of this function.
+            live_fps = cam_cfg.get("live_capture_fps", 5)
+            interval_seconds = 1.0 / live_fps if live_fps > 0 else 0.2
             quality = cam_cfg.get("jpeg_quality", 80)
             current_mode = config.get("current_mode", "ready")
             mode_settings = config.get("modes", {}).get(current_mode, {})

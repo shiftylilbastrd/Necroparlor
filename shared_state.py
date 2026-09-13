@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import time
 import fcntl
 import logging
@@ -115,7 +116,18 @@ DEFAULT_CONFIG = {
         "width": 1280,
         "height": 720,
         "jpeg_quality": 80,
-        "live_capture_interval_seconds": 0.2,
+        # Both of these are expressed as frames-per-second, not seconds-
+        # between-frames - the two got confused with each other more than
+        # once (by the person configuring this AND by the assistant
+        # helping tune it) back when they were "intervals," since a
+        # SMALLER interval means a FASTER/smoother feed, the opposite of
+        # what "smaller = less" intuitively suggests. fps doesn't have
+        # that problem: bigger number, more frames, plainly faster.
+        # camera_service.py/webapp.py each convert their own fps value
+        # to a sleep-interval internally (1.0 / fps) - config.json and
+        # the Config page only ever deal in fps.
+        "live_capture_fps": 5,       # camera_service.py's own capture rate
+        "stream_relay_fps": 7,       # webapp.py's per-viewer MJPEG relay rate
     },
     "modes": {
         "dormant": {
@@ -168,9 +180,21 @@ CAMERA_HEIGHT_BOUNDS = (120, 1080)
 CAMERA_QUALITY_BOUNDS = (30, 95)   # JPEG quality - below 30 is visibly
                                     # useless, above 95 has negligible
                                     # visual benefit for a large size cost
-CAMERA_LIVE_INTERVAL_BOUNDS = (0.1, 30)  # seconds - sub-second values are
-# what actually makes the Live page a video feed rather than a slideshow;
-# see camera_service.py's docstring for the Pi 3B+ CPU trade-off.
+CAMERA_FPS_BOUNDS = (0.1, 10)  # frames/sec - camera_service.py's own
+# capture rate. A floor of 0.1fps (one frame per 10s) rather than the
+# old interval-based floor's equivalent of one frame per 30s: going
+# slower than that isn't really a "live view" anymore, it overlaps with
+# what the separate timelapse/snapshot_interval_minutes feature is
+# already for - tightening this bound removes that redundant range
+# rather than preserving it. See camera_service.py's docstring for the
+# Pi-CPU-vs-smoothness trade-off at the fast end.
+STREAM_RELAY_FPS_BOUNDS = (0.2, 20)  # frames/sec - the per-viewer MJPEG
+# relay rate (webapp.py's api_camera_stream), independent of the capture
+# rate above - see the "camera" DEFAULT_CONFIG comment for why this is
+# separately tunable. Ceiling is higher than CAMERA_FPS_BOUNDS's since
+# relaying an already-captured frame is far cheaper than actually
+# capturing/encoding a new one, so a faster relay is safe even when the
+# capture rate itself can't go that fast.
 
 # How long a dashboard-triggered light override lasts before it expires on
 # its own (climate.py's light_loop() just compares against this timestamp,
@@ -255,27 +279,36 @@ def validate_camera_settings(values):
     except (TypeError, ValueError):
         return None, "width, height, and jpeg_quality must be whole numbers"
     try:
-        # A float, not an int - sub-second values are the whole point (see
-        # CAMERA_LIVE_INTERVAL_BOUNDS). Rounded so tiny float noise from the
-        # Config page's number input doesn't accumulate into config.json.
-        live_interval = round(float(values.get("live_capture_interval_seconds", 0.2)), 2)
+        # Frames/sec, not seconds-between-frames - see the "camera"
+        # DEFAULT_CONFIG comment for why. Rounded so tiny float noise
+        # from the Config page's number input doesn't accumulate into
+        # config.json.
+        live_fps = round(float(values.get("live_capture_fps", 5)), 2)
     except (TypeError, ValueError):
-        return None, "live_capture_interval_seconds must be a number"
+        return None, "live_capture_fps must be a number"
+    try:
+        relay_fps = round(float(values.get("stream_relay_fps", 7)), 2)
+    except (TypeError, ValueError):
+        return None, "stream_relay_fps must be a number"
     if not (CAMERA_WIDTH_BOUNDS[0] <= width <= CAMERA_WIDTH_BOUNDS[1]):
         return None, f"width must be between {CAMERA_WIDTH_BOUNDS[0]} and {CAMERA_WIDTH_BOUNDS[1]}"
     if not (CAMERA_HEIGHT_BOUNDS[0] <= height <= CAMERA_HEIGHT_BOUNDS[1]):
         return None, f"height must be between {CAMERA_HEIGHT_BOUNDS[0]} and {CAMERA_HEIGHT_BOUNDS[1]}"
     if not (CAMERA_QUALITY_BOUNDS[0] <= quality <= CAMERA_QUALITY_BOUNDS[1]):
         return None, f"jpeg_quality must be between {CAMERA_QUALITY_BOUNDS[0]} and {CAMERA_QUALITY_BOUNDS[1]}"
-    if not (CAMERA_LIVE_INTERVAL_BOUNDS[0] <= live_interval <= CAMERA_LIVE_INTERVAL_BOUNDS[1]):
-        return None, (f"live_capture_interval_seconds must be between "
-                       f"{CAMERA_LIVE_INTERVAL_BOUNDS[0]} and {CAMERA_LIVE_INTERVAL_BOUNDS[1]}")
+    if not (CAMERA_FPS_BOUNDS[0] <= live_fps <= CAMERA_FPS_BOUNDS[1]):
+        return None, (f"live_capture_fps must be between "
+                       f"{CAMERA_FPS_BOUNDS[0]} and {CAMERA_FPS_BOUNDS[1]}")
+    if not (STREAM_RELAY_FPS_BOUNDS[0] <= relay_fps <= STREAM_RELAY_FPS_BOUNDS[1]):
+        return None, (f"stream_relay_fps must be between "
+                       f"{STREAM_RELAY_FPS_BOUNDS[0]} and {STREAM_RELAY_FPS_BOUNDS[1]}")
     return {
         "device": device,
         "width": width,
         "height": height,
         "jpeg_quality": quality,
-        "live_capture_interval_seconds": live_interval,
+        "live_capture_fps": live_fps,
+        "stream_relay_fps": relay_fps,
     }, None
 
 
@@ -361,6 +394,26 @@ def load_config():
             cal["ble_temp_offset"] = cal.pop("sensorpush_temp_offset")
         if "sensorpush_humidity_offset" in cal and "ble_humidity_offset" not in cal:
             cal["ble_humidity_offset"] = cal.pop("sensorpush_humidity_offset")
+    # Same idea, for the camera interval settings' seconds -> fps unit
+    # change: a VALUE conversion, not just a key rename, so a plain
+    # backfill (below) can't do this on its own - an old config.json
+    # missing live_capture_fps would otherwise silently fall back to the
+    # DEFAULT_CONFIG fps value instead of preserving whatever rate was
+    # actually configured under the old key.
+    if "camera" in data:
+        cam = data["camera"]
+        if "live_capture_interval_seconds" in cam and "live_capture_fps" not in cam:
+            old_interval = cam.pop("live_capture_interval_seconds")
+            try:
+                cam["live_capture_fps"] = round(1.0 / float(old_interval), 2)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass  # leave it out - the backfill below fills in the default
+        if "stream_relay_interval_seconds" in cam and "stream_relay_fps" not in cam:
+            old_interval = cam.pop("stream_relay_interval_seconds")
+            try:
+                cam["stream_relay_fps"] = round(1.0 / float(old_interval), 2)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
     # Backfill any keys/modes added in later versions of this script so
     # an old config.json on disk doesn't crash a newer climate.py.
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -553,6 +606,17 @@ def _migrate_readings_columns(conn):
         conn.execute("ALTER TABLE readings ADD COLUMN wired_temp REAL")
     if "wired_humidity" not in existing:
         conn.execute("ALTER TABLE readings ADD COLUMN wired_humidity REAL")
+    # Pi health (see get_pi_health()) - sampled once per control cycle by
+    # climate.py alongside the sensor readings, purely for visibility into
+    # whether the Pi itself (not the enclosure) is under strain - e.g.
+    # while tuning camera.live_capture_fps/stream_relay_fps for a
+    # smoother live feed. Never touches any
+    # control-critical logic (failsafe, delta-glitch filter, etc.) -
+    # informational only, same treatment as ble_temp/wired_temp above.
+    if "cpu_temp_f" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN cpu_temp_f REAL")
+    if "cpu_load_1m" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN cpu_load_1m REAL")
 
 
 def _migrate_ble_readings_columns(conn):
@@ -628,7 +692,7 @@ def get_all_ble_readings():
 def log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
                  fan, heater, dehumidifier, vent,
                  ble_temp=None, ble_humidity=None, wired_temp=None, wired_humidity=None,
-                 active_external_source=None):
+                 active_external_source=None, cpu_temp_f=None, cpu_load_1m=None):
     """external_temp/humidity is whichever physical sensor is currently
     ACTIVE (drives control decisions) - it's the value the delta-glitch
     filter and failsafe machinery track continuously across cycles,
@@ -637,19 +701,91 @@ def log_reading(mode, internal_temp, internal_humidity, external_temp, external_
     own fixed name, always, regardless of which one is active - so a
     dashboard tile for "the BLE sensor" always shows the BLE sensor,
     never silently relabeled to show the wired probe's data just
-    because the wired probe happens to be the one currently active."""
+    because the wired probe happens to be the one currently active.
+    cpu_temp_f/cpu_load_1m are the Pi's OWN health (see get_pi_health()),
+    unrelated to the enclosure's climate - purely informational."""
     conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "fan, heater, dehumidifier, vent, ble_temp, ble_humidity, wired_temp, wired_humidity, "
-        "active_external_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "active_external_source, cpu_temp_f, cpu_load_1m) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
          int(fan), int(heater), int(dehumidifier), int(vent), ble_temp, ble_humidity, wired_temp, wired_humidity,
-         active_external_source)
+         active_external_source, cpu_temp_f, cpu_load_1m)
     )
     conn.commit()
     conn.close()
+
+
+def get_pi_health():
+    """Reads the Pi's own CPU temperature, load average, and
+    under-voltage/throttling flags - entirely separate from the
+    enclosure's own climate sensors, purely for visibility into whether
+    the PI ITSELF is under strain (e.g. while tuning the camera's
+    capture/relay rate for a smoother live feed, or chasing a BLE
+    stability issue possibly tied to under-voltage - see
+    PROJECT_STATUS.md's BLE Tier-3 entries, where `vcgencmd
+    get_throttled` was already being checked by hand for exactly this
+    reason before this function existed).
+
+    `vcgencmd` is Raspberry Pi firmware-specific and only meaningful on
+    real Pi hardware - returns a dict of all-None values (never raises)
+    if it's missing entirely, so this is always safe to call from
+    anywhere, including in this project's own test/dev environment.
+
+    get_throttled's hex value is a bitmask: bit0/bit1 are CURRENT
+    under-voltage/freq-capping, bit16/bit18 are STICKY (have occurred at
+    some point since boot, not necessarily right now) - both are
+    surfaced separately since "currently throttled" and "was throttled
+    at some point" call for different reactions.
+    """
+    result = {
+        "cpu_temp_f": None,
+        "cpu_load_1m": None,
+        "cpu_load_5m": None,
+        "cpu_load_15m": None,
+        "throttled_now": None,
+        "throttled_since_boot": None,
+    }
+
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+        result["cpu_load_1m"] = round(load_1m, 2)
+        result["cpu_load_5m"] = round(load_5m, 2)
+        result["cpu_load_15m"] = round(load_15m, 2)
+    except OSError:
+        # getloadavg() is POSIX-only, and can theoretically raise if the
+        # kernel doesn't support it - not expected on a Pi, but this is
+        # informational data, never worth crashing over.
+        pass
+
+    try:
+        temp_out = subprocess.run(["vcgencmd", "measure_temp"], capture_output=True,
+                                   text=True, timeout=5)
+        # Expected output: "temp=53.8'C\n"
+        if temp_out.returncode == 0 and "temp=" in temp_out.stdout:
+            temp_c = float(temp_out.stdout.split("temp=")[1].split("'")[0])
+            result["cpu_temp_f"] = round(temp_c * 9.0 / 5.0 + 32.0, 1)
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError, OSError):
+        # FileNotFoundError specifically means vcgencmd isn't installed at
+        # all (e.g. this code running somewhere other than a real Pi) -
+        # every other exception here is some other form of "couldn't get
+        # a reading this cycle," same non-fatal treatment.
+        pass
+
+    try:
+        throttled_out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True,
+                                        text=True, timeout=5)
+        # Expected output: "throttled=0x50000\n"
+        if throttled_out.returncode == 0 and "throttled=" in throttled_out.stdout:
+            bits = int(throttled_out.stdout.split("throttled=")[1].strip(), 16)
+            result["throttled_now"] = bool(bits & 0x1) or bool(bits & 0x2)
+            result["throttled_since_boot"] = bool(bits & 0x10000) or bool(bits & 0x40000)
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError, OSError):
+        pass
+
+    return result
 
 
 def log_event(level, message):
@@ -698,14 +834,14 @@ def get_latest_reading():
     row = conn.execute(
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "fan, heater, dehumidifier, vent, ble_temp, ble_humidity, wired_temp, wired_humidity, "
-        "active_external_source FROM readings ORDER BY ts DESC LIMIT 1"
+        "active_external_source, cpu_temp_f, cpu_load_1m FROM readings ORDER BY ts DESC LIMIT 1"
     ).fetchone()
     conn.close()
     if not row:
         return None
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
             "fan", "heater", "dehumidifier", "vent", "ble_temp", "ble_humidity", "wired_temp", "wired_humidity",
-            "active_external_source"]
+            "active_external_source", "cpu_temp_f", "cpu_load_1m"]
     return dict(zip(keys, row))
 
 
@@ -904,7 +1040,7 @@ def get_readings_table(limit=50, before_ts=None):
     query = (
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "ble_temp, ble_humidity, wired_temp, wired_humidity, active_external_source, "
-        "fan, heater, dehumidifier, vent FROM readings WHERE 1=1"
+        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m FROM readings WHERE 1=1"
     )
     params = []
     if before_ts:
@@ -916,7 +1052,7 @@ def get_readings_table(limit=50, before_ts=None):
     conn.close()
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
             "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
-            "fan", "heater", "dehumidifier", "vent"]
+            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
     return [dict(zip(keys, r)) for r in rows]
 
 

@@ -768,25 +768,15 @@ pattern has been consistent: tie things to identity, never to role.
   dermestid-climate.service -n 40` should finally say *why*
   (connection/sensor/Pi4-timing) instead of just that the field is
   empty.
-- **[open, 2026-09-13]** User reports the light-override icon (see the
-  manual light-override entry above) still isn't visible on the Home
-  page live view despite "all the changes have been committed and
-  applied." Confirmed the relevant code genuinely is present in this
-  repo's `templates/home.html` (`lightToggleBtn`, `toggleLight()`,
-  the CSS) - so this isn't a code bug here, it's a deploy-visibility
-  gap on the Pi. Two known precedents in this exact project for
-  "code is right but the page doesn't show it," in order of likelihood
-  to check first: (1) a stale duplicate template sitting at the repo
-  root instead of `templates/` (see the `[resolved, 2026-09-13]`
-  Camera-nav-link entry above - this exact symptom, previously
-  root-caused to exactly this) - check `ls *.html` at the repo root on
-  both the user's local folder and the Pi's working copy; (2) if that's
-  clean, Flask's production-mode (`debug=False`) template caching
-  meaning `dermestid-web.service` needs an explicit restart to pick up
-  a changed `.html` file even after a successful `git pull` - the
-  Data-page "Fallback missing" entry above already documented this
-  exact class of issue once before. Not yet confirmed which (if
-  either) applies here.
+- **[resolved, 2026-09-13]** Light-override icon not appearing on the
+  Home page live view, despite the code genuinely being present in
+  `templates/home.html` - user confirmed the given instructions (check
+  for a stale root-level duplicate template first, then restart
+  `dermestid-web.service` to clear Flask's production-mode template
+  caching - see the two precedents this was based on) resolved it.
+  Which of the two was the actual cause wasn't specified back, but
+  either way this confirms the deploy-visibility-gap diagnosis was
+  right, not a code bug.
 - **[open, 2026-09-13]** Video "still choppy... nothing like a true
   live feed" reported again after the Discover/auto-restart UX batch
   shipped. Root cause is almost certainly still the same one already
@@ -798,10 +788,239 @@ pattern has been consistent: tie things to identity, never to role.
   performance-appropriate value - both compound the same symptom.
   Recommended fix given: set `live_capture_interval_seconds` back to
   `~0.2` and resolution back down to `1280x720` (or lower) on the
-  Config page. **Not yet confirmed by the user whether this was
-  actually applied** - the most recent message doesn't make clear
-  whether this specific change was tried, so this remains the first
-  thing to rule out before treating this as a deeper pipeline problem
-  (capture rate, encode time, or relay overhead - see the Pi
+  Config page. **Confirmed applied (2026-09-13)** - user set the
+  interval back to `0.2` - **and video is still choppy**, so this is
+  now confirmed to be a real pipeline problem, not just a leftover bad
+  config value. User asked directly whether switching to
+  `camera-streamer` (a purpose-built V4L2/libcamera MJPEG/HLS streaming
+  daemon, commonly used in the OctoPrint/3D-printing community, that
+  uses the Pi's hardware JPEG encoder) would fix it instead of
+  continuing to tune this project's own OpenCV-based pipeline. Given
+  serious consideration rather than dismissed - see the dated entry
+  below for the full assessment (this pipeline currently does 100%
+  software JPEG encode via OpenCV with no hardware acceleration at all,
+  a genuinely real bottleneck camera-streamer would remove) - not yet
+  decided/started, pending the user's go-ahead given it's a real
+  architectural change (external binary dependency, and it would need
+  to take over the "only one process holds the USB device" role that
+  `camera_service.py` currently owns for both live view AND timelapse
+  capture - see below). Root cause still not narrowed further than
+  that (capture rate, encode time, or relay overhead specifically -
+  see the Pi
   3B+-era live-view-performance entry above, which may or may not
   still be relevant post-Pi-4-migration).
+- **[open, 2026-09-13]** `journalctl -u dermestid-climate.service`
+  provided for the missing wired/Fallback sensor investigation - showed
+  `External: --F/--%` on literally every single logged cycle across
+  ~18 minutes and two service restarts, with **no** `DHT22 on GPIOx
+  failed...` warning line anywhere, even though the new logging fix
+  (see the dated entry above) should log one every cycle if the wired
+  probe genuinely failed that consistently. This means the log
+  predates that fix being deployed (it was only just pushed to the
+  user's local folder this same round) - the diagnosis can't move
+  forward until it's actually deployed (`git pull` + `sudo systemctl
+  restart dermestid-climate.service` on the Pi) and a fresh log is
+  pulled afterward. Separately worth noting for whoever reads this
+  next: `climate.py` reads BLE and wired every cycle regardless of
+  which is active (see the External-source-selection comment in
+  `climate.py`), and only falls back to wired at all once BLE goes
+  stale past `SENSOR_FAIL_TIMEOUT` - so `External: --` on every single
+  cycle with no exception could ALSO mean BLE has gone stale again
+  (forcing the wired fallback) at the same time the wired probe itself
+  is failing, not necessarily proof the wired probe alone is broken.
+  Worth checking `dermestid-ble.service`'s own recent freshness
+  alongside the redeployed climate log, not just climate.py in
+  isolation.
+- **[open, 2026-09-13]** User asked directly why not just switch the
+  live-view pipeline to `camera-streamer` instead of continuing to tune
+  `camera_service.py`'s own OpenCV-based capture. Honest assessment:
+  this wasn't a "considered and rejected" decision before now - it's a
+  genuinely strong candidate that hadn't been evaluated as an
+  alternative to incremental tuning. What this project's pipeline
+  currently does, confirmed by reading both files: `camera_service.py`
+  captures via `cv2.VideoCapture.read()`, JPEG-encodes every single
+  frame in pure software via `cv2.imencode()` (zero hardware
+  acceleration - neither the Pi 3B+ nor Pi 4's GPU-based JPEG/H264
+  encoder is touched at all), writes it to `camera/latest.jpg`, and
+  `webapp.py` (a separate process) re-reads that same file from disk
+  every `STREAM_RELAY_INTERVAL` (0.15s) per connected browser tab and
+  relays it as a `multipart/x-mixed-replace` MJPEG stream over Flask's
+  built-in Werkzeug dev server (not a production WSGI server) -
+  genuinely a lot of avoidable overhead stacked up (software encode,
+  disk-file handoff between two processes, a dev server doing the
+  actual video relay) for what's meant to be a smooth live feed.
+  `camera-streamer` is a purpose-built V4L2/libcamera MJPEG/HLS/WebRTC
+  daemon (originally for OctoPrint, widely used for exactly this kind
+  of Pi + USB webcam setup) that uses the hardware JPEG encoder and
+  would very plausibly fix the choppiness outright, likely more
+  effectively than any further tuning of this pipeline could. **Why
+  this needs a real decision, not just a swap**: `camera_service.py`
+  currently does double duty - it's the ONLY process that opens the
+  USB device at all, specifically so simultaneous dashboard viewers and
+  the timelapse-snapshot logic never fight over it (most UVC webcams
+  only support one client). Handing live view to `camera-streamer`
+  means `camera_service.py` can no longer be the one holding the device
+  open for live capture - either it stops capturing for live view
+  entirely and only wakes up per-mode to grab timelapse snapshots via
+  `camera-streamer`'s own snapshot endpoint (avoiding the two-clients
+  problem, but a real rewrite of `camera_service.py`'s main loop and
+  probably `discover_camera.py`'s stop/start-the-service dance too), or
+  the two run side by side against genuinely separate devices/paths
+  (not applicable here, single webcam). It also adds a real external
+  binary dependency (build/install `camera-streamer` on the Pi itself,
+  a new systemd unit, its own config surface) rather than staying a
+  pure-Python/OpenCV/ffmpeg stack, which is a different maintenance
+  profile than everything else in this project. **Not started** -
+  this is a legitimate redesign, not a drop-in swap; needs the user's
+  go-ahead on the scope before starting given the architectural
+  tradeoffs above, especially since it would touch the same file the
+  timelapse feature (a whole separate, already-shipped feature) also
+  depends on.
+  **User pushed back asking for the actual why-or-why-not against the
+  intended outcome rather than picking from options** - real point
+  worth recording: this pipeline's conservative defaults (the ~5-6.7fps
+  ceiling, the STREAM_RELAY_INTERVAL/live_capture_interval_seconds
+  split) were explicitly tuned around Pi 3B+ CPU scarcity (see
+  `camera_service.py`'s own docstring and the Pi 3B+-era live-view-
+  performance entry above) - all written and tuned BEFORE the Pi 4
+  migration. It's genuinely possible current choppiness is just those
+  stale conservative limits rather than a hard architectural ceiling -
+  a cheap, lower-risk thing to actually try and measure on the Pi 4
+  first (push STREAM_RELAY_INTERVAL/live_capture_interval_seconds
+  higher, watch CPU/temp) before committing to the camera-streamer
+  rewrite. camera-streamer's real structural advantage is removing the
+  100%-software JPEG encode (the most likely dominant bottleneck) via
+  the Pi's hardware encoder - genuinely the more "correct" fix for a
+  truly smooth feed at low CPU cost - but that advantage is worth less
+  if a Pi-4-appropriate speed bump on the EXISTING pipeline already
+  gets acceptably smooth video. Recommended to the user: try the cheap
+  speed-bump test first; if still choppy with headroom to spare, that's
+  real evidence for camera-streamer being worth its cost. Not yet
+  tried.
+- **[open, 2026-09-13]** Correction to my own prior guidance: I told the
+  user to "bump `live_capture_interval_seconds` and
+  `STREAM_RELAY_INTERVAL` up" to test for smoother video on the Pi 4 -
+  backwards. Lower = faster/smoother for both (fewer seconds *between*
+  frames = more frames per second), the exact non-intuitive-direction
+  trap this file's own earlier `live_capture_interval_seconds=2`
+  choppy-video entry already flagged once before - I repeated the same
+  mistake in my own phrasing this time. Also `STREAM_RELAY_INTERVAL`
+  wasn't actually a Config-page setting at all - it was a hardcoded
+  constant in `webapp.py`, so "adjust it and watch CPU/temp" wasn't
+  even actionable as stated. Both fixed together as a real feature
+  batch, not just a wording correction:
+  - `stream_relay_interval_seconds` is now a genuine `camera` config
+    key (default `0.15`, `STREAM_RELAY_INTERVAL_BOUNDS = (0.05, 5)`),
+    Config-page-editable, read fresh every frame by
+    `api_camera_stream()`'s generator (no service restart needed - the
+    old module constant stays only as a fallback default if the key is
+    somehow missing).
+  - Added `shared_state.get_pi_health()`: reads CPU temp via `vcgencmd
+    measure_temp`, load average via `os.getloadavg()`, and the
+    under-/over-voltage `get_throttled` bits (same bitmask decoding
+    already used by hand throughout the BLE Tier-3 troubleshooting
+    above - bit0/bit1 current, bit16/bit18 sticky-since-boot) - all
+    wrapped so a missing `vcgencmd` (not a real Pi) returns all-`None`
+    rather than raising. Verified via a standalone test with a fake
+    `vcgencmd` script on `$PATH` covering the parse of real
+    `temp=53.8'C`/`throttled=0x50000` and `0x50003` output (the actual
+    hex value from this project's own earlier BLE troubleshooting), and
+    the no-`vcgencmd`-present case (this dev sandbox).
+  - `climate.py` samples it once per control cycle (cheap - a couple of
+    fast subprocess calls) and logs `cpu_temp_f`/`cpu_load_1m` into the
+    SAME `readings` row as the sensor data (two new nullable columns,
+    migrated the same way `ble_temp`/`wired_temp` were) - one sampling
+    loop, one table, not a parallel system.
+  - Home page: a small readout under the live view (`Pi: 128.8°F
+    (53.8°C) · load 0.42`), turning amber past 158°F/70°C and red past
+    176°F/80°C - not yet-throttling thresholds, just "keep an eye on
+    it" vs. "getting close." Data page: two new raw-table columns
+    (`Pi °F`, `Pi load`). Both come from the same `/api/status` and
+    `/api/readings-table` endpoints already polled/fetched - no new
+    endpoint needed for either.
+  - Verified via Flask test client (home/config/data pages render the
+    new elements; `/api/camera-settings` accepts
+    `stream_relay_interval_seconds` without triggering a service
+    restart; `/api/status` and `/api/readings-table` surface
+    `cpu_temp_f`/`cpu_load_1m` once `log_reading()` is called with
+    them) and a standalone DB test covering the column migration
+    against a simulated pre-existing `readings` table.
+  - The `get_throttled` under-/over-voltage flags themselves
+    (`throttled_now`/`throttled_since_boot` in `get_pi_health()`'s
+    return value) are NOT yet surfaced anywhere on the dashboard, only
+    logged/displayed temp and load - deliberately scoped down to avoid
+    growing this further; still worth adding to the Home page readout
+    later if a power issue needs watching live again, same category as
+    the BLE Tier-3 investigation above.
+  - **Not yet deployed/tested on real hardware.** Needs `git pull` on
+    the Pi, PLUS explicit restarts this time (unlike a Config-page save,
+    which is what the auto-restart-on-save logic elsewhere in this
+    project actually covers, and doesn't apply to a code deploy at
+    all) - `dermestid-climate.service` needs a restart to pick up the
+    new `get_pi_health()` call and DB columns, and `dermestid-web.
+    service` needs one too, both for the new `/api/status`/`/api/
+    readings-table` fields AND because `home.html`/`config.html`/
+    `data.html` all changed - exactly the template-caching gotcha the
+    light-icon entry above already hit once this same session.
+    `camera_service.py` itself is untouched by this batch (the relay
+    interval is read by `webapp.py`, not the camera service), so
+    `dermestid-camera.service` doesn't need restarting for this.
+- **[open, 2026-09-13]** User-requested simplification, before the
+  batch above even got deployed: (1) re-express the camera's two
+  frame-rate settings as frames/sec instead of seconds-between-frames,
+  and (2) replace the separate width/height number inputs with a single
+  resolution dropdown populated from what the camera actually supports.
+  Both implemented:
+  - **fps rename**: `camera.live_capture_interval_seconds` ->
+    `live_capture_fps` (default `5`, `CAMERA_FPS_BOUNDS = (0.1, 10)` -
+    tightened the floor vs. the old interval bound's effective 0.033fps
+    equivalent, since anything slower than "1 frame per 10s" isn't
+    really a live view anymore, it overlaps with the separate
+    `snapshot_interval_minutes` timelapse feature) and `camera.
+    stream_relay_interval_seconds` -> `stream_relay_fps` (default `7`,
+    `STREAM_RELAY_FPS_BOUNDS = (0.2, 20)`). `camera_service.py` and
+    `webapp.py`'s `api_camera_stream()` each convert their own fps
+    value to a sleep interval internally (`1.0 / fps`) once per cycle -
+    config.json and the Config page only ever deal in fps now. A
+    one-time migration in `load_config()` converts an old config.json's
+    seconds-based values to their fps equivalent on next load (same
+    pattern as the earlier `sensorpush_mac` -> `ble_mac` rename, but a
+    VALUE conversion this time, not just a key rename) - verified with
+    the user's own actual stale value from earlier this session
+    (`live_capture_interval_seconds: 2` -> `live_capture_fps: 0.5`,
+    confirming just how slow that setting really was), plus stability
+    (no double-conversion on repeated load/save) and the
+    already-migrated and brand-new-config cases.
+  - **This also directly corrects my own "bump the interval up" mistake
+    from the entry above** - fps genuinely can't be misread in the
+    wrong direction the way the interval naming could, so this isn't
+    just a wording fix, it removes the whole class of mistake.
+  - **Resolution dropdown**: `discover_camera.py` now actually tests
+    each device against a curated `COMMON_RESOLUTIONS` list (3840x2160
+    down to 320x240, mixed 16:9/4:3) via `probe_supported_resolutions()`
+    - sets each candidate, reads a real frame back (not just set()+get()
+    without reading, which some V4L2 drivers can report success for
+    without truly committing to), and keeps only what the driver
+    actually delivers within a 2px tolerance. The camera's own
+    negotiated max (from the existing 1920x1080 probe request) is
+    always included even if it's not an exact `COMMON_RESOLUTIONS`
+    match. Verified via a fake `cv2.VideoCapture` simulating a webcam
+    that only truly supports 3 of the 11 candidates - confirmed exactly
+    those 3 come back, real max first. The Config page's Camera card
+    now has one `<select>` instead of two number inputs; clicking a
+    Discover result rebuilds its options from THAT device's own
+    `supported_resolutions` (falling back to the generic
+    `COMMON_RESOLUTIONS` list, duplicated as a JS constant - "keep in
+    sync" comment pointing at the Python source - if Discover hasn't
+    been run yet, or a particular probe came back empty). The
+    currently-configured width/height is always included as an option
+    even if hand-edited into config.json outside this list, so opening
+    the Config page and saving without touching this field can never
+    silently change it.
+  - Verified via Flask test client: Config page renders the new
+    `<select>`/fps inputs with no stale element IDs; `/api/camera-
+    settings` accepts `live_capture_fps`/`stream_relay_fps`, rejects
+    out-of-bounds values, and defaults correctly when omitted.
+  - **Not yet deployed** - same restart requirements as the Pi-health
+    batch directly above (this shipped in the same push, before that
+    batch had been deployed/tested on real hardware yet either).
