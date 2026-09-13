@@ -45,6 +45,17 @@ def probe_devices(save_files=True, out_dir=None):
         if not cap.isOpened():
             cap.release()
             continue
+        # Without an explicit request, OpenCV/V4L2 hands back whatever
+        # resolution the driver defaults to - commonly 640x480 for UVC
+        # webcams - which isn't the camera's actual capability, just its
+        # out-of-the-box default. Asking for something high (1920x1080)
+        # first makes V4L2 negotiate up to the nearest resolution the
+        # hardware actually supports, so what gets read back afterward is
+        # a real "here's what this camera can do," not just its default -
+        # this is what config.html's Discover button pre-fills the
+        # Width/Height config fields from.
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         ok, frame = cap.read()
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

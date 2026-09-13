@@ -13,6 +13,9 @@
   .camera-discover-item.selected { border-color: var(--accent); }
   .camera-discover-item img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
   .camera-discover-item .idx-label { font-size: 0.75rem; padding: 4px; color: var(--text-dim); }
+  .ble-discover-row { cursor: pointer; border-top: 1px solid var(--panel-border); }
+  .ble-discover-row.selected { background: rgba(79,178,134,0.14); }
+  .ble-discover-row.selected td:first-child { color: var(--accent); font-weight: 600; }
 </style>
 {% endblock %}
 {% block content %}
@@ -212,8 +215,13 @@ async function saveCameraSettings() {
   if (!res.ok) {
     msg.textContent = data.error || 'Save failed';
     msg.className = 'save-msg err';
+  } else if (data.restart_attempted && !data.restart_ok) {
+    msg.textContent = 'Saved, but the automatic restart failed - restart dermestid-camera.service by hand';
+    msg.className = 'save-msg err';
   } else {
-    msg.textContent = 'Saved - restart the camera service for device/resolution changes to take effect';
+    msg.textContent = data.restart_attempted
+      ? 'Saved - camera service restarted automatically'
+      : 'Saved';
     msg.className = 'save-msg ok';
     setTimeout(() => { msg.textContent = ''; }, 4500);
   }
@@ -287,8 +295,13 @@ async function saveBleMac() {
   if (!res.ok) {
     msg.textContent = data.error || 'Save failed';
     msg.className = 'save-msg err';
+  } else if (data.restart_attempted && !data.restart_ok) {
+    msg.textContent = 'Saved, but the automatic restart failed - restart dermestid-ble.service by hand';
+    msg.className = 'save-msg err';
   } else {
-    msg.textContent = 'Saved - restart the BLE listener service for a brand change to take effect';
+    msg.textContent = data.restart_attempted
+      ? 'Saved - BLE listener restarted automatically'
+      : 'Saved';
     msg.className = 'save-msg ok';
     setTimeout(() => { msg.textContent = ''; }, 4000);
   }
@@ -317,8 +330,8 @@ async function discoverBleSensors() {
     } else {
       emptyEl.style.display = 'none';
       rowsEl.innerHTML = readings.map(r => `
-        <tr style="cursor:pointer; border-top:1px solid var(--panel-border);"
-            onclick="document.getElementById('bleMacInput').value='${r.address}'">
+        <tr class="ble-discover-row" id="ble-discover-${r.address}"
+            onclick="selectBleAddress('${r.address}')">
           <td style="padding:5px 6px 5px 0; font-family:monospace;">${r.address}</td>
           <td style="padding:5px 6px;">${r.temp_f.toFixed(1)}°F / ${r.humidity.toFixed(0)}%RH</td>
           <td style="padding:5px 6px;">${r.rssi}dBm</td>
@@ -334,6 +347,13 @@ async function discoverBleSensors() {
   }
   btn.disabled = false;
   btn.textContent = originalText;
+}
+
+function selectBleAddress(address) {
+  document.getElementById('bleMacInput').value = address;
+  document.querySelectorAll('.ble-discover-row').forEach(el => el.classList.remove('selected'));
+  const chosen = document.getElementById(`ble-discover-${address}`);
+  if (chosen) chosen.classList.add('selected');
 }
 
 async function discoverCameras() {
@@ -366,6 +386,8 @@ async function discoverCameras() {
     } else {
       emptyEl.style.display = 'none';
       hintEl.style.display = 'none';
+      lastDiscoveredCameras = {};
+      devices.forEach(d => { lastDiscoveredCameras[d.index] = d; });
       gridEl.innerHTML = devices.map(d => `
         <div class="camera-discover-item" id="cam-discover-${d.index}" onclick="selectCameraIndex(${d.index})">
           <img src="data:image/jpeg;base64,${d.image_b64}" alt="/dev/video${d.index} sample frame">
@@ -384,8 +406,23 @@ async function discoverCameras() {
   btn.textContent = originalText;
 }
 
+let lastDiscoveredCameras = {};
+
 function selectCameraIndex(index) {
   document.getElementById('cameraDeviceInput').value = index;
+  // Discovery now requests a high resolution before reading the frame
+  // back (see discover_camera.py), so what it reports is the camera's
+  // actual negotiated capability, not just OpenCV's low default - worth
+  // using as the resolution fields' starting point rather than making
+  // the user look it up and type it in separately. Still just a
+  // starting point, not locked in: lower it from here for a CPU/
+  // bandwidth tradeoff on a Pi 3B+, same as README's Camera section
+  // already covers.
+  const device = lastDiscoveredCameras[index];
+  if (device) {
+    document.getElementById('cameraWidthInput').value = device.width;
+    document.getElementById('cameraHeightInput').value = device.height;
+  }
   document.querySelectorAll('.camera-discover-item').forEach(el => el.classList.remove('selected'));
   const chosen = document.getElementById(`cam-discover-${index}`);
   if (chosen) chosen.classList.add('selected');

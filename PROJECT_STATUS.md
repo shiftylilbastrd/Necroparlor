@@ -24,24 +24,23 @@ rather than just editing it silently.
   adding an optional USB webcam - live view + per-mode timelapse. See
   the "Camera / timelapse" load-bearing-decisions section below. Not
   yet run against real hardware - see Open threads.
-- **Pi 4 8GB migration decided but not yet executed** (2026-09-13): the
-  project is moving from the Pi 3B+ to a spare Pi 4 8GB as the sole
-  processor - user's own suggestion, given the project is still in
-  development (rewiring/reflashing isn't costly right now), the Pi 4
-  has far more headroom for the camera work (including `camera-streamer`
-  if that gets integrated later), GPIO pinout is identical across the
-  3/4 family so sensor/relay wiring doesn't change, and the Pi 4's more
-  robust power delivery may also resolve the Tier-3 BLE/under-voltage
-  issue below (shared power rail theory). **Plan is to move the existing
-  SD card into the Pi 4, not re-flash/re-clone** - Raspberry Pi OS
-  images auto-detect the board via device-tree at boot and support the
-  whole 3/4/Zero2 family from one image, so this should just work.
-  Pending user confirmation after doing this "in the morning": check
-  `cat /proc/device-tree/model` (should now say Pi 4), `vcgencmd
-  get_throttled` (watching specifically for the under-voltage bits
-  clearing now that it's off the 3B+'s power budget), and that all
-  three services (`dermestid-climate`, `dermestid-ble`,
-  `dermestid-web`) came up clean. **`camera-streamer` (ayufan's, a
+- **Pi 4 8GB migration completed (2026-09-13)** - moved the existing SD
+  card into the Pi 4 as planned (no re-flash/re-clone needed; Raspberry
+  Pi OS auto-detected the board via device-tree). Original motivation:
+  more headroom for the camera work, identical GPIO pinout across the
+  3/4 family so no rewiring needed, and the theory that the Pi 4's
+  more robust power delivery would resolve the Tier-3 BLE/under-voltage
+  issue below (shared power rail theory). **That last part did NOT
+  pan out**: BLE sensor data is still missing after the migration and
+  a dashboard reboot - see the dated Tier-3 entry below. This is a
+  significant data point - it rules out "just a 3B+ power budget
+  problem" as the sole cause, since the Pi 4 has meaningfully better
+  power delivery and the symptom persisted anyway. Still to check:
+  what power supply is actually being used on the Pi 4 (it needs its
+  own proper 5V/3A USB-C supply - reusing the 3B+'s old micro-USB
+  supply via an adapter would reintroduce a *new* under-voltage
+  problem, not fix the old one) - not yet confirmed either way.
+  **`camera-streamer` (ayufan's, a
   native binary alternative to the hand-rolled MJPEG relay - see the
   superseded live-view entry below for why it wasn't used initially) is
   deliberately not yet integrated into the dashboard** - the plan is to
@@ -375,6 +374,76 @@ pattern has been consistent: tie things to identity, never to role.
     `restart` line) - see README's sudoers section; without them,
     discovery still runs, it just won't see whichever index the service
     already has open (a warning `hint` field in the response says so).
+- **Discovery/config UX polish (2026-09-13, real-hardware follow-up
+  after BLE discovery was confirmed working on the Pi 4)**:
+  - **Config-page saves now auto-restart the affected service when the
+    change actually needs it, instead of just telling the user to do it
+    by hand.** A shared `_restart_service()` helper (`sudo -n systemctl
+    restart <unit>`, best-effort) is called from `/api/ble-mac` only
+    when `ble_sensor_type` (the brand) changed, and from
+    `/api/camera-settings` only when `device`/`width`/`height` changed
+    - deliberately NOT for every save. `ble_mac` itself needs no
+    restart at all (confirmed by reading the actual code:
+    `ble_listener.py` never references it - only `climate.py` and the
+    dashboard do, both reading `config.json` fresh every
+    cycle/request), and `jpeg_quality`/`live_capture_interval_seconds`
+    are already re-read every camera capture cycle - restarting for
+    either would just be a pointless live-view interruption for a
+    change that was going to apply itself within a second or two
+    anyway. Both routes report `restart_attempted`/`restart_ok` in
+    their JSON response so the UI can tell "saved, restarted
+    automatically" apart from "saved, but the restart failed - do it by
+    hand" (e.g. sudoers not set up yet) rather than silently claiming
+    success either way.
+  - **`discover_camera.py` now explicitly requests 1920x1080
+    (`cap.set(CAP_PROP_FRAME_WIDTH/HEIGHT, ...)`) before reading a
+    frame back**, instead of reading whatever OpenCV/V4L2's default
+    negotiated resolution happens to be. Real bug this fixes: a camera
+    capable of 1920x1080 was being reported as 640x480 by Discover,
+    because that's V4L2's common UVC default when nothing explicitly
+    requests otherwise - not a capability limit, just an unrequested
+    default. What comes back after the explicit request is the
+    camera's actual negotiated capability (V4L2 clamps to the nearest
+    it supports if 1920x1080 itself isn't available).
+  - **Camera Discover's resolution reading now has an actual purpose
+    beyond display**: clicking a discovered thumbnail pre-fills the
+    Width/Height config fields from it, not just the device index
+    (`lastDiscoveredCameras` keyed by index, read in
+    `selectCameraIndex()`). This was a direct response to the question
+    "if it knows the resolution what purpose is there for the
+    resolution fields" - the fields themselves still matter
+    independently of discovery (they're the live-capture performance
+    knob, see the Pi 3B+ CPU-sharing tradeoff elsewhere in this doc),
+    but there was no reason to make the user look up and retype a
+    number the probe had already found. Same treatment given to BLE
+    Discover's rows for UI parity (`.selected` highlight via
+    `selectBleAddress()`) - previously only the Camera grid highlighted
+    a selection.
+- **Manual light override (2026-09-13, explicit request)**: a 💡 icon
+  overlaid on the Home page's live view now turns on the door/lid light
+  (`PIN_LIGHT`) on demand, described by the user as something that was
+  "supposed to" already exist. Design: `climate.py`'s `light_loop()`
+  thread (already polling the reed switch, `PIN_SWITCH`, every 50ms) was
+  extended to also honor `config.json`'s new `light_override_until` -
+  an epoch timestamp, not a plain bool, so the override **self-expires**
+  (`LIGHT_OVERRIDE_DURATION_SECONDS` = 300) rather than needing anything
+  to actively turn it back off; a forgotten click or closed tab can't
+  leave the enclosure lit indefinitely. `light_loop()` only re-reads
+  config once a second (`LIGHT_OVERRIDE_POLL_SECONDS`), not on every
+  50ms door-switch poll - the switch itself needs that responsiveness,
+  the override doesn't. **The switch always wins**: the light-on
+  condition is `is_open OR override_active` - this button can only ever
+  ADD light-on time on top of the switch, never suppress it, so there's
+  no way for a stuck override to mask the switch actually opening (or
+  vice versa). New route `/api/light-override` (POST, `{on: true/false}`)
+  just writes the config value; unlike the camera/BLE-service routes,
+  this needed no new `sudoers` entry, since `climate.py` (the process
+  that owns `PIN_LIGHT`) reads `config.json` directly rather than this
+  route shelling out to `systemctl`. Verified via Flask-test-client
+  smoke tests (override timing math, persistence, clearing, `/api/status`
+  surfacing it) and a standalone replica of `light_loop()`'s on/off
+  decision logic (climate.py itself can't be imported/run in a sandbox
+  without real `RPi.GPIO` hardware) - **not yet run on the actual Pi**.
 
 ## Established workflows / things that look like bugs but aren't
 
@@ -475,11 +544,28 @@ pattern has been consistent: tie things to identity, never to role.
   `systemctl status dermestid-sensorpush.service`; if it's
   loaded/enabled, `sudo systemctl stop dermestid-sensorpush.service &&
   sudo systemctl disable dermestid-sensorpush.service` and reboot again
-  to test. If that's NOT it, the next-most-likely explanation shifts
-  toward actual Bluetooth hardware degradation from the repeated
-  under-voltage events, which would be a real argument for prioritizing
-  the Pi 4 migration immediately rather than continuing to troubleshoot
-  the 3B+'s BLE stack. **Separately, and initially misdiagnosed, in the same
+  to test.
+  **Both leading theories now ruled out post-migration (2026-09-13):**
+  `dermestid-sensorpush.service` genuinely doesn't exist on this Pi
+  ("could not be found") - not a duplicate-service conflict. And
+  `vcgencmd get_throttled` reads a clean `0x0` on the Pi 4 with its own
+  proper PSU - not a power problem either, current or historical. **The
+  error changed completely after the migration**: no longer
+  `[org.bluez.Error.InProgress]` (the old stuck-scan symptom) - now
+  `BleakBluetoothNotAvailableReason.POWERED_OFF: No powered Bluetooth
+  adapters found`, meaning BlueZ itself thinks the radio is off. This
+  reads as a straightforward Bluetooth-adapter-availability problem
+  specific to the new hardware (an `rfkill` soft-block, or
+  `bluetooth.service` not actually coming up cleanly after the SD-card
+  swap), not a continuation of the old Tier-3 stuck-scan issue at all -
+  treat this as a new, unrelated symptom rather than "the same bug
+  persisting." `dermestid-ble.service` already has
+  `After=bluetooth.target`/`Wants=bluetooth.target`, so this isn't a
+  simple boot-ordering race either (11+ restarts in, well past any
+  first-boot timing issue). Next diagnostic step given to the user:
+  `rfkill list`, `systemctl status bluetooth --no-pager`, `hciconfig
+  -a` - not yet confirmed which.
+  **Separately, and initially misdiagnosed, in the same
   session**: `dermestid-battery.service`'s log showed `"No SensorPush
   address configured - nothing to check"`, first assumed to mean
   `config.json`'s `ble_mac` was genuinely empty - wrong. **The real

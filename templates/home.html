@@ -41,10 +41,18 @@
   .tile-side { text-align: right; flex-shrink: 0; }
   .active-tag { font-size: 0.7rem; font-weight: 600; color: var(--accent); vertical-align: middle; }
   .live-frame-wrap {
-    width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden;
+    position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden;
     border: 1px solid var(--panel-border); background: #000;
   }
   .home-live-frame { width: 100%; height: 100%; display: block; object-fit: cover; }
+  .light-toggle-btn {
+    position: absolute; top: 8px; right: 8px; z-index: 2;
+    width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--panel-border);
+    background: rgba(16,21,26,0.75); color: var(--text-dim); font-size: 1.15rem;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .light-toggle-btn.on { background: rgba(217,164,65,0.9); color: #14181c; border-color: var(--warn); }
+  .light-toggle-btn:disabled { opacity: 0.6; cursor: default; }
 </style>
 {% endblock %}
 {% block content %}
@@ -118,6 +126,8 @@
     <img class="home-live-frame" id="homeLiveFrame" alt="Live camera view"
          src="/api/camera/stream.mjpg"
          onerror="setTimeout(reconnectHomeStream, 2000)">
+    <button class="light-toggle-btn" id="lightToggleBtn" onclick="toggleLight()"
+            title="Turn light on">💡</button>
   </div>
   <div class="stat-sub" id="homeLiveStatus" style="margin-top:8px;"></div>
 </div>
@@ -246,6 +256,14 @@ async function refreshStatus() {
     doorBadge.className = 'door-badge closed';
     doorLabel.textContent = 'unknown';
   }
+
+  // Resyncs the light icon from config.json's own light_override_until
+  // rather than trusting whatever toggleLight() last set locally - picks
+  // up the override expiring on its own (see LIGHT_OVERRIDE_DURATION_SECONDS
+  // in shared_state.py) and stays correct across multiple open tabs/devices.
+  const overrideUntil = (data.config && data.config.light_override_until) || 0;
+  lightOverrideActive = overrideUntil > (Date.now() / 1000);
+  updateLightButton();
 
   const batteryWrap = document.getElementById('statBleBatteryWrap');
   if (data.ble_status && data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
@@ -393,6 +411,32 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
 // happens).
 function reconnectHomeStream() {
   document.getElementById('homeLiveFrame').src = '/api/camera/stream.mjpg?t=' + Date.now();
+}
+
+let lightOverrideActive = false;
+
+function updateLightButton() {
+  const btn = document.getElementById('lightToggleBtn');
+  btn.classList.toggle('on', lightOverrideActive);
+  btn.title = lightOverrideActive ? 'Light on (click to turn off)' : 'Turn light on';
+}
+
+async function toggleLight() {
+  const btn = document.getElementById('lightToggleBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/light-override', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({on: !lightOverrideActive})
+    });
+    const data = await res.json();
+    lightOverrideActive = data.light_override_until > (Date.now() / 1000);
+    updateLightButton();
+  } catch (e) {
+    // Leave the button's state as-is on a network hiccup - the next
+    // refreshStatus() poll (every 5s) resyncs it from config.json either way.
+  }
+  btn.disabled = false;
 }
 
 async function refreshCameraStatus() {

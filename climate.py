@@ -373,12 +373,28 @@ def emergency_shutdown_outputs(reason):
     humidity_on = False
 
 
+LIGHT_OVERRIDE_POLL_SECONDS = 1  # how often this loop re-reads config.json
+# for a dashboard-triggered light override - the 50ms sleep below is for
+# door-switch responsiveness, not for how fast an override needs to react;
+# checking config.json 20x/sec instead of 1x/sec would be pure waste.
+
+
 def light_loop():
     """Drives the door/lid light off the same reed switch the whole time -
-    unchanged. Also now tracks open/closed transitions for the dashboard's
-    door indicator: written to the DB only on an actual transition (not
-    on every 50ms poll), so it stays cheap but still reflects within one
-    web dashboard refresh.
+    the switch always wins, opening the door always turns the light on
+    regardless of anything below. Also now tracks open/closed transitions
+    for the dashboard's door indicator: written to the DB only on an
+    actual transition (not on every 50ms poll), so it stays cheap but
+    still reflects within one web dashboard refresh.
+
+    On top of the switch, also honors a dashboard-driven manual override
+    (config.json's light_override_until, set by the Home page's live-view
+    icon via /api/light-override) so the light can be checked on without
+    actually opening the lid. Purely additive - it can only turn the light
+    ON when the switch alone wouldn't, never prevent the switch turning it
+    on or off. Self-expiring (see LIGHT_OVERRIDE_DURATION_SECONDS): once
+    time.time() passes the stored timestamp, override_active just goes
+    false on the next poll - nothing needs to actively clear it.
 
     Runs as a background thread for the life of the process, so any
     exception here needs to be caught and logged rather than allowed to
@@ -386,13 +402,23 @@ def light_loop():
     door light AND door tracking for the rest of the run, with the main
     control loop carrying on none the wiser."""
     last_open = None
+    last_override_check = 0
+    override_until = 0
     while True:
         try:
             is_open = GPIO.input(PIN_SWITCH) == GPIO.LOW
-            if is_open:
+
+            now = time.time()
+            if now - last_override_check >= LIGHT_OVERRIDE_POLL_SECONDS:
+                override_until = state.load_config().get("light_override_until", 0) or 0
+                last_override_check = now
+            override_active = now < override_until
+
+            if is_open or override_active:
                 turn_on(PIN_LIGHT)
             else:
                 turn_off(PIN_LIGHT)
+
             if is_open != last_open:
                 state.save_door_state(is_open)
                 state.log_event("info", f"Door {'opened' if is_open else 'closed'}")

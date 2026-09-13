@@ -108,11 +108,61 @@ def api_status():
                      "last_valid_timestamps": last_valid})
 
 
+@app.route("/api/light-override", methods=["POST"])
+def api_light_override():
+    """Manually turns the door/lid light on (or clears an existing
+    override to turn it back off early), for the Home page's live-view
+    icon overlay - lets you check in on the enclosure without physically
+    opening the lid. Purely a config.json write: climate.py's light_loop()
+    is what actually drives the GPIO pin (already systemd-controlled, no
+    sudo/subprocess needed here, unlike the camera/update routes), reading
+    this value back at most once a second. The physical door switch
+    always wins over this either way - see light_loop()'s docstring.
+
+    `on: true` sets the override LIGHT_OVERRIDE_DURATION_SECONDS into the
+    future (self-expiring, not something that needs a separate "turn off"
+    call to ever happen); `on: false` clears it immediately, letting the
+    light drop back to just following the door switch on light_loop()'s
+    next poll (up to LIGHT_OVERRIDE_POLL_SECONDS later)."""
+    body = request.get_json(force=True, silent=True) or {}
+    on = bool(body.get("on"))
+    config = state.load_config()
+    config["light_override_until"] = (time.time() + state.LIGHT_OVERRIDE_DURATION_SECONDS) if on else 0
+    state.save_config(config)
+    if on:
+        state.log_event("info", "Light manually turned on from the dashboard "
+                                 f"(auto-expires in {state.LIGHT_OVERRIDE_DURATION_SECONDS // 60} min)")
+    else:
+        state.log_event("info", "Light manual override cleared from the dashboard")
+    return jsonify({"light_override_until": config["light_override_until"]})
+
+
 @app.route("/api/ble-sensors")
 def api_ble_sensors():
     """All BLE addresses currently being heard, for picking which one
     to wire in as the external sensor."""
     return jsonify(state.get_all_ble_readings())
+
+
+def _restart_service(unit_name):
+    """Best-effort restart of a dermestid systemd unit (sudo -n,
+    non-interactive - same sudoers pattern as everywhere else this
+    dashboard shells out to systemctl), used right after saving a
+    setting that a service only reads once at its own startup, so the
+    change takes effect immediately instead of leaving the user to
+    restart it by hand. Deliberately swallows any failure into a plain
+    False rather than raising: the setting itself is always saved
+    either way (this runs after state.save_config(), never blocking
+    it), a missing sudoers entry on a fresh install just means the
+    caller reports "saved, but the service needs a restart" instead of
+    silently claiming success. Returns True only on a confirmed
+    zero-exit restart."""
+    try:
+        result = subprocess.run(["sudo", "-n", "systemctl", "restart", unit_name],
+                                 capture_output=True, timeout=15)
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
 
 @app.route("/api/ble-sensor-types")
@@ -128,9 +178,17 @@ def api_set_ble_mac():
     decoder to use. Not a source toggle - external sensor failover is
     automatic (see climate.py) - this just identifies which BLE address
     is the right one (useful if more than one matching unit is nearby)
-    and which library decodes its advertisements. Changing the brand
-    requires restarting ble_listener.py to take effect (it's read once
-    at startup, not re-checked every cycle)."""
+    and which library decodes its advertisements.
+
+    The address itself (`ble_mac`) needs no restart - only climate.py
+    and this dashboard ever read it, and both re-load config.json fresh
+    every cycle/request; ble_listener.py doesn't even look at it (it
+    listens for every device matching the selected brand's decoder,
+    not just one address - see get_all_ble_readings()/the Discover
+    button). The brand (`ble_sensor_type`) is different: ble_listener.py
+    reads it once at startup to pick which decoder to import, so a
+    brand change is restarted automatically here rather than leaving
+    the user to do it by hand."""
     body = request.get_json(force=True, silent=True) or {}
     mac, error = state.validate_ble_mac(body.get("ble_mac"))
     if error:
@@ -139,12 +197,20 @@ def api_set_ble_mac():
     if error:
         return jsonify({"error": error}), 400
     config = state.load_config()
+    brand_changed = config.get("ble_sensor_type") != sensor_type
     config["ble_mac"] = mac
     config["ble_sensor_type"] = sensor_type
     state.save_config(config)
+    restarted = _restart_service("dermestid-ble.service") if brand_changed else False
     state.log_event("info", f"BLE sensor address {'set to ' + mac if mac else 'cleared'} "
-                             f"(brand: {state.BLE_SENSOR_LIBRARIES[sensor_type]['label']})")
-    return jsonify(config)
+                             f"(brand: {state.BLE_SENSOR_LIBRARIES[sensor_type]['label']})" +
+                             (" - listener restarted automatically" if brand_changed and restarted else
+                              " - automatic restart failed, restart dermestid-ble.service by hand"
+                              if brand_changed else ""))
+    response = dict(config)
+    response["restart_attempted"] = brand_changed
+    response["restart_ok"] = restarted
+    return jsonify(response)
 
 
 @app.route("/api/ble-discover")
@@ -364,16 +430,32 @@ def api_timelapse_videos_delete_many():
 
 @app.route("/api/camera-settings", methods=["POST"])
 def api_set_camera_settings():
+    """device/width/height are only read once at camera_service.py's own
+    startup (see its main()), so a change to any of those three is
+    restarted automatically here. jpeg_quality and
+    live_capture_interval_seconds are re-read from config.json every
+    capture cycle, so those apply on their own within a second or two -
+    restarting for them would just be a pointless live-view interruption."""
     body = request.get_json(force=True, silent=True) or {}
     cleaned, error = state.validate_camera_settings(body)
     if error:
         return jsonify({"error": error}), 400
     config = state.load_config()
+    old_cam = config.get("camera", {})
+    needs_restart = any(
+        str(old_cam.get(key)) != str(cleaned.get(key)) for key in ("device", "width", "height")
+    )
     config["camera"] = cleaned
     state.save_config(config)
-    state.log_event("info", "Camera settings updated - restart the camera service "
-                             "for a device/resolution change to take effect")
-    return jsonify(config)
+    restarted = _restart_service("dermestid-camera.service") if needs_restart else False
+    state.log_event("info", "Camera settings updated" +
+                             (" - camera service restarted automatically" if needs_restart and restarted else
+                              " - automatic restart failed, restart dermestid-camera.service by hand"
+                              if needs_restart else ""))
+    response = dict(config)
+    response["restart_attempted"] = needs_restart
+    response["restart_ok"] = restarted
+    return jsonify(response)
 
 
 CAMERA_DISCOVER_TIMEOUT_SECONDS = 30

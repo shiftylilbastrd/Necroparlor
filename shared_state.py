@@ -73,6 +73,18 @@ DEFAULT_CONFIG = {
     # BLE_SENSOR_LIBRARIES below. Neither is a mode toggle.
     "ble_mac": None,
     "ble_sensor_type": "sensorpush",
+    # The door/lid light (PIN_LIGHT) is normally slaved entirely to the
+    # physical reed switch (see climate.py's light_loop()) - this is a
+    # dashboard-driven manual override on top of that, for checking in on
+    # the enclosure via the live view without having to actually open the
+    # lid. 0 means no override active. A non-zero value is the epoch
+    # timestamp it expires at, not a plain on/off flag - self-expiring
+    # (see LIGHT_OVERRIDE_DURATION_SECONDS below) so a forgotten toggle or
+    # a closed browser tab can't leave the light on indefinitely. The
+    # physical switch still always wins when the door is actually open -
+    # this only ever ADDS light-on time, never blocks the switch from
+    # turning it on or off on its own.
+    "light_override_until": 0,
     # Per-sensor calibration offsets, added to the raw reading before any
     # validation/control logic sees it - tied to the physical sensor
     # (internal/ble/wired), NOT to "active"/"fallback", since which
@@ -159,6 +171,14 @@ CAMERA_QUALITY_BOUNDS = (30, 95)   # JPEG quality - below 30 is visibly
 CAMERA_LIVE_INTERVAL_BOUNDS = (0.1, 30)  # seconds - sub-second values are
 # what actually makes the Live page a video feed rather than a slideshow;
 # see camera_service.py's docstring for the Pi 3B+ CPU trade-off.
+
+# How long a dashboard-triggered light override lasts before it expires on
+# its own (climate.py's light_loop() just compares against this timestamp,
+# no separate "turn if off" action ever needs to run). 5 minutes is enough
+# to look the enclosure over via the live view without babysitting a
+# toggle, short enough that a forgotten/stuck browser tab doesn't leave
+# the light on for hours.
+LIGHT_OVERRIDE_DURATION_SECONDS = 300
 
 MAC_ADDRESS_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 # Accepts a bare device index ("0", "1") or a /dev path, including a
