@@ -1508,7 +1508,17 @@ pattern has been consistent: tie things to identity, never to role.
     sizes, so the push itself was fine - most likely the new folder
     just hadn't been picked up/staged in a GitHub Desktop commit yet
     (a brand-new folder needs to be explicitly included, unlike an edit
-    to an already-tracked file). Not yet confirmed resolved.
+    to an already-tracked file). **[RESOLVED, 2026-09-14]** - the actual
+    cause was different: the user's local checkout is on the
+    `add-webcam` branch (confirmed by reading `.git/HEAD` directly on
+    their machine), and GitHub's file browser defaults to showing
+    `main` unless a different branch is picked from the dropdown - the
+    commit itself (titled "matching jumper colors") was fine, `docs/`
+    was just on a branch GitHub wasn't displaying. User confirmed
+    switching the branch dropdown shows everything correctly. Worth
+    remembering for any future "I don't see X on GitHub" report from
+    this user - check which branch is selected before assuming a push
+    problem.
   - **[2026-09-14, correction]** While recoloring the diagram (see below),
     learned the DHT22 wiring documented above was wrong: **both the
     internal and external DHT22 are actually powered from 3.3V (pin 1 /
@@ -1550,4 +1560,7 @@ pattern has been consistent: tie things to identity, never to role.
     GitHub-web drag-and-drop of `.gitignore` under the browser's default
     "download" filename). Handed this list to the user to delete
     themselves - no tool in this environment can delete a file on their
-    machine directly. **Not yet confirmed deleted.**
+    machine directly. **[CONFIRMED DELETED, 2026-09-14]** - user deleted
+    all five locally; verified via `device_list_dir` that none of them
+    remain in the folder. Still needs a commit/push to actually remove
+    them from the tracked repo.
