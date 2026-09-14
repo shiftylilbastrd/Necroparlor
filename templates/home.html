@@ -15,8 +15,9 @@
   .output-badge.off { background: rgba(147,160,171,0.08); color: var(--text-dim); border-color: var(--panel-border); }
   .badge-icon { display: inline-block; transition: opacity 0.25s, filter 0.25s; }
   .output-badge.off .badge-icon { opacity: 0.45; filter: grayscale(1); }
-  .badge-icon.spin { animation: spin 1.1s linear infinite; }
-  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  /* Fan icon is a real 4-blade PNG (static/fan-icon.png), not an emoji -
+     sized/aligned to sit like the other badges' text-glyph icons do. */
+  .badge-icon img { width: 1em; height: 1em; vertical-align: -0.15em; display: inline-block; }
   .mode-dropdown { position: relative; width: 170px; flex-shrink: 0; }
   #modeTrigger {
     width: 100%; text-align: left; background: #10151a; border: 1px solid var(--panel-border);
@@ -83,8 +84,8 @@
   <h1>🪲 Necroparlor</h1>
   <div class="status-badges">
     <div class="output-badge off" id="lightBadge" title="Internal light"><span class="badge-icon" id="lightIcon">💡</span> Light</div>
-    <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon">🌀</span> Fan</div>
-    <div class="output-badge off" id="heaterBadge" title="Heater"><span class="badge-icon" id="heaterIcon">🔥</span> Heater</div>
+    <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon"><img src="{{ url_for('static', filename='fan-icon.png') }}" alt=""></span> Fan</div>
+    <div class="output-badge off" id="heaterBadge" title="Heater"><span class="badge-icon" id="heaterIcon">🔥</span> Heat</div>
     <div class="output-badge off" id="dehumBadge" title="Dehumidifier"><span class="badge-icon" id="dehumIcon">💧</span> Dehum</div>
   </div>
   <div class="mode-dropdown" id="modeDropdownWrapper">
@@ -272,9 +273,9 @@ async function refreshStatus() {
     document.getElementById('wiredActiveTag').style.display = (activeSource === 'local_gpio') ? 'inline' : 'none';
 
     document.getElementById('lastUpdateLine').textContent = 'Last update: ' + fmtTime(data.latest.ts);
-    outputBadge('fanBadge', 'fanIcon', !!data.latest.fan, true);
-    outputBadge('heaterBadge', 'heaterIcon', !!data.latest.heater, false);
-    outputBadge('dehumBadge', 'dehumIcon', !!data.latest.dehumidifier, false);
+    outputBadge('fanBadge', !!data.latest.fan);
+    outputBadge('heaterBadge', !!data.latest.heater);
+    outputBadge('dehumBadge', !!data.latest.dehumidifier);
 
     updateCameraFpsLine(data.camera_stats);
   }
@@ -295,7 +296,7 @@ async function refreshStatus() {
   // two conditions - see PIN_LIGHT there), not just whether an override
   // happens to be set right now.
   const doorOpenNow = !!(data.door_status && data.door_status.is_open);
-  outputBadge('lightBadge', 'lightIcon', doorOpenNow || lightOverrideActive, false);
+  outputBadge('lightBadge', doorOpenNow || lightOverrideActive);
 
   const batteryWrap = document.getElementById('statBleBatteryWrap');
   if (data.ble_status && data.ble_status.battery_pct !== null && data.ble_status.battery_pct !== undefined) {
@@ -307,11 +308,11 @@ async function refreshStatus() {
   }
 }
 
-function outputBadge(badgeId, iconId, on, spins) {
-  const badge = document.getElementById(badgeId);
-  const icon = document.getElementById(iconId);
-  badge.className = 'output-badge ' + (on ? 'on' : 'off');
-  icon.classList.toggle('spin', on && spins);
+// Icon dimming/color for the off state is handled purely by the
+// .output-badge.off .badge-icon CSS rule (a descendant selector off the
+// badge's own on/off class) - this only ever needs to flip that class.
+function outputBadge(badgeId, on) {
+  document.getElementById(badgeId).className = 'output-badge ' + (on ? 'on' : 'off');
 }
 
 // The Pi's own CPU temp/load moved to the nav bar (see updateNavPiStats()
