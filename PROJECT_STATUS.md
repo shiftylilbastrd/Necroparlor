@@ -1401,3 +1401,35 @@ pattern has been consistent: tie things to identity, never to role.
     or manual DB migration needed (schema migration is automatic via
     `init_db()`, same as every other column added to `readings` before
     this one).
+  - **[CONFIRMED, 2026-09-14]** User pulled and restarted all services -
+    camera fps history, the resolution-memory feature, and the Light/
+    door-banner/sticky-nav UI batch are all confirmed working.
+
+- **[2026-09-14] Header/nav tweaks: Pi stats moved to nav bar, live-feed
+  light icon no longer changes background color, 🪲 favicon added**
+  - Pi CPU temp/load (previously folded into a line under Home's live
+    view, alongside camera fps) moved to the nav bar itself
+    (`base.html`), right-aligned via `margin-left:auto` on a new
+    `.nav-pi-stats` div next to the page tabs - visible on every page now
+    instead of Home only, same reasoning as the door banner already
+    living in the shared nav/layout. Populated by the same `/api/status`
+    poll that already drives the door banner (`checkGlobalDoorBanner()`,
+    now also calling the new `updateNavPiStats()`) - Home still uses its
+    own faster 5s poll and calls `updateNavPiStats()` directly, same
+    "don't poll twice" pattern as before. Hidden on phone widths (no room
+    next to the full-width tab bar there). The camera fps line stays
+    exactly where it was on Home, just renamed (`updatePiHealth()` ->
+    `updateCameraFpsLine()`, `#piHealthLine` -> `#cameraFpsLine`) since
+    it's fps-only now.
+  - Live-feed light toggle button (the 💡 overlay on the camera view, NOT
+    the header Light badge) no longer turns its background yellow when
+    on - instead the emoji itself is `filter: grayscale(1)` while off and
+    `grayscale(0)` (full color) while on, with a quick CSS transition
+    between the two.
+  - Added a 🪲 favicon (the same beetle emoji already in the page's own
+    `<h1>`) site-wide via an inline SVG data URI `<link rel="icon">` in
+    `base.html` - no separate favicon.ico file to generate or host.
+  - Verified before pushing: Jinja2 parse check on all six templates.
+  - **Not yet confirmed on real hardware/deployed** - needs
+    `dermestid-web.service` restarted to pick up all three template
+    changes.

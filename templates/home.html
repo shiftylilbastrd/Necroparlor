@@ -48,8 +48,15 @@
     width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--panel-border);
     background: rgba(16,21,26,0.75); color: var(--text-dim); font-size: 1.15rem;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
+    /* Off = the 💡 emoji desaturated to grayscale, On = its natural full
+       color - instead of the button's own background changing color.
+       CSS filter applies to the emoji glyph's rendered pixels same as
+       any other content, so this works without needing a separate
+       image/icon per state. */
+    filter: grayscale(1);
+    transition: filter 0.15s ease;
   }
-  .light-toggle-btn.on { background: rgba(217,164,65,0.9); color: #14181c; border-color: var(--warn); }
+  .light-toggle-btn.on { filter: grayscale(0); }
   .light-toggle-btn:disabled { opacity: 0.6; cursor: default; }
 </style>
 {% endblock %}
@@ -128,7 +135,7 @@
             title="Turn light on">💡</button>
   </div>
   <div class="stat-sub" id="homeLiveStatus" style="margin-top:8px;"></div>
-  <div class="stat-sub" id="piHealthLine" style="margin-top:4px;" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings above. Useful while tuning the camera settings below: watch this doesn't climb into the warning range as you push the capture/relay interval faster."></div>
+  <div class="stat-sub" id="cameraFpsLine" style="margin-top:4px;" title="camera_service.py's own measured real capture rate vs. the live_capture_fps configured on the Config page - see save_camera_stats(). The Pi's own CPU temp/load moved to the nav bar above."></div>
 </div>
 
 <div class="section-title">History</div>
@@ -148,9 +155,11 @@
 {% block scripts %}
 <script>
 // This page already polls /api/status every 5s for its own tiles (see
-// refreshStatus() below) - opt out of base.html's separate 15s door-banner
-// poll of the same endpoint, and drive that banner from this page's own
-// fetch instead (see the updateDoorBanner() call inside refreshStatus()).
+// refreshStatus() below) - opt out of base.html's separate 15s poll of
+// the same endpoint (which drives both the door banner AND the nav bar's
+// Pi stats - see checkGlobalDoorBanner() there), and drive both from
+// this page's own faster fetch instead (see the updateDoorBanner() and
+// updateNavPiStats() calls inside refreshStatus()).
 window.__doorStatusPolledElsewhere = true;
 
 let currentRangeHours = 24;
@@ -217,6 +226,7 @@ async function refreshStatus() {
   const data = await res.json();
   document.getElementById('staleBanner').style.display = data.stale ? 'block' : 'none';
   updateDoorBanner(data.door_status);
+  updateNavPiStats(data.latest);
   const lastValid = data.last_valid_timestamps || {};
 
   if (data.latest) {
@@ -249,7 +259,7 @@ async function refreshStatus() {
     outputBadge('heaterBadge', 'heaterIcon', !!data.latest.heater, false);
     outputBadge('dehumBadge', 'dehumIcon', !!data.latest.dehumidifier, false);
 
-    updatePiHealth(data.latest, data.camera_stats);
+    updateCameraFpsLine(data.camera_stats);
   }
 
   updateModeUI(data.config.current_mode);
@@ -287,48 +297,23 @@ function outputBadge(badgeId, iconId, on, spins) {
   icon.classList.toggle('spin', on && spins);
 }
 
-// The Pi's own CPU temp/load - sampled once per climate.py cycle (see
-// shared_state.get_pi_health()), unrelated to the enclosure's climate
-// readings above. Mainly useful while tuning the camera's capture/relay
-// interval on the Config page: watch this doesn't climb toward the
-// Pi's own thermal-throttle territory (~80°C/176°F) as you push those
-// faster. 70°C/158°F is "getting warm, keep an eye on it," not yet a
-// real problem - the Pi doesn't start throttling until several degrees
-// past that.
-const PI_TEMP_WARN_F = 158;
-const PI_TEMP_DANGER_F = 176;
-
-function updatePiHealth(latest, cameraStats) {
-  const el = document.getElementById('piHealthLine');
-  const tempF = latest.cpu_temp_f;
-  const load1m = latest.cpu_load_1m;
-  let parts = [];
-  if (tempF !== null && tempF !== undefined) {
-    const tempC = (tempF - 32) * 5 / 9;
-    parts.push(`Pi: ${tempF.toFixed(1)}°F (${tempC.toFixed(1)}°C)`);
-    if (load1m !== null && load1m !== undefined) {
-      parts.push(`load ${load1m.toFixed(2)}`);
-    }
-  }
-  // The camera's REAL measured capture rate (see shared_state.
-  // save_camera_stats()), not just the live_capture_fps setting on the
-  // Config page - the two can genuinely differ (a hardware/USB
-  // bandwidth ceiling below whatever's configured, most notably), which
-  // is exactly why this exists: judge camera settings against what's
-  // actually happening, not just what was asked for. Absent/stale
-  // (camera_stats is null) just means dermestid-camera.service isn't
-  // running or hasn't reported yet - not shown at all rather than a
-  // misleading "0 fps".
+// The Pi's own CPU temp/load moved to the nav bar (see updateNavPiStats()
+// in base.html) so it's visible on every page, not just here - this is
+// now just the camera's REAL measured capture rate (see shared_state.
+// save_camera_stats()), not just the live_capture_fps setting on the
+// Config page - the two can genuinely differ (a hardware/USB bandwidth
+// ceiling below whatever's configured, most notably), which is exactly
+// why this exists: judge camera settings against what's actually
+// happening, not just what was asked for. Absent/stale (camera_stats is
+// null) just means dermestid-camera.service isn't running or hasn't
+// reported yet - not shown at all rather than a misleading "0 fps".
+function updateCameraFpsLine(cameraStats) {
+  const el = document.getElementById('cameraFpsLine');
   if (cameraStats && cameraStats.actual_fps !== null && cameraStats.actual_fps !== undefined) {
-    parts.push(`camera: ${cameraStats.actual_fps.toFixed(1)} fps actual (target ${cameraStats.target_fps})`);
-  }
-  if (parts.length === 0) {
+    el.textContent = `camera: ${cameraStats.actual_fps.toFixed(1)} fps actual (target ${cameraStats.target_fps})`;
+  } else {
     el.textContent = '';
-    return;
   }
-  el.textContent = parts.join(' · ');
-  el.style.color = (tempF !== null && tempF !== undefined && tempF >= PI_TEMP_DANGER_F) ? 'var(--danger)'
-    : (tempF !== null && tempF !== undefined && tempF >= PI_TEMP_WARN_F) ? 'var(--warn)' : '';
 }
 
 function setRange(hours) {

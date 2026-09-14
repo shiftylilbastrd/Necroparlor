@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}Dermestid Enclosure{% endblock %}</title>
+<!-- Favicon: the same 🪲 emoji already used in the page's own <h1> -
+     an inline SVG data URI, so there's no separate favicon.ico file to
+     generate or host. Supported by all current major browsers; one that
+     doesn't support it just shows no icon at all, not a broken one. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪲</text></svg>">
 {% block head_extra %}{% endblock %}
 <style>
   :root {
@@ -28,7 +33,7 @@
   .subtitle { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 16px; }
 
   nav.topnav {
-    display: flex; gap: 4px; border-bottom: 1px solid var(--panel-border);
+    display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--panel-border);
     padding: 0 20px; background: var(--panel);
     position: sticky; top: 0; z-index: 30;
   }
@@ -38,6 +43,14 @@
   }
   nav.topnav a.active { color: var(--text); border-bottom-color: var(--accent); }
   nav.topnav a:hover { color: var(--text); }
+  /* The Pi's own CPU temp/load (see updateNavPiStats() below) - pushed
+     to the right of the tab links via margin-left:auto rather than a
+     separate flex container, so it shows on every page (this nav is
+     shared, via base.html) without needing its own row. */
+  .nav-pi-stats {
+    margin-left: auto; padding-right: 4px; color: var(--text-dim);
+    font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
   .grid {
     display: grid;
@@ -116,6 +129,7 @@
     .stat-value { font-size: 1.6rem; }
     nav.topnav { padding: 0; }
     nav.topnav a { flex: 1; text-align: center; padding: 14px 8px; font-size: 0.85rem; }
+    .nav-pi-stats { display: none; } /* no room next to full-width tabs on a phone */
     .save-btn, .range-row button, .filter-row select, .filter-row button {
       padding: 10px 14px; font-size: 0.85rem;
     }
@@ -132,6 +146,7 @@
   <a href="/data" class="{{ 'active' if active_page == 'data' }}">Data</a>
   <a href="/timelapse" class="{{ 'active' if active_page == 'timelapse' }}">Timelapse</a>
   <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
+  <div class="nav-pi-stats" id="navPiStats" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings. Useful while tuning the camera's capture/relay settings on the Config page: watch this doesn't climb into the warning range as those get pushed faster."></div>
 </nav>
 <div class="page">
 <div class="banner" id="globalDoorBanner">🚪 Enclosure door is open</div>
@@ -176,11 +191,41 @@ function updateDoorBanner(doorStatus) {
   document.getElementById('globalDoorBanner').style.display =
     (doorStatus && doorStatus.is_open) ? 'block' : 'none';
 }
+
+// The Pi's own CPU temp/load (see shared_state.get_pi_health()) - shown
+// in the nav bar, next to the page tabs, on every page (not just Home),
+// same "matters regardless of which tab you're on" reasoning as the door
+// banner above. Was previously Home-page-only, folded into a line under
+// the live view together with the camera's fps reading - moved up here
+// on its own so it's visible while working on any page; the camera fps
+// line stays where it was (see updatePiHealth... now updateCameraFpsLine
+// in home.html's own script).
+const PI_TEMP_WARN_F = 158;
+const PI_TEMP_DANGER_F = 176;
+function updateNavPiStats(latest) {
+  const el = document.getElementById('navPiStats');
+  const tempF = latest && latest.cpu_temp_f;
+  if (tempF === null || tempF === undefined) {
+    el.textContent = '';
+    return;
+  }
+  const load1m = latest.cpu_load_1m;
+  const tempC = (tempF - 32) * 5 / 9;
+  let parts = [`Pi: ${tempF.toFixed(1)}°F (${tempC.toFixed(1)}°C)`];
+  if (load1m !== null && load1m !== undefined) {
+    parts.push(`load ${load1m.toFixed(2)}`);
+  }
+  el.textContent = parts.join(' · ');
+  el.style.color = tempF >= PI_TEMP_DANGER_F ? 'var(--danger)'
+    : tempF >= PI_TEMP_WARN_F ? 'var(--warn)' : '';
+}
+
 async function checkGlobalDoorBanner() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
     updateDoorBanner(data.door_status);
+    updateNavPiStats(data.latest);
   } catch (e) { /* status endpoint not reachable - fail quietly, try again next tick */ }
 }
 if (!window.__doorStatusPolledElsewhere) {
