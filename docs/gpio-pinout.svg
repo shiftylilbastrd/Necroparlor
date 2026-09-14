@@ -1,165 +1,177 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 890" width="1040" height="890">
-  <rect width="1040" height="890" fill="#14181c"/>
-  <text x="520.0" y="36" text-anchor="middle" font-size="22" font-weight="700"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 985" width="1200" height="985">
+  <rect width="1200" height="985" fill="#14181c"/>
+  <text x="600.0" y="36" text-anchor="middle" font-size="22" font-weight="700"
         font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Necroparlor - Raspberry Pi 40-pin GPIO header</text>
-  <text x="520.0" y="58" text-anchor="middle" font-size="12.5"
-        font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#93a0ab">Pin 1 is the corner nearest the SD card slot (square pad on the board silkscreen). BCM numbering.</text>
-  <rect x="40" y="71" width="16" height="16" rx="3" fill="#4fb286" stroke="#5a6570"/>
-<text x="62" y="83" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Used by Necroparlor</text>
-<rect x="300" y="71" width="16" height="16" rx="3" fill="#4f8fd9" stroke="#5a6570"/>
-<text x="322" y="83" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">I²C - optional SHT31</text>
-<rect x="560" y="71" width="16" height="16" rx="3" fill="#d9534f" stroke="#5a6570"/>
-<text x="582" y="83" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Power (3.3V / 5V)</text>
-<rect x="780" y="71" width="16" height="16" rx="3" fill="#3d4750" stroke="#5a6570"/>
-<text x="802" y="83" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Ground</text>
-<rect x="40" y="99" width="16" height="16" rx="3" fill="#93a0ab" stroke="#5a6570"/>
-<text x="62" y="111" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Reserved (EEPROM ID)</text>
-<rect x="300" y="99" width="16" height="16" rx="3" fill="#2e353c" stroke="#5a6570"/>
-<text x="322" y="111" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Unused</text>
-<rect x="460" y="99" width="16" height="16" rx="3" fill="#7a3030" stroke="#5a6570"/>
-<text x="482" y="111" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Dead pin - see README</text>
-  <text x="308" y="130" text-anchor="end" font-size="11" font-weight="700" letter-spacing="1"
+  <text x="600.0" y="58" text-anchor="middle" font-size="12.5"
+        font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#93a0ab">Pin 1 is the corner nearest the SD card slot (square pad on the board silkscreen). BCM numbering. Colors match this build's actual jumper wires.</text>
+  <rect x="40" y="71" width="16" height="16" rx="3" fill="#e08a3c" stroke="#5a6570"/>
+<text x="62" y="83" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">3.3V — DHT22 power</text>
+<rect x="440" y="71" width="16" height="16" rx="3" fill="#d9534f" stroke="#5a6570"/>
+<text x="462" y="83" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">5V (in use elsewhere)</text>
+<rect x="840" y="71" width="16" height="16" rx="3" fill="#6b4423" stroke="#5a6570"/>
+<text x="862" y="83" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">3.3V ground (DHT22)</text>
+<rect x="40" y="99" width="16" height="16" rx="3" fill="#3d4750" stroke="#5a6570"/>
+<text x="62" y="111" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Spare / unused GND</text>
+<rect x="440" y="99" width="16" height="16" rx="3" fill="#7d8790" stroke="#5a6570"/>
+<text x="462" y="111" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Door switch &amp; heater relay</text>
+<rect x="840" y="99" width="16" height="16" rx="3" fill="#d9c74f" stroke="#5a6570"/>
+<text x="862" y="111" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Sensor data &amp; door servo</text>
+<rect x="40" y="127" width="16" height="16" rx="3" fill="#4fb286" stroke="#5a6570"/>
+<text x="62" y="139" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Light relay</text>
+<rect x="440" y="127" width="16" height="16" rx="3" fill="#4f8fd9" stroke="#5a6570"/>
+<text x="462" y="139" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Fan relay</text>
+<rect x="840" y="127" width="16" height="16" rx="3" fill="#8a63c9" stroke="#5a6570"/>
+<text x="862" y="139" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Dehumidifier relay</text>
+<rect x="40" y="155" width="16" height="16" rx="3" fill="#3d5a78" stroke="#5a6570"/>
+<text x="62" y="167" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">I²C — optional SHT31</text>
+<rect x="440" y="155" width="16" height="16" rx="3" fill="#93a0ab" stroke="#5a6570"/>
+<text x="462" y="167" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Reserved (EEPROM ID)</text>
+<rect x="840" y="155" width="16" height="16" rx="3" fill="#2e353c" stroke="#5a6570"/>
+<text x="862" y="167" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Unused GPIO</text>
+<rect x="40" y="183" width="16" height="16" rx="3" fill="#7a3030" stroke="#5a6570"/>
+<text x="62" y="195" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Dead pin — see README</text>
+  <text x="388" y="225" text-anchor="end" font-size="11" font-weight="700" letter-spacing="1"
         font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#93a0ab">PIN 1 SIDE</text>
-  <text x="492" y="130" text-anchor="start" font-size="11" font-weight="700" letter-spacing="1"
+  <text x="572" y="225" text-anchor="start" font-size="11" font-weight="700" letter-spacing="1"
         font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#93a0ab">PIN 2 SIDE</text>
-  <text x="318" y="147" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">3.3V</text>
-<text x="318" y="161" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">3.3V</text>
-<circle cx="340" cy="150" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="154" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">1</text>
-<line x1="353" y1="150" x2="447" y2="150" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="150" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="154" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">2</text>
-<text x="482" y="147" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">5V</text>
-<text x="482" y="161" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">5V</text>
-<text x="318" y="181" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">SHT31 SDA (optional)</text>
-<text x="318" y="195" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO2 (SDA)</text>
-<circle cx="340" cy="184" r="13" fill="#4f8fd9" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="188" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">3</text>
-<line x1="353" y1="184" x2="447" y2="184" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="184" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="188" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">4</text>
-<text x="482" y="181" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">5V</text>
-<text x="482" y="195" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">5V</text>
-<text x="318" y="215" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">SHT31 SCL (optional)</text>
-<text x="318" y="229" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO3 (SCL)</text>
-<circle cx="340" cy="218" r="13" fill="#4f8fd9" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="222" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">5</text>
-<line x1="353" y1="218" x2="447" y2="218" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="218" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="222" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">6</text>
-<text x="482" y="215" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="482" y="229" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<text x="318" y="249" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused - dead on this board, see README</text>
-<text x="318" y="263" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO4</text>
-<circle cx="340" cy="252" r="13" fill="#7a3030" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="256" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#f5c6c6">7</text>
-<line x1="353" y1="252" x2="447" y2="252" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="252" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="256" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">8</text>
-<text x="482" y="249" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="263" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO14 (TXD)</text>
-<text x="318" y="283" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="318" y="297" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<circle cx="340" cy="286" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="290" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">9</text>
-<line x1="353" y1="286" x2="447" y2="286" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="286" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="290" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">10</text>
-<text x="482" y="283" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused (was Light - moved, shares UART)</text>
-<text x="482" y="297" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO15 (RXD)</text>
-<text x="318" y="317" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Fan relay</text>
-<text x="318" y="331" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO17</text>
-<circle cx="340" cy="320" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="324" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">11</text>
-<line x1="353" y1="320" x2="447" y2="320" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="320" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="324" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">12</text>
-<text x="482" y="317" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Door servo</text>
-<text x="482" y="331" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO18 (PWM)</text>
-<text x="318" y="351" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Internal DHT22 - DATA</text>
-<text x="318" y="365" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO27</text>
-<circle cx="340" cy="354" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="358" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">13</text>
-<line x1="353" y1="354" x2="447" y2="354" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="354" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="358" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">14</text>
-<text x="482" y="351" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="482" y="365" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<text x="318" y="385" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Heater relay</text>
-<text x="318" y="399" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO22</text>
-<circle cx="340" cy="388" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="392" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">15</text>
-<line x1="353" y1="388" x2="447" y2="388" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="388" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="392" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">16</text>
-<text x="482" y="385" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Dehumidifier relay</text>
-<text x="482" y="399" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO23</text>
-<text x="318" y="419" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">3.3V</text>
-<text x="318" y="433" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">3.3V</text>
-<circle cx="340" cy="422" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="426" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">17</text>
-<line x1="353" y1="422" x2="447" y2="422" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="422" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="426" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">18</text>
-<text x="482" y="419" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Door reed switch</text>
-<text x="482" y="433" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO24</text>
-<text x="318" y="453" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="318" y="467" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO10 (MOSI)</text>
-<circle cx="340" cy="456" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="460" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">19</text>
-<line x1="353" y1="456" x2="447" y2="456" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="456" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="460" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">20</text>
-<text x="482" y="453" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="482" y="467" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<text x="318" y="487" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="318" y="501" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO9 (MISO)</text>
-<circle cx="340" cy="490" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="494" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">21</text>
-<line x1="353" y1="490" x2="447" y2="490" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="490" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="494" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">22</text>
-<text x="482" y="487" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="501" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO25</text>
-<text x="318" y="521" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="318" y="535" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO11 (SCLK)</text>
-<circle cx="340" cy="524" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="528" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">23</text>
-<line x1="353" y1="524" x2="447" y2="524" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="524" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="528" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">24</text>
-<text x="482" y="521" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="535" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO8 (CE0)</text>
-<text x="318" y="555" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="318" y="569" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<circle cx="340" cy="558" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="562" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">25</text>
-<line x1="353" y1="558" x2="447" y2="558" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="558" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="562" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">26</text>
-<text x="482" y="555" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="569" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO7 (CE1)</text>
-<text x="318" y="589" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">EEPROM ID - reserved</text>
-<text x="318" y="603" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">ID_SD</text>
-<circle cx="340" cy="592" r="13" fill="#93a0ab" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="596" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#14181c">27</text>
-<line x1="353" y1="592" x2="447" y2="592" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="592" r="13" fill="#93a0ab" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="596" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#14181c">28</text>
-<text x="482" y="589" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">EEPROM ID - reserved</text>
-<text x="482" y="603" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">ID_SC</text>
-<text x="318" y="623" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External DHT22 fallback - DATA</text>
-<text x="318" y="637" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO5</text>
-<circle cx="340" cy="626" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="630" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">29</text>
-<line x1="353" y1="626" x2="447" y2="626" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="626" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="630" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">30</text>
-<text x="482" y="623" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="482" y="637" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<text x="318" y="657" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="318" y="671" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO6</text>
-<circle cx="340" cy="660" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="664" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">31</text>
-<line x1="353" y1="660" x2="447" y2="660" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="660" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="664" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">32</text>
-<text x="482" y="657" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="671" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO12</text>
-<text x="318" y="691" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="318" y="705" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO13</text>
-<circle cx="340" cy="694" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="698" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">33</text>
-<line x1="353" y1="694" x2="447" y2="694" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="694" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="698" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">34</text>
-<text x="482" y="691" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="482" y="705" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<text x="318" y="725" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="318" y="739" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO19</text>
-<circle cx="340" cy="728" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="732" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">35</text>
-<line x1="353" y1="728" x2="447" y2="728" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="728" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="732" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">36</text>
-<text x="482" y="725" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="739" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO16</text>
-<text x="318" y="759" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Light relay</text>
-<text x="318" y="773" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO26</text>
-<circle cx="340" cy="762" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="766" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">37</text>
-<line x1="353" y1="762" x2="447" y2="762" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="762" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="766" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">38</text>
-<text x="482" y="759" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="773" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO20</text>
-<text x="318" y="793" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
-<text x="318" y="807" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
-<circle cx="340" cy="796" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="340" y="800" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">39</text>
-<line x1="353" y1="796" x2="447" y2="796" stroke="#2a323a" stroke-width="3"/>
-<circle cx="460" cy="796" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="460" y="800" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">40</text>
-<text x="482" y="793" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="482" y="807" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO21</text>
+  <text x="398" y="242" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Internal DHT22 - VCC (3.3V)</text>
+<text x="398" y="256" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">3.3V</text>
+<circle cx="420" cy="245" r="13" fill="#e08a3c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="249" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#2b1400">1</text>
+<line x1="433" y1="245" x2="527" y2="245" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="245" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="249" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">2</text>
+<text x="562" y="242" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">5V (relay board power)</text>
+<text x="562" y="256" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">5V</text>
+<text x="398" y="276" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">SHT31 SDA (optional, not installed)</text>
+<text x="398" y="290" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO2 (SDA)</text>
+<circle cx="420" cy="279" r="13" fill="#3d5a78" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="283" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#c9d8e6">3</text>
+<line x1="433" y1="279" x2="527" y2="279" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="279" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="283" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">4</text>
+<text x="562" y="276" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">5V (relay board power)</text>
+<text x="562" y="290" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">5V</text>
+<text x="398" y="310" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">SHT31 SCL (optional, not installed)</text>
+<text x="398" y="324" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO3 (SCL)</text>
+<circle cx="420" cy="313" r="13" fill="#3d5a78" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="317" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#c9d8e6">5</text>
+<line x1="433" y1="313" x2="527" y2="313" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="313" r="13" fill="#6b4423" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="317" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#f5e6d3">6</text>
+<text x="562" y="310" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Internal DHT22 - GND</text>
+<text x="562" y="324" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<text x="398" y="344" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused - dead on this board, see README</text>
+<text x="398" y="358" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO4</text>
+<circle cx="420" cy="347" r="13" fill="#7a3030" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="351" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#f5c6c6">7</text>
+<line x1="433" y1="347" x2="527" y2="347" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="347" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="351" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">8</text>
+<text x="562" y="344" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="358" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO14 (TXD)</text>
+<text x="398" y="378" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External DHT22 fallback - GND</text>
+<text x="398" y="392" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<circle cx="420" cy="381" r="13" fill="#6b4423" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="385" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#f5e6d3">9</text>
+<line x1="433" y1="381" x2="527" y2="381" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="381" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="385" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">10</text>
+<text x="562" y="378" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused (was Light - moved, shares UART)</text>
+<text x="562" y="392" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO15 (RXD)</text>
+<text x="398" y="412" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Fan relay</text>
+<text x="398" y="426" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO17</text>
+<circle cx="420" cy="415" r="13" fill="#4f8fd9" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="419" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">11</text>
+<line x1="433" y1="415" x2="527" y2="415" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="415" r="13" fill="#d9c74f" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="419" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#241f00">12</text>
+<text x="562" y="412" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Door servo</text>
+<text x="562" y="426" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO18 (PWM)</text>
+<text x="398" y="446" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Internal DHT22 - DATA</text>
+<text x="398" y="460" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO27</text>
+<circle cx="420" cy="449" r="13" fill="#d9c74f" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="453" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#241f00">13</text>
+<line x1="433" y1="449" x2="527" y2="449" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="449" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="453" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">14</text>
+<text x="562" y="446" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
+<text x="562" y="460" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<text x="398" y="480" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Heater relay</text>
+<text x="398" y="494" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO22</text>
+<circle cx="420" cy="483" r="13" fill="#7d8790" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="487" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#14181c">15</text>
+<line x1="433" y1="483" x2="527" y2="483" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="483" r="13" fill="#8a63c9" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="487" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">16</text>
+<text x="562" y="480" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Dehumidifier relay</text>
+<text x="562" y="494" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO23</text>
+<text x="398" y="514" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External DHT22 fallback - VCC (3.3V)</text>
+<text x="398" y="528" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">3.3V</text>
+<circle cx="420" cy="517" r="13" fill="#e08a3c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="521" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#2b1400">17</text>
+<line x1="433" y1="517" x2="527" y2="517" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="517" r="13" fill="#7d8790" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="521" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#14181c">18</text>
+<text x="562" y="514" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Door reed switch</text>
+<text x="562" y="528" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO24</text>
+<text x="398" y="548" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="398" y="562" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO10 (MOSI)</text>
+<circle cx="420" cy="551" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="555" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">19</text>
+<line x1="433" y1="551" x2="527" y2="551" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="551" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="555" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">20</text>
+<text x="562" y="548" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
+<text x="562" y="562" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<text x="398" y="582" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="398" y="596" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO9 (MISO)</text>
+<circle cx="420" cy="585" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="589" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">21</text>
+<line x1="433" y1="585" x2="527" y2="585" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="585" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="589" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">22</text>
+<text x="562" y="582" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="596" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO25</text>
+<text x="398" y="616" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="398" y="630" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO11 (SCLK)</text>
+<circle cx="420" cy="619" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="623" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">23</text>
+<line x1="433" y1="619" x2="527" y2="619" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="619" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="623" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">24</text>
+<text x="562" y="616" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="630" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO8 (CE0)</text>
+<text x="398" y="650" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
+<text x="398" y="664" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<circle cx="420" cy="653" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="657" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">25</text>
+<line x1="433" y1="653" x2="527" y2="653" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="653" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="657" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">26</text>
+<text x="562" y="650" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="664" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO7 (CE1)</text>
+<text x="398" y="684" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">EEPROM ID - reserved</text>
+<text x="398" y="698" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">ID_SD</text>
+<circle cx="420" cy="687" r="13" fill="#93a0ab" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="691" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#14181c">27</text>
+<line x1="433" y1="687" x2="527" y2="687" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="687" r="13" fill="#93a0ab" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="691" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#14181c">28</text>
+<text x="562" y="684" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">EEPROM ID - reserved</text>
+<text x="562" y="698" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">ID_SC</text>
+<text x="398" y="718" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External DHT22 fallback - DATA</text>
+<text x="398" y="732" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO5</text>
+<circle cx="420" cy="721" r="13" fill="#d9c74f" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="725" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#241f00">29</text>
+<line x1="433" y1="721" x2="527" y2="721" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="721" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="725" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">30</text>
+<text x="562" y="718" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
+<text x="562" y="732" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<text x="398" y="752" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="398" y="766" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO6</text>
+<circle cx="420" cy="755" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="759" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">31</text>
+<line x1="433" y1="755" x2="527" y2="755" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="755" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="759" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">32</text>
+<text x="562" y="752" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="766" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO12</text>
+<text x="398" y="786" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="398" y="800" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO13</text>
+<circle cx="420" cy="789" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="793" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">33</text>
+<line x1="433" y1="789" x2="527" y2="789" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="789" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="793" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">34</text>
+<text x="562" y="786" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
+<text x="562" y="800" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<text x="398" y="820" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="398" y="834" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO19</text>
+<circle cx="420" cy="823" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="827" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">35</text>
+<line x1="433" y1="823" x2="527" y2="823" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="823" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="827" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">36</text>
+<text x="562" y="820" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="834" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO16</text>
+<text x="398" y="854" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Light relay</text>
+<text x="398" y="868" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO26</text>
+<circle cx="420" cy="857" r="13" fill="#4fb286" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="861" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#0d1712">37</text>
+<line x1="433" y1="857" x2="527" y2="857" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="857" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="861" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">38</text>
+<text x="562" y="854" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="868" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO20</text>
+<text x="398" y="888" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>
+<text x="398" y="902" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
+<circle cx="420" cy="891" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="895" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">39</text>
+<line x1="433" y1="891" x2="527" y2="891" stroke="#2a323a" stroke-width="3"/>
+<circle cx="540" cy="891" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="895" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">40</text>
+<text x="562" y="888" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
+<text x="562" y="902" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO21</text>
 </svg>

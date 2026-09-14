@@ -1501,3 +1501,53 @@ pattern has been consistent: tie things to identity, never to role.
   - **Not yet confirmed by the user** - both the trimmed README and the
     new diagram are pushed but not yet reviewed for accuracy/readability
     on their end.
+  - **[2026-09-14, follow-up]** User reported the new `docs/` folder
+    wasn't showing up in their repo after committing. Both
+    `docs/gen_gpio_pinout.py` and `docs/gpio-pinout.svg` were confirmed
+    present on their machine at the correct path with the correct file
+    sizes, so the push itself was fine - most likely the new folder
+    just hadn't been picked up/staged in a GitHub Desktop commit yet
+    (a brand-new folder needs to be explicitly included, unlike an edit
+    to an already-tracked file). Not yet confirmed resolved.
+  - **[2026-09-14, correction]** While recoloring the diagram (see below),
+    learned the DHT22 wiring documented above was wrong: **both the
+    internal and external DHT22 are actually powered from 3.3V (pin 1 /
+    pin 17), not 5V** - both 5V pins (2, 4) are already committed to
+    relay board power. DHT22 tolerates 3.3-5.5V so this changes nothing
+    functionally, but the README's wiring tables and this diagram were
+    both stating 5V. Fixed in both places.
+
+- **[2026-09-14] GPIO pinout diagram recolored to match actual jumper
+  wire colors, cleanup list identified for dead tracked files**
+  - `docs/gen_gpio_pinout.py` no longer uses a generic category scheme
+    (used/power/ground/reserved/unused) - the color of every pin in the
+    diagram now matches the real jumper wire color Ryan is using on the
+    physical build: red=5V, orange=3.3V, black=5V ground (not currently
+    pinned to a specific spare GND pin in the diagram - no confirmed
+    single pin services it), brown=3.3V ground, gray=door switch AND
+    heater relay (deliberately the same color in real life), yellow=
+    sensor data AND door servo signal (also deliberately the same),
+    green=light relay, blue=fan relay, purple=dehumidifier relay. I2C
+    (optional SHT31, not currently installed) kept its own muted blue,
+    distinct from the fan relay's brighter blue, specifically so it
+    reads as "inactive/optional" rather than "in use." Legend expanded
+    from 7 to 13 entries to cover all of these; canvas widened
+    (1040->1200) and the legend laid out as a 3-column grid to fit
+    without clipping - verified again via `cairosvg` render + visual
+    inspection.
+  - This is also what surfaced the 3.3V/5V wiring correction above - the
+    two DHT22 VCC pins had to be recategorized by voltage to pick their
+    color, which is what prompted asking the user which voltage they're
+    actually on.
+  - Went through `git ls-files` cross-referenced with `grep -rln` across
+    the whole codebase and confirmed five *tracked* files are dead -
+    fully superseded by the generic BLE rebrand and unreferenced
+    anywhere: `discover_sensorpush.py`, `sensorpush_battery.py`,
+    `sensorpush_listener.py`, `systemd/dermestid-sensorpush.service`,
+    and `download` (a stray file byte-for-byte identical to
+    `.gitignore`'s contents - `git log` shows it came in via an
+    "Add files via upload" commit, almost certainly an accidental
+    GitHub-web drag-and-drop of `.gitignore` under the browser's default
+    "download" filename). Handed this list to the user to delete
+    themselves - no tool in this environment can delete a file on their
+    machine directly. **Not yet confirmed deleted.**

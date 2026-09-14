@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Generates gpio-pinout.svg (in this same docs/ folder): a full 40-pin
-Raspberry Pi GPIO header diagram, color-coded by category, with this
-project's actual wiring (from climate.py's PIN_* constants) labeled on
-the pins that are used. Not part of the running app - a one-off doc
-generator. If PIN_* ever changes in climate.py again (like the GPIO4->5
-move did), update the ROWS table below to match and rerun:
+Raspberry Pi GPIO header diagram, color-coded to match the actual jumper
+wire colors used in this build (not a generic category scheme), with
+this project's actual wiring (from climate.py's PIN_* constants, plus
+the VCC/GND pins DHT22s are physically wired to) labeled on every pin
+that's in use. Not part of the running app - a one-off doc generator.
+If PIN_* ever changes in climate.py again (like the GPIO4->5 move did),
+or the physical wiring changes (like the DHT22s moving from 5V to 3.3V
+did), update the ROWS table below to match and rerun:
 
     python3 docs/gen_gpio_pinout.py
 
@@ -13,26 +16,44 @@ change - README.md references it by path, nothing else to update."""
 import os
 
 # (physical_pin, bcm_label, category, function_text)
-# categories: power, ground, used, i2c, reserved, unused
+#
+# Categories map 1:1 to Ryan's actual jumper wire colors (some colors
+# are deliberately reused across categories, exactly as in the real
+# wiring - e.g. door switch and heater relay are both gray):
+#   power_3v3   orange  - 3.3V
+#   power_5v    red     - 5V
+#   ground_3v3  brown   - 3.3V ground
+#   ground      (dark, unassigned) - spare/unused GND, no wire present
+#   doorswitch  gray    - door reed switch
+#   heaterrelay gray    - heater relay (same gray as door switch)
+#   sensordata  yellow  - DHT22 DATA lines
+#   doorservo   yellow  - door servo signal (same yellow as sensor data)
+#   lightrelay  green   - light relay
+#   fanrelay    blue    - fan relay
+#   dehumidrelay purple - dehumidifier relay
+#   i2c         muted blue - optional SHT31 SDA/SCL, not currently wired
+#   reserved    (light gray) - EEPROM ID pins
+#   unused      (dark) - unused GPIO, no wire present
+#   deadpin     dark red - dead on this specific board
 ROWS = [
-    (1, "3.3V", "power", "3.3V"),
-    (2, "5V", "power", "5V"),
-    (3, "GPIO2 (SDA)", "i2c", "SHT31 SDA (optional)"),
-    (4, "5V", "power", "5V"),
-    (5, "GPIO3 (SCL)", "i2c", "SHT31 SCL (optional)"),
-    (6, "GND", "ground", "GND"),
+    (1, "3.3V", "power_3v3", "Internal DHT22 - VCC (3.3V)"),
+    (2, "5V", "power_5v", "5V (relay board power)"),
+    (3, "GPIO2 (SDA)", "i2c", "SHT31 SDA (optional, not installed)"),
+    (4, "5V", "power_5v", "5V (relay board power)"),
+    (5, "GPIO3 (SCL)", "i2c", "SHT31 SCL (optional, not installed)"),
+    (6, "GND", "ground_3v3", "Internal DHT22 - GND"),
     (7, "GPIO4", "deadpin", "unused - dead on this board, see README"),
     (8, "GPIO14 (TXD)", "unused", "unused"),
-    (9, "GND", "ground", "GND"),
+    (9, "GND", "ground_3v3", "External DHT22 fallback - GND"),
     (10, "GPIO15 (RXD)", "unused", "unused (was Light - moved, shares UART)"),
-    (11, "GPIO17", "used", "Fan relay"),
-    (12, "GPIO18 (PWM)", "used", "Door servo"),
-    (13, "GPIO27", "used", "Internal DHT22 - DATA"),
+    (11, "GPIO17", "fanrelay", "Fan relay"),
+    (12, "GPIO18 (PWM)", "doorservo", "Door servo"),
+    (13, "GPIO27", "sensordata", "Internal DHT22 - DATA"),
     (14, "GND", "ground", "GND"),
-    (15, "GPIO22", "used", "Heater relay"),
-    (16, "GPIO23", "used", "Dehumidifier relay"),
-    (17, "3.3V", "power", "3.3V"),
-    (18, "GPIO24", "used", "Door reed switch"),
+    (15, "GPIO22", "heaterrelay", "Heater relay"),
+    (16, "GPIO23", "dehumidrelay", "Dehumidifier relay"),
+    (17, "3.3V", "power_3v3", "External DHT22 fallback - VCC (3.3V)"),
+    (18, "GPIO24", "doorswitch", "Door reed switch"),
     (19, "GPIO10 (MOSI)", "unused", "unused"),
     (20, "GND", "ground", "GND"),
     (21, "GPIO9 (MISO)", "unused", "unused"),
@@ -43,7 +64,7 @@ ROWS = [
     (26, "GPIO7 (CE1)", "unused", "unused"),
     (27, "ID_SD", "reserved", "EEPROM ID - reserved"),
     (28, "ID_SC", "reserved", "EEPROM ID - reserved"),
-    (29, "GPIO5", "used", "External DHT22 fallback - DATA"),
+    (29, "GPIO5", "sensordata", "External DHT22 fallback - DATA"),
     (30, "GND", "ground", "GND"),
     (31, "GPIO6", "unused", "unused"),
     (32, "GPIO12", "unused", "unused"),
@@ -51,32 +72,63 @@ ROWS = [
     (34, "GND", "ground", "GND"),
     (35, "GPIO19", "unused", "unused"),
     (36, "GPIO16", "unused", "unused"),
-    (37, "GPIO26", "used", "Light relay"),
+    (37, "GPIO26", "lightrelay", "Light relay"),
     (38, "GPIO20", "unused", "unused"),
     (39, "GND", "ground", "GND"),
     (40, "GPIO21", "unused", "unused"),
 ]
 
 COLORS = {
-    "power":   ("#d9534f", "#ffffff"),
-    "ground":  ("#3d4750", "#e7ecef"),
-    "used":    ("#4fb286", "#0d1712"),
-    "i2c":     ("#4f8fd9", "#ffffff"),
-    "reserved":("#93a0ab", "#14181c"),
-    "unused":  ("#2e353c", "#8a97a2"),
-    "deadpin": ("#7a3030", "#f5c6c6"),
+    "power_3v3":   ("#e08a3c", "#2b1400"),
+    "power_5v":    ("#d9534f", "#ffffff"),
+    "ground_3v3":  ("#6b4423", "#f5e6d3"),
+    "ground":      ("#3d4750", "#e7ecef"),
+    "doorswitch":  ("#7d8790", "#14181c"),
+    "heaterrelay": ("#7d8790", "#14181c"),
+    "sensordata":  ("#d9c74f", "#241f00"),
+    "doorservo":   ("#d9c74f", "#241f00"),
+    "lightrelay":  ("#4fb286", "#0d1712"),
+    "fanrelay":    ("#4f8fd9", "#ffffff"),
+    "dehumidrelay":("#8a63c9", "#ffffff"),
+    "i2c":         ("#3d5a78", "#c9d8e6"),
+    "reserved":    ("#93a0ab", "#14181c"),
+    "unused":      ("#2e353c", "#8a97a2"),
+    "deadpin":     ("#7a3030", "#f5c6c6"),
 }
 STROKE = "#5a6570"
 
+# Legend entries: (category, label). Two categories intentionally share
+# a color (doorswitch/heaterrelay, sensordata/doorservo) so only one of
+# each pair gets a legend row, with a combined label.
+LEGEND_ITEMS = [
+    ("power_3v3", "3.3V — DHT22 power"),
+    ("power_5v", "5V (in use elsewhere)"),
+    ("ground_3v3", "3.3V ground (DHT22)"),
+    ("ground", "Spare / unused GND"),
+    ("doorswitch", "Door switch & heater relay"),
+    ("sensordata", "Sensor data & door servo"),
+    ("lightrelay", "Light relay"),
+    ("fanrelay", "Fan relay"),
+    ("dehumidrelay", "Dehumidifier relay"),
+    ("i2c", "I²C — optional SHT31"),
+    ("reserved", "Reserved (EEPROM ID)"),
+    ("unused", "Unused GPIO"),
+    ("deadpin", "Dead pin — see README"),
+]
+
 ROW_H = 34
-TOP = 150
-LEFT_LABEL_X = 318
-LEFT_CIRC_X = 340
-RIGHT_CIRC_X = 460
-RIGHT_LABEL_X = 482
+TOP = 245
+LEFT_LABEL_X = 398
+LEFT_CIRC_X = 420
+RIGHT_CIRC_X = 540
+RIGHT_LABEL_X = 562
 R = 13
-WIDTH = 1040
+WIDTH = 1200
 HEIGHT = TOP + ROW_H * 20 + 60
+
+LEGEND_COLS = [40, 440, 840]
+LEGEND_ROW_Y = 82
+LEGEND_ROW_STEP = 28
 
 def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -125,26 +177,18 @@ def row_svg(row):
     return "\n".join(parts)
 
 def legend():
-    # Fixed x per item (not computed from text length - a proportional
-    # font makes character-count-based spacing unreliable) laid out
-    # across two rows so nothing runs off the right edge of the canvas.
-    row1 = [
-        ("used", "Used by Necroparlor", 40),
-        ("i2c", "I²C - optional SHT31", 300),
-        ("power", "Power (3.3V / 5V)", 560),
-        ("ground", "Ground", 780),
-    ]
-    row2 = [
-        ("reserved", "Reserved (EEPROM ID)", 40),
-        ("unused", "Unused", 300),
-        ("deadpin", "Dead pin - see README", 460),
-    ]
+    # Fixed x per column (not computed from text length - a proportional
+    # font makes character-count-based spacing unreliable), row-major
+    # across a 3-column grid so nothing runs off the right edge.
     parts = []
-    for row_items, y in ((row1, 82), (row2, 110)):
-        for cat, label, x in row_items:
-            fill, _ = COLORS[cat]
-            parts.append(f'<rect x="{x}" y="{y-11}" width="16" height="16" rx="3" fill="{fill}" stroke="{STROKE}"/>')
-            parts.append(f'<text x="{x+22}" y="{y+1}" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">{esc(label)}</text>')
+    for i, (cat, label) in enumerate(LEGEND_ITEMS):
+        col = i % len(LEGEND_COLS)
+        row = i // len(LEGEND_COLS)
+        x = LEGEND_COLS[col]
+        y = LEGEND_ROW_Y + row * LEGEND_ROW_STEP
+        fill, _ = COLORS[cat]
+        parts.append(f'<rect x="{x}" y="{y-11}" width="16" height="16" rx="3" fill="{fill}" stroke="{STROKE}"/>')
+        parts.append(f'<text x="{x+22}" y="{y+1}" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">{esc(label)}</text>')
     return "\n".join(parts)
 
 def build():
@@ -156,7 +200,7 @@ def build():
   <text x="{WIDTH/2}" y="36" text-anchor="middle" font-size="22" font-weight="700"
         font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Necroparlor - Raspberry Pi 40-pin GPIO header</text>
   <text x="{WIDTH/2}" y="58" text-anchor="middle" font-size="12.5"
-        font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#93a0ab">Pin 1 is the corner nearest the SD card slot (square pad on the board silkscreen). BCM numbering.</text>
+        font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#93a0ab">Pin 1 is the corner nearest the SD card slot (square pad on the board silkscreen). BCM numbering. Colors match this build's actual jumper wires.</text>
   {legend()}
   <text x="{LEFT_LABEL_X-10}" y="{TOP-20}" text-anchor="end" font-size="11" font-weight="700" letter-spacing="1"
         font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#93a0ab">PIN 1 SIDE</text>
@@ -169,6 +213,6 @@ def build():
 if __name__ == "__main__":
     out = build()
     out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gpio-pinout.svg")
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(out)
     print("wrote", len(out), "bytes")

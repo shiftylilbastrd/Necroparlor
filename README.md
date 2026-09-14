@@ -25,6 +25,8 @@ Raspberry Pi climate control for a dermestid beetle colony living in a converted
 
 ![Raspberry Pi 40-pin GPIO header used by Necroparlor](docs/gpio-pinout.svg)
 
+Diagram colors match the actual jumper wires in this build (see the in-image legend) — not a generic category scheme.
+
 GPIO pin assignments (BCM numbering, set in `climate.py`):
 
 | Function | BCM | Physical pin |
@@ -48,11 +50,11 @@ If `PIN_*` in `climate.py` ever changes again, regenerate the diagram with `pyth
 
 | DHT22/AM2302 pin | Pi pin |
 |---|---|
-| VCC | 5V (pin 2) |
+| VCC | 3.3V (pin 1) |
 | GND | GND (pin 6) |
 | DATA | GPIO27 (pin 13) |
 
-Add a 4.7–10kΩ pull-up between DATA and VCC if using a bare chip (most breakout modules already have one).
+Wired to 3.3V rather than 5V because both 5V pins are already committed to relay board power — the DHT22 tolerates 3.3–5.5V, so this is just a wiring choice, not a workaround. Add a 4.7–10kΩ pull-up between DATA and VCC if using a bare chip (most breakout modules already have one).
 
 To use an SHT31 instead (drop-in swap, no code changes — flip "Internal sensor source" on the Config page):
 
@@ -75,7 +77,7 @@ The external reading comes from a BLE sensor (primary) and a wired DHT22 on GPIO
 
 | DHT22/AM2302 pin | Pi pin |
 |---|---|
-| VCC | 5V (pin 2 or 4) |
+| VCC | 3.3V (pin 17) |
 | GND | GND (pin 9 or similar) |
 | DATA | GPIO5 (pin 29) |
 
