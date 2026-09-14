@@ -1344,3 +1344,60 @@ pattern has been consistent: tie things to identity, never to role.
     on the Pi at that point to see what resolutions/fps the camera
     actually advertises per format) and JPEG quality/resolution may need
     to come down instead of fps going up.
+  - **[CONFIRMED, 2026-09-13]** User re-tested with a fresh screen
+    recording after deploying the MJPG fix and restarting the camera
+    service. Same quantitative video analysis as before: previously only
+    ~8% of the recording's own 30fps frames were near-duplicates of the
+    one before them, and every duplicate run was a single frame (never
+    back-to-back) - a dramatic change from the earlier clip, where
+    content held static for ~0.2-0.77s stretches at a time. The fix
+    worked - real capture rate is now tracking close to the recording's
+    own frame rate instead of being pinned near ~5fps.
+
+- **[2026-09-14] Camera fps added to long-term tracked data**
+  - Following the above, user asked to add the camera's real fps to the
+    tracked data for long-term history - `camera/stats.json` (see
+    save_camera_stats()/get_camera_stats() above) only ever holds the
+    CURRENT value, overwritten ~once/sec, so there was no way to look
+    back at how it trended over a day/week the way the climate readings
+    already can.
+  - Two new nullable columns on the existing `readings` table:
+    `camera_actual_fps`, `camera_target_fps` - deliberately reusing this
+    table rather than creating a new one, since `climate.py` already
+    samples one other cross-process, purely-informational metric this
+    same way every control cycle (`cpu_temp_f`/`cpu_load_1m` via
+    `get_pi_health()`) - camera fps gets the exact same treatment:
+    `climate.py`'s main loop now also calls `state.get_camera_stats()`
+    once per cycle (every `LOOP_INTERVAL` = 15s) and passes
+    `camera_actual_fps`/`camera_target_fps` into `log_reading()`. Both
+    are NULL on any cycle where `dermestid-camera.service` isn't
+    installed/running or its stats.json is stale - same "absence is
+    unknown, not zero" handling as every other optional sensor in this
+    table.
+  - Surfaced on the Data page's raw table (`get_readings_table()`) as two
+    new columns, "Cam FPS" and "Cam target", right after the existing
+    "Pi load" column - same pattern as the Pi-health columns, showing
+    every control cycle's exact stored value rather than an average.
+  - Deliberately NOT added to the bucketed/averaged history chart
+    (`get_history()`) that powers the Home page graph - `cpu_temp_f`/
+    `cpu_load_1m` were never added there either when they were
+    introduced; that chart is scoped to the enclosure's own climate
+    readings, and Pi/camera health metrics have so far only ever been
+    surfaced live (Home's status line) and in the raw Data page table.
+    Worth revisiting if long-term trend-spotting by eye (vs. scanning
+    the raw table) becomes something the user actually wants for this
+    metric.
+  - Verified before pushing: `python3 -m py_compile` on all touched
+    `.py` files, a Jinja2 parse check on all six templates, and a real
+    SQLite round-trip test against a temp DB covering (a) a `log_reading()`
+    call with the new camera args omitted (existing callers/old code
+    path - stores NULL, as before), (b) a call with real camera values
+    (stores and reads back correctly via `get_readings_table()`), and
+    (c) migrating a genuinely pre-existing readings table (created
+    without these two columns) through `init_db()` and confirming the
+    old row's data survives untouched and the new columns come back NULL.
+  - **Not yet confirmed on real hardware/deployed** - next restart of
+    `dermestid-climate.service` will pick this up; no config.json change
+    or manual DB migration needed (schema migration is automatic via
+    `init_db()`, same as every other column added to `readings` before
+    this one).

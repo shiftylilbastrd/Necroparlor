@@ -643,6 +643,22 @@ def _migrate_readings_columns(conn):
         conn.execute("ALTER TABLE readings ADD COLUMN cpu_temp_f REAL")
     if "cpu_load_1m" not in existing:
         conn.execute("ALTER TABLE readings ADD COLUMN cpu_load_1m REAL")
+    # Long-term history for the camera's REAL measured capture rate (see
+    # save_camera_stats()/get_camera_stats() - camera/stats.json only
+    # holds the current value, overwritten roughly once/sec, so it can't
+    # answer "how has this looked over the past day/week"). Sampled once
+    # per climate.py control cycle (same cadence as cpu_temp_f/
+    # cpu_load_1m above) rather than every camera_service.py cycle -
+    # that's already fine-grained enough for a long-term trend, and
+    # avoids a second, much noisier write cadence into this table. NULL
+    # for both whenever dermestid-camera.service isn't installed/running
+    # (get_camera_stats() returns None) or its stats.json is stale - same
+    # "absence reads as unknown, not zero" treatment as everywhere else
+    # in this table.
+    if "camera_actual_fps" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN camera_actual_fps REAL")
+    if "camera_target_fps" not in existing:
+        conn.execute("ALTER TABLE readings ADD COLUMN camera_target_fps REAL")
 
 
 def _migrate_ble_readings_columns(conn):
@@ -718,7 +734,8 @@ def get_all_ble_readings():
 def log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
                  fan, heater, dehumidifier, vent,
                  ble_temp=None, ble_humidity=None, wired_temp=None, wired_humidity=None,
-                 active_external_source=None, cpu_temp_f=None, cpu_load_1m=None):
+                 active_external_source=None, cpu_temp_f=None, cpu_load_1m=None,
+                 camera_actual_fps=None, camera_target_fps=None):
     """external_temp/humidity is whichever physical sensor is currently
     ACTIVE (drives control decisions) - it's the value the delta-glitch
     filter and failsafe machinery track continuously across cycles,
@@ -729,16 +746,21 @@ def log_reading(mode, internal_temp, internal_humidity, external_temp, external_
     never silently relabeled to show the wired probe's data just
     because the wired probe happens to be the one currently active.
     cpu_temp_f/cpu_load_1m are the Pi's OWN health (see get_pi_health()),
-    unrelated to the enclosure's climate - purely informational."""
+    unrelated to the enclosure's climate - purely informational.
+    camera_actual_fps/camera_target_fps are camera_service.py's own
+    measured-vs-configured capture rate (see get_camera_stats()) - both
+    None whenever that service isn't running, same as every other
+    optional sensor here."""
     conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "fan, heater, dehumidifier, vent, ble_temp, ble_humidity, wired_temp, wired_humidity, "
-        "active_external_source, cpu_temp_f, cpu_load_1m) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "active_external_source, cpu_temp_f, cpu_load_1m, camera_actual_fps, camera_target_fps) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
          int(fan), int(heater), int(dehumidifier), int(vent), ble_temp, ble_humidity, wired_temp, wired_humidity,
-         active_external_source, cpu_temp_f, cpu_load_1m)
+         active_external_source, cpu_temp_f, cpu_load_1m, camera_actual_fps, camera_target_fps)
     )
     conn.commit()
     conn.close()
@@ -1110,7 +1132,8 @@ def get_readings_table(limit=50, before_ts=None):
     query = (
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "ble_temp, ble_humidity, wired_temp, wired_humidity, active_external_source, "
-        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m FROM readings WHERE 1=1"
+        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m, "
+        "camera_actual_fps, camera_target_fps FROM readings WHERE 1=1"
     )
     params = []
     if before_ts:
@@ -1122,7 +1145,8 @@ def get_readings_table(limit=50, before_ts=None):
     conn.close()
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
             "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
-            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
+            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m",
+            "camera_actual_fps", "camera_target_fps"]
     return [dict(zip(keys, r)) for r in rows]
 
 
