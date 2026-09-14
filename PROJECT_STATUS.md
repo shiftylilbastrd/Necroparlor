@@ -1659,7 +1659,25 @@ pattern has been consistent: tie things to identity, never to role.
     load / camera fps columns (added earlier this session) against the
     outage timestamps to check for CPU-contention correlation as an
     alternate/additional cause.
-  - **Not yet resolved** - waiting on results from the 5V test.
+  - **[UPDATE, 2026-09-14]** Both DHT22s have now been on 5V since
+    2026-09-13, and Ryan reports the missing-fallback-sensor-data
+    frequency has dropped substantially since the switch - real
+    evidence in favor of the 3.3V-marginal-supply theory above, though
+    not yet a controlled before/after comparison (see the dated
+    "Frequent... warnings" entry's own outage-count method above if
+    that's worth doing precisely). **Still not fully resolved/closed
+    out**: (1) this was explicitly wired as a TEMPORARY test - the 5V
+    pins it's using are the same ones earmarked for relay/servo power,
+    which isn't connected yet (see this file's own standing benchtop-
+    context note) - so before this can be called the permanent wiring,
+    need to confirm there's enough 5V current budget for both DHT22s
+    AND the relays/servo once those are actually wired in, not just
+    for two low-draw sensors alone. (2) Pending that, README.md and
+    docs/gpio-pinout.svg both still document 3.3V for both DHT22s and
+    have not been updated - don't change them until (1) is actually
+    settled, since flipping them now and then having to revert if the
+    power budget doesn't work out would just recreate the exact
+    doc-drift this file exists to prevent.
 
 - **[RESOLVED, 2026-09-14] SD card migrated: 16GB SanDisk Class 4 ->
   64GB PNY Elite-X (UHS-I U3, A1, V30)**
