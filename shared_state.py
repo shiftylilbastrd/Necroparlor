@@ -900,6 +900,13 @@ def get_camera_stats():
     return data
 
 
+# Ascending severity - shared by log_event's write side (nothing here
+# actually needs the order) and get_recent_events'/webapp.py's read side
+# (which does). Centralized here rather than duplicated as a hardcoded
+# tuple in webapp.py's own request validation, so the two can't drift.
+EVENT_LEVELS = ["info", "warning", "error", "critical"]
+
+
 def log_event(level, message):
     """Records a state-change/alarm event to SQLite AND to the Python
     logging module, so it shows up in both the dashboard event log and
@@ -1171,20 +1178,32 @@ def get_readings_table(limit=50, before_ts=None):
 
 
 def get_recent_events(limit=50, level=None, before_ts=None):
-    """level: optional exact-match filter ('info'/'warning'/'error'/'critical').
+    """level: optional MINIMUM-severity filter ('info'/'warning'/'error'/
+    'critical') - matches that level and anything more severe (e.g.
+    'warning' also returns error/critical rows), the same "at or above"
+    convention most log viewers use. This used to be an exact match,
+    which meant filtering to Warning while chasing a Critical alarm
+    actively hid the Critical rows instead of surfacing them.
     before_ts: optional epoch timestamp - only events strictly older than this,
-    for "load more" pagination on the logs page."""
+    for "load more" pagination on the logs page.
+    limit: pass None (rather than a large number) for the logs page's
+    "download log" export - it needs every matching row, not a page of
+    them, and the events table is small enough (state-change/alarm
+    events only, not a per-cycle sensor log) that this is cheap."""
     conn = get_db()
     query = "SELECT ts, level, message FROM events WHERE 1=1"
     params = []
     if level:
-        query += " AND level = ?"
-        params.append(level)
+        at_or_above = EVENT_LEVELS[EVENT_LEVELS.index(level):]
+        query += f" AND level IN ({','.join('?' * len(at_or_above))})"
+        params.extend(at_or_above)
     if before_ts:
         query += " AND ts < ?"
         params.append(before_ts)
-    query += " ORDER BY ts DESC LIMIT ?"
-    params.append(limit)
+    query += " ORDER BY ts DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [{"ts": r[0], "level": r[1], "message": r[2]} for r in rows]

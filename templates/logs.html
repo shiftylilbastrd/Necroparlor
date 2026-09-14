@@ -15,14 +15,20 @@
 <div class="subtitle">Mode changes, relay activity, warnings, and alarms</div>
 
 <div class="filter-row">
+  <!-- Values match get_recent_events' MINIMUM-severity filter (see
+       shared_state.py) - selecting Warning also shows Error/Critical,
+       not just Warning rows, same as most log viewers. "Info" is
+       deliberately not offered as its own option: since Info is the
+       lowest severity, "Info & above" is identical to "All levels" -
+       having both would just be two options that do the same thing. -->
   <select id="levelFilter" onchange="resetAndLoad()">
     <option value="">All levels</option>
-    <option value="info">Info</option>
-    <option value="warning">Warning</option>
-    <option value="error">Error</option>
-    <option value="critical">Critical</option>
+    <option value="warning">Warning & above</option>
+    <option value="error">Error & above</option>
+    <option value="critical">Critical only</option>
   </select>
   <button onclick="resetAndLoad()">Refresh</button>
+  <button onclick="downloadLog()">Download log</button>
 </div>
 
 <div class="card events" id="eventsList"></div>
@@ -81,6 +87,18 @@ async function resetAndLoad() {
 async function loadMore() {
   const events = await fetchEvents(oldestLoadedTs);
   renderEvents(events, true);
+}
+
+// A plain navigation (not fetch+blob) so the browser's own download
+// handling takes over - /api/events/download sets Content-Disposition:
+// attachment, which is all a GET needs to trigger a save-file prompt
+// instead of navigating away from the page. Respects whatever level
+// filter is currently selected, same as the on-screen list does.
+function downloadLog() {
+  const level = document.getElementById('levelFilter').value;
+  let url = '/api/events/download';
+  if (level) url += `?level=${level}`;
+  window.location.href = url;
 }
 
 resetAndLoad();

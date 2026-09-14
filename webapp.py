@@ -9,6 +9,7 @@ There is NO authentication on this - it's meant for your home network
 only. Don't port-forward it to the internet.
 """
 import time
+import datetime
 import os
 import json
 import shutil
@@ -559,9 +560,39 @@ def api_events():
     limit = request.args.get("limit", default=50, type=int)
     level = request.args.get("level", default=None, type=str)
     before = request.args.get("before", default=None, type=float)
-    if level not in (None, "info", "warning", "error", "critical"):
+    if level not in (None, *state.EVENT_LEVELS):
         return jsonify({"error": "level must be one of info/warning/error/critical"}), 400
     return jsonify(state.get_recent_events(limit=limit, level=level, before_ts=before))
+
+
+@app.route("/api/events/download")
+def api_events_download():
+    """Plain-text export of the Logs page's "download log" button - ALL
+    matching rows (limit=None), not just whatever page is currently
+    loaded in the browser, honoring the same level filter (and its "at
+    or above" severity semantics - see get_recent_events) selected
+    there. This is the unified cross-service events table (climate.py/
+    webapp.py/camera_service.py/ble_listener.py all write into it via
+    log_event()), which is what the Logs page actually shows - NOT any
+    one service's own raw logs/*.log file on disk (those are per-
+    process and also catch lower-level logging() calls that never went
+    through log_event() at all, e.g. individual DHT22 retry-attempt
+    warnings), so this export and that page always agree on content."""
+    level = request.args.get("level", default=None, type=str)
+    if level not in (None, *state.EVENT_LEVELS):
+        return jsonify({"error": "level must be one of info/warning/error/critical"}), 400
+    events = state.get_recent_events(limit=None, level=level)
+    events.reverse()  # oldest-first reads naturally in a downloaded file; the dashboard itself shows newest-first
+    lines = [
+        f"{datetime.datetime.fromtimestamp(e['ts']).strftime('%Y-%m-%d %H:%M:%S')}  {e['level'].upper():<8}  {e['message']}"
+        for e in events
+    ]
+    body = "\n".join(lines) + ("\n" if lines else "")
+    filename = (f"necroparlor-events"
+                f"{'-' + level if level else ''}"
+                f"-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.txt")
+    return Response(body, mimetype="text/plain",
+                     headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 @app.route("/api/readings-table")
