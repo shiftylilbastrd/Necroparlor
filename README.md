@@ -1,20 +1,83 @@
-# Dermestid Enclosure Climate Control
+# Necroparlor
 
-**Starting a new session on this project? Read `PROJECT_STATUS.md` first** - it covers current branch state, the reasoning behind several non-obvious design decisions, and open threads that this README alone won't tell you.
+Raspberry Pi climate control for a dermestid beetle colony living in a converted chest freezer: temperature/humidity monitoring, heater/fan/dehumidifier control, a door-open safety light, an optional webcam, and a web dashboard.
 
-Files:
+**Starting a new session on this project? Read `PROJECT_STATUS.md` first** — it covers current state, the reasoning behind non-obvious design decisions, and open threads this README won't get into.
 
-- `climate.py` — main control loop (heater, fan/vent servo, dehumidifier, door light). Run this on the Pi at all times.
-- `webapp.py` — local Flask dashboard: view live readings/history, switch modes, edit setpoints.
-- `shared_state.py` — shared config + SQLite helpers used by both of the above. Must live in the same folder as them.
-- `templates/` — the dashboard's pages: `base.html` (shared nav/layout), `home.html` (live status + chart + mode), `logs.html` (event log), `data.html` (raw readings table), `config.html` (setpoints + sensor source).
-- `config.json` — current mode + per-mode setpoints. Auto-created if missing; edit by hand or through the dashboard.
-- `ble_listener.py` — optional background service that listens for a BLE sensor (brand selected via `config.json`'s `ble_sensor_type` - SensorPush, Govee, INKBIRD, Xiaomi, and RuuviTag are supported out of the box, see `shared_state.BLE_SENSOR_LIBRARIES`) and feeds it into `climate.py` as the external reading, instead of a wired probe. Has a self-watchdog: BLE scans can silently stall after many hours of continuous operation without crashing (a known real-world BlueZ/bleak issue) - if 2 minutes pass with no reading actually decoded, it exits deliberately so systemd's `Restart=on-failure` brings it back up fresh rather than sitting there doing nothing indefinitely.
-- `ble_battery.py` — optional one-shot script, run every 4h by a systemd timer (but internally skips the connection attempt unless the last successful check is >20h stale, so it still only genuinely connects about once a day - see below), that briefly connects to check battery level for sensors whose passive broadcast doesn't include it. Currently only implemented for SensorPush's HT1 specifically (see the file's own docstring for why this one, unlike the listener, can't be made brand-generic the same way) - skips itself cleanly if a different brand is configured. Many other brands include battery directly in their passive advertisement instead, which `ble_listener.py` already saves for free when present - check the Data page before assuming you need an equivalent for your brand.
-- `discover_ble_sensor.py` — one-time helper to find your BLE sensors' addresses (whichever brand is configured).
-- `camera_service.py` — optional background service for a USB webcam: writes a live frame for the dashboard's Camera page, and saves timelapse snapshots on a per-mode interval you set on the Config page.
-- `discover_camera.py` — one-time helper to find which `/dev/videoN` index is your actual webcam.
-- `systemd/*.service`, `systemd/*.timer` — units so everything starts on boot, restarts if it crashes, and the battery check runs on schedule.
+## Files
+
+| File | Purpose |
+|---|---|
+| `climate.py` | Main control loop — heater, fan/vent servo, dehumidifier, door light. Always running. |
+| `webapp.py` | Flask dashboard — live readings/history, mode switching, setpoints. |
+| `shared_state.py` | Shared config + SQLite helpers used by every other script. Must live in the same folder. |
+| `templates/` | Dashboard pages: `base.html` (nav/layout), `home.html`, `logs.html`, `data.html`, `config.html`, `timelapse.html`. |
+| `config.json` | Current mode, setpoints, sensor/camera settings. Auto-created if missing. |
+| `ble_listener.py` | Optional — listens for a BLE temp/humidity sensor (SensorPush, Govee, INKBIRD, Xiaomi, RuuviTag) as the external reading. |
+| `ble_battery.py` | Optional — periodic battery check (SensorPush HT1 only; other brands broadcast battery for free). |
+| `discover_ble_sensor.py` | One-time helper to find a BLE sensor's address. |
+| `camera_service.py` | Optional — USB webcam live view + per-mode timelapse. |
+| `discover_camera.py` | One-time helper to find the webcam's `/dev/videoN` index. |
+| `auto_update.sh` | Pulls from git and restarts the affected services. |
+| `systemd/` | Unit/timer files so everything runs on boot and restarts on crash. |
+
+## Hardware / wiring
+
+![Raspberry Pi 40-pin GPIO header used by Necroparlor](docs/gpio-pinout.svg)
+
+GPIO pin assignments (BCM numbering, set in `climate.py`):
+
+| Function | BCM | Physical pin |
+|---|---|---|
+| Fan relay | GPIO17 | 11 |
+| Door servo (PWM) | GPIO18 | 12 |
+| Internal DHT22 — DATA | GPIO27 | 13 |
+| Heater relay | GPIO22 | 15 |
+| Dehumidifier relay | GPIO23 | 16 |
+| Door reed switch | GPIO24 | 18 |
+| External DHT22 fallback — DATA | GPIO5 | 29 |
+| Light relay | GPIO26 | 37 |
+| SHT31 SDA (optional) | GPIO2 | 3 |
+| SHT31 SCL (optional) | GPIO3 | 5 |
+
+**GPIO4 (physical pin 7)** is dead on this specific board (confirmed via `pinctrl` — see `PROJECT_STATUS.md`) and is not used; the external fallback probe was moved to GPIO5 instead. **GPIO15/RXD** is avoided for the same reason it's marked unused above — it doubles as UART0 RXD and misbehaves if the serial console is enabled.
+
+If `PIN_*` in `climate.py` ever changes again, regenerate the diagram with `python3 docs/gen_gpio_pinout.py` after updating its `ROWS` table to match.
+
+### Internal sensor: DHT22/AM2302 (default) or SHT31 (optional)
+
+| DHT22/AM2302 pin | Pi pin |
+|---|---|
+| VCC | 5V (pin 2) |
+| GND | GND (pin 6) |
+| DATA | GPIO27 (pin 13) |
+
+Add a 4.7–10kΩ pull-up between DATA and VCC if using a bare chip (most breakout modules already have one).
+
+To use an SHT31 instead (drop-in swap, no code changes — flip "Internal sensor source" on the Config page):
+
+```bash
+sudo raspi-config   # Interface Options -> I2C -> Enable, then reboot
+```
+
+| SHT31 pin | Pi pin |
+|---|---|
+| VIN | 3.3V (pin 1) |
+| GND | GND (pin 6) |
+| SCL | GPIO3 (pin 5) |
+| SDA | GPIO2 (pin 3) |
+
+The SHT31 also has an onboard heater `climate.py` uses to recover from condensation (>99% humidity for a minute triggers a 10s heater pulse, rate-limited to once/10min) — the DHT22 has no equivalent.
+
+### External sensor: BLE primary + wired fallback
+
+The external reading comes from a BLE sensor (primary) and a wired DHT22 on GPIO5 (always-on fallback). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the wired probe) — no manual switching, and every failover is logged.
+
+| DHT22/AM2302 pin | Pi pin |
+|---|---|
+| VCC | 5V (pin 2 or 4) |
+| GND | GND (pin 9 or similar) |
+| DATA | GPIO5 (pin 29) |
 
 ## Install
 
@@ -23,34 +86,6 @@ sudo apt update
 sudo apt install python3-pip python3-rpi.gpio
 pip3 install flask adafruit-circuitpython-dht adafruit-circuitpython-sht31d --break-system-packages
 ```
-
-`adafruit-circuitpython-dht` is what actually reads the DHT22/AM2302 sensors now — the older `Adafruit_DHT` package this project used to depend on has been deprecated and archived by Adafruit, and its installer fails outright on newer Raspberry Pi OS releases like Trixie (its build-time Pi-detection code doesn't recognize them). `adafruit-circuitpython-dht` is the actively-maintained CircuitPython/Blinka-based replacement Adafruit points people to instead, and it's a drop-in swap in this codebase — no other files needed to change.
-
-**Internal sensor: DHT22/AM2302 (default) or SHT31 (optional upgrade)**
-
-The internal reading defaults to a wired DHT22/AM2302, same idea as the external probe. Wire it like this:
-
-| DHT22/AM2302 pin | Pi pin |
-|---|---|
-| VCC | 5V (pin 2) |
-| GND | GND (pin 6) |
-| DATA | GPIO27 (pin 13) |
-
-If your sensor is a bare DHT22 chip (not a breakout module), add a 4.7kΩ–10kΩ pull-up resistor between DATA and VCC — most AM2302 modules (the ones in a small plastic housing with a 3-pin connector) already have this built in, so check before adding a second one.
-
-If you get an SHT31 later, it's a drop-in swap with no code changes: enable I2C, wire it up, and flip "Internal sensor source" to SHT31 on the Config page. The SHT31 also unlocks a condensation-recovery feature the DHT22 can't do (see below) since it has an onboard heater and the DHT22 doesn't.
-
-```bash
-sudo raspi-config
-# Interface Options -> I2C -> Enable, then reboot
-```
-
-| SHT31 pin | Pi pin |
-|---|---|
-| VIN | 3.3V (pin 1) |
-| GND | GND (pin 6) |
-| SCL | GPIO3 / SCL (pin 5) |
-| SDA | GPIO2 / SDA (pin 3) |
 
 Copy this whole folder to the Pi, e.g. `/home/pi/dermestid/`.
 
@@ -62,121 +97,44 @@ python3 climate.py      # in one terminal
 python3 webapp.py       # in another
 ```
 
-Then visit `http://<pi-ip-address>:8080` from any phone/laptop on your LAN. **There's no login on this dashboard** — it's fine on your home network, but don't port-forward it to the internet.
+Visit `http://<pi-ip-address>:8080`. **There's no login on this dashboard** — fine on your home network, don't port-forward it to the internet.
 
-## Sensor calibration
-
-Each physical sensor - internal, external (BLE), and fallback (wired probe) - has its own temperature and humidity offset on the Config page, added to the raw reading before anything else (validation, control decisions, display) sees it. Useful for correcting a cheap sensor that's reading consistently a degree or two off against a known-good reference thermometer.
-
-Offsets are tied to the *physical sensor*, not to "active"/"fallback" - since which physical sensor is currently active can change automatically (see below), an offset has to follow the actual hardware it corrects for, not whichever label that hardware happens to be wearing on the dashboard at the moment. Verified this specifically: forced a failover so the wired probe became the active "External" reading, and confirmed its own offset (not the BLE sensor's) still applied correctly.
-
-## External reading: a BLE sensor with automatic wired-probe failover
-
-The external (outside-air) reading comes from two sensors working together, not a manual choice: a BLE sensor as the primary, and a wired DHT22/AM2302 probe on GPIO5 (`PIN_EXTERNAL_TEMP`) as an always-connected fallback. `climate.py` reads both every single cycle and automatically uses whichever one is actually fresh - the BLE sensor whenever it's reported within `SENSOR_FAIL_TIMEOUT` (90s, the same window the sensor-failure failsafe uses elsewhere), the wired probe automatically otherwise. There's no source toggle to remember to flip - if the BLE sensor drops out, control keeps running on the wired probe with zero action needed, and control switches back the moment it recovers.
-
-Wire the fallback probe like this:
-
-| DHT22/AM2302 pin | Pi pin |
-|---|---|
-| VCC | 5V (pin 2 or 4) |
-| GND | GND (pin 9 or similar) |
-| DATA | GPIO5 (physical pin 29) |
-
-**Not GPIO4 (physical pin 7)**, even though that's the more "obvious" nearby pin and earlier revisions of this project used it. On this specific Pi 4 board, GPIO4 was confirmed dead on 2026-09-13: `pinctrl get 4` reports the pin reading low even configured as an input with its own internal pull-up enabled and with absolutely nothing connected to it - a pin in that state can only physically read high, so this is a hardware fault in the board itself, not the sensor, the wiring, or any software setting. See the dated entry in `PROJECT_STATUS.md` for the full elimination trail (1-Wire, `pigpiod`, supply voltage, GPIO backend, and the sensor unit itself were each individually ruled out first). If you're setting this up on a different Pi, GPIO4 should work fine there - this is specific to this one board.
-
-**Supported BLE sensor brands** (`ble_listener.py`'s decoder, selected via `config.json`'s `ble_sensor_type`): SensorPush, Govee, INKBIRD, Xiaomi, and RuuviTag are supported out of the box - see `shared_state.BLE_SENSOR_LIBRARIES` for the exact package/class each one uses. All of them are passive listening (no pairing, no connection, no gateway or hub needed), so none of them touch the sensor's own battery budget beyond what it already spends broadcasting.
-
-Adding a brand that isn't in that list yet is usually small, not a rewrite: most popular consumer BLE temp/humidity sensors are siblings in the same open-source ecosystem Home Assistant uses for its native Bluetooth integrations (look for a `<brand>-ble` package on PyPI, e.g. `qingping-ble`, `thermopro-ble`, `bthome-ble`) and share an identical decode interface - typically just one new entry in `BLE_SENSOR_LIBRARIES` plus `pip install`ing that package. A brand with no such package is real, harder work (reverse-engineering its raw advertisement bytes yourself via `bleak`).
+## BLE external sensor (optional)
 
 ```bash
-pip3 install sensorpush-ble bleak --break-system-packages
+pip3 install sensorpush-ble bleak --break-system-packages   # swap for your brand's package, e.g. govee-ble
 ```
 
-(Swap `sensorpush-ble` for whichever brand's package you're actually using - e.g. `govee-ble`, `inkbird-ble`.)
+Requires Python 3.11+ (default on current Raspberry Pi OS).
 
-Requires Python 3.11+, which is the default on current Raspberry Pi OS (Bookworm).
-
-1. **Find your sensor's BLE address.** Many BLE sensors broadcast under the same generic name for every unit of that model, so the only way to tell multiple units apart is by address:
-   ```bash
-   python3 discover_ble_sensor.py
-   ```
-   Warm the one you want in your hand and watch which address's temperature climbs, then note that address (looks like `AA:BB:CC:DD:EE:FF`). Ctrl+C to stop.
-
-   The Config page's External card has its own **Discover** button that shows the same information without SSHing in - a clean table of address, temp/humidity, signal, and how recently each was heard. Click a row to fill in the address field below (the row highlights so you can see which one you picked, same as clicking a thumbnail on the Camera card's Discover results). It's read-only against `ble_listener.py`'s own already-running scan (`/api/ble-discover` just reads what that listener already saved to the database), not a second independent scan - starting a second `BleakScanner` against the same Bluetooth adapter is exactly what caused a real stuck-`bluetoothd` incident on this Pi once, so the dashboard button deliberately never does that. This does mean it only shows sensors of whatever brand is currently selected in the dropdown above it (same limitation the CLI script has, since both use the identical decoder) - warming the sensor in your hand still helps pick it out if more than one address shows up.
-
-2. **Set it on the dashboard** (Config page's External card - address field plus a brand dropdown), or by hand-editing `config.json`:
+1. Find the sensor's address: `python3 discover_ble_sensor.py`, or use the Config page's External card **Discover** button (reads `ble_listener.py`'s own already-running scan — doesn't start a second one).
+2. Set it on the Config page, or in `config.json`:
    ```json
    "ble_mac": "AA:BB:CC:DD:EE:FF",
    "ble_sensor_type": "sensorpush"
    ```
-   `ble_mac` only identifies *which* physical unit to listen for - useful if you ever swap in a different unit of the same brand - it isn't a mode switch, and takes effect on its own (`climate.py` and the dashboard both re-read `config.json` fresh, and `ble_listener.py` doesn't even look at this field - it listens for every device matching the selected brand regardless of address). `ble_sensor_type` selects which brand's decoder to use; that one IS read once at `ble_listener.py`'s own startup (a brand swap is a deliberate hardware change, not something re-checked every cycle), so saving a brand change from the Config page **automatically restarts `dermestid-ble.service`** for you (needs the `restart dermestid-ble.service` sudoers line below; without it, the save still succeeds, it just tells you the restart failed and to do it by hand). Automatic failover works with or without a BLE sensor configured at all (with none set, it's just always the wired probe).
+   Changing the brand auto-restarts `dermestid-ble.service` (needs the sudoers entry below).
+3. Run it: `python3 ble_listener.py`
 
-3. **Run the listener** alongside the other two processes:
-   ```bash
-   python3 ble_listener.py
-   ```
+A brand not listed above is usually a small addition — look for a `<brand>-ble` package on PyPI (the same ecosystem Home Assistant's Bluetooth integrations use) and add an entry to `shared_state.BLE_SENSOR_LIBRARIES`.
 
-**Each physical sensor gets its own permanent, fixed tile on the dashboard - "External" (the BLE sensor) and "Fallback" (the wired probe)** - regardless of which one is currently active, matching the same naming already used on the Config page for each one's own settings. Earlier versions had the inactive one's data show up under a generic "Fallback" tile that could hold either sensor's data depending on system state - confusing to notice at a glance, and inconsistent with how calibration offsets already worked (tied to physical sensor identity, not to "active"/"standby"). Now whichever tile currently matches `active_external_source` shows a small "(active)" tag, but the *data* in each tile always belongs to that one sensor specifically - a dead wired probe shows up as the Fallback tile going stale, never as the External tile quietly displaying wired data instead. Neither reading affects any control decision or the sensor-failure failsafe on its own - a bad or missing reading from either just shows as blank on the dashboard for that cycle. Both appear as their own permanent lines on the Temperature and Humidity history charts (labeled "External °F"/"External %RH" and "Fallback °F"/"Fallback %RH") - the External line is hidden automatically whenever no BLE sensor has ever been configured, so it doesn't clutter the legend with an empty series; the Fallback line is always shown, since the wired probe is a permanent part of the setup.
-
-Every tile (Internal, External, Fallback) shows an "Updated: Xs/Xm/Xh ago" line - specifically when *that* metric last had a genuinely valid reading, not just when the page last polled the server. A tile's own value can go stale for several cycles (a failed read, a sensor that's currently on standby) while everything else keeps updating normally - this is what makes that visible at a glance instead of only being detectable by digging through the Logs page.
-
-Every automatic failover is logged (both directions - failing over and recovering) so it's visible on the Logs page, not silent just because nothing needs manual switching anymore.
-
-## Data page
-
-A raw readings table (`/data`), one row per control cycle, every column exactly as stored - internal, external, and fallback temp/humidity each under their own fixed name, which external source was active, and each output's on/off state. Unlike the home page's charts (which average into buckets so long ranges don't ship huge amounts of data to the browser), this shows the literal, unaveraged value from each individual cycle - useful for the kind of close diagnosis a chart can visually smooth over, like tracing exactly which cycle a bad reading first appeared in. Same "load more" pagination as the Logs page.
-
-Things worth knowing:
-- **Range through metal ductwork is the main risk.** Test placement with `discover_ble_sensor.py` running before you seal the sensor into the vent — ductwork can attenuate the signal more than open air.
-- **Advertisements can occasionally pause** until something "wakes" the sensor (a known quirk of at least SensorPush's specifically - the companion app, or another BLE connection, can trigger this; may or may not apply to other brands). This is exactly the situation automatic failover exists for: the wired probe takes over the instant the BLE sensor goes stale, and losing the external reading entirely (both sensors down) still doesn't shut anything down (see "Sensor-failure failsafe" below) - it just pauses thermal cooling specifically until a fresh reading comes back from either one, while heating and dehumidifying keep running on internal data.
-- The old wired external-probe wiring (`PIN_EXTERNAL_TEMP`, GPIO5) is left intact and unused in this mode, so you can switch back any time without touching hardware.
-
-### Battery level (~daily check, SensorPush HT1 specifically)
-
-This part is genuinely brand-specific, not generic like the listener - see `ble_battery.py`'s own docstring for why. Battery level isn't in SensorPush's passive advertisement - it only exposes that over a brief active Bluetooth connection, using a proprietary GATT characteristic reverse-engineered specifically for the HT1's firmware. `ble_battery.py` does exactly that, then disconnects immediately - and skips itself cleanly (logging why) if `ble_sensor_type` isn't set to `"sensorpush"`.
-
-The timer itself fires every 4 hours, but the script only actually attempts a connection if the last *successful* check is more than `BATTERY_CHECK_FRESHNESS_HOURS` (20h) old - so under normal operation it still only genuinely connects to the sensor about once a day. The point of the more frequent timer is retry cadence: if a check fails (e.g. the phone app was connected at that moment), the next attempt is only a few hours away instead of waiting up to a full day (or more, if that day also failed) for the next scheduled run.
-
-Many other brands include battery directly in their passive advertisement instead - `ble_listener.py` already saves that for free when present, no separate script needed. Check the Data page before assuming you need an equivalent for your brand.
-
+**Battery check** (SensorPush HT1 only — other brands broadcast battery for free):
 ```bash
 sudo cp systemd/dermestid-battery.service systemd/dermestid-battery.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dermestid-battery.timer
 ```
-
-Check it ran, or run it once by hand to test:
-```bash
-systemctl list-timers dermestid-battery.timer
-python3 ble_battery.py
-```
-
-The result (percentage, voltage, and how long ago it was checked) shows up on the dashboard next to the external sensor's temperature, and a warning event is logged if the battery drops to 15% or below. The check is a no-op if `ble_mac` isn't set, so it's safe to enable even before you've configured an address - it checks the battery whenever an address is set and the brand is SensorPush, regardless of whether it happens to be the currently-active reading or on standby.
-
-A couple of things worth knowing:
-- The HT1 only accepts **one** BLE connection at a time. If the SensorPush phone app happens to be connected right when a check runs, that check simply fails and retries within a few hours (see above) — no crash, just a logged warning.
-- The percentage is a rough estimate from a linear voltage curve (3.1V full, 2.1V empty for the CR2032 it takes), not a precise fuel gauge — treat it as a "getting low, plan a swap" signal rather than an exact number.
-- The 4h timer / 20h freshness combo is a sensible default given how slowly coin cells drain, but you can change either: `OnCalendar=` in `dermestid-battery.timer` controls how often the timer fires at all, and `BATTERY_CHECK_FRESHNESS_HOURS` in `ble_battery.py` controls how stale a successful check has to be before it'll actually try again.
+Checks at most once/day; warns at 15% or below.
 
 ## Camera (optional)
 
-A USB webcam pointed into the enclosure, handled by its own optional service (`camera_service.py`) - like the BLE listener, nothing else in this project depends on it, and it's fine to skip entirely.
-
 ```bash
 pip3 install opencv-python-headless --break-system-packages
+sudo apt install ffmpeg   # needed to compile timelapse sessions into .mp4
 ```
 
-("headless" - no GUI/display dependencies, which a Pi running this as a background service doesn't need and would rather not have to install.)
-
-1. **Plug in the webcam and find its device index:**
-   ```bash
-   python3 discover_camera.py
-   ```
-   This tries `/dev/video0` through `/dev/video9`, saves a sample JPEG for each one that actually opens and reads a frame, and tells you which index each came from. Some webcams register more than one `/dev/videoN` node (one for actual video, one for metadata) - look at the saved images to tell which index is the real camera.
-
-   The Config page's Camera card has its own **Discover** button that does the exact same probing without SSHing in - it shows each working index as a small thumbnail (so you can tell which one is actually pointed into the enclosure) with its detected max resolution. Click one to select it (it highlights, matching the External card's Discover table) and fill in the device field - it also rebuilds the **Resolution dropdown** below from that specific camera's own actually-supported modes: `discover_camera.py` doesn't just report back whatever it negotiated at startup anymore, it tests a curated list of common resolutions against the open device one at a time (`probe_supported_resolutions()`) and keeps only the ones the driver genuinely delivers a frame at, so what you're choosing from is real capability, not a generic list shown regardless of what's actually connected. Before Discover has been run (or if a particular device's probe came back empty), the dropdown falls back to that same common-resolutions list unverified - still a reasonable starting point, just not confirmed for your specific hardware yet. Nothing is saved to disk this way (the sample frame comes back inline as the button's own result, not a file next to the script), so repeated clicks don't leave old `discover_camera_N.jpg` files scattered around the project directory. It also handles the one thing the CLI version leaves to you: if `dermestid-camera.service` is already running, it's holding the real camera device open (most webcams only allow one client at a time), so the button briefly stops that service, probes, then starts it again - this needs the two extra `sudoers` lines from the "one-click apply" section above (`stop`/`start dermestid-camera.service`); without them Discover still runs, it just won't see whichever index the service already has open.
-
-2. **Set it on the dashboard** (Config page's Camera card), or by hand-editing `config.json`:
+1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `dermestid-camera.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
+2. Set it on the Config page, or in `config.json`:
    ```json
    "camera": {
      "device": "0",
@@ -187,38 +145,16 @@ pip3 install opencv-python-headless --break-system-packages
      "stream_relay_fps": 7
    }
    ```
-   `device` can be a bare index (`"0"`) or a full path - a `/dev/v4l/by-id/...` symlink is more robust than a bare index if you ever have more than one USB video device connected, since indices can shuffle across a reboot depending on enumeration order but a by-id symlink won't. A device/resolution change is read once at startup (same reasoning as the BLE sensor brand setting below), so saving one from the Config page **automatically restarts `dermestid-camera.service`** for you - no separate manual restart step needed (this needs the same `restart dermestid-camera.service` sudoers line from the one-click-update section above; without it, the save still succeeds, it just tells you the automatic restart failed and to restart the service by hand). Quality and both fps settings take effect within one cycle on their own, so saving those alone doesn't restart anything - no point interrupting the live view for a change that would've applied itself within a second or two anyway.
-
-   Two separate frame-rate knobs, both in **frames/sec - higher is faster/smoother**, the intuitive direction (this project's own earlier `live_capture_interval_seconds`/`stream_relay_interval_seconds` names meant the opposite - a *smaller* number of seconds *between* frames was *more* frames per second, which caused real confusion more than once, including in a chat session helping tune it - so these were renamed and re-expressed as fps outright, not just relabeled): `live_capture_fps` is how often `camera_service.py` grabs a frame from the actual USB device (e.g. `5` = a frame every 0.2s); `stream_relay_fps` is how often `webapp.py` re-sends the latest already-captured frame to each open browser tab (e.g. `7` = a frame every ~0.14s), independent of the capture rate. A config.json still using the old seconds-based keys is migrated automatically on the next load (`load_config()` converts the old value to its fps equivalent, same one-time-migration pattern as the earlier `sensorpush_mac` -> `ble_mac` rename) - nothing to do by hand. A Pi 3B+ shares its CPU with `climate.py`, the actually safety-critical part of this project, so raise either rate only after confirming there's real headroom - and now that there's a Pi 4 in the picture, watch the **Pi health** readout under the Home page's live view (CPU temp/load, sampled once per `climate.py` cycle - see `shared_state.get_pi_health()`) while you push these, rather than guessing. Lower resolution/quality first if you're out of headroom.
-
-3. **Run it** alongside the other services:
-   ```bash
-   python3 camera_service.py
-   ```
-
-**Live view** (Home page, between the sensor tiles and the History chart): the service captures a frame `live_capture_fps` times a second and atomically overwrites a single `camera/latest.jpg`; the dashboard's `/api/camera/stream.mjpg` endpoint re-reads that file on its own short timer and relays it to the browser as an MJPEG (`multipart/x-mixed-replace`) stream, which a plain `<img>` tag renders natively as continuously-updating video - no codec, player, or JS polling loop needed. It's a genuine live feed, not a still-image slideshow, while still only ever having ONE process (`camera_service.py`) touch the actual USB device: a real webcam typically only accepts one client connection at a time anyway, so every browser tab gets its own independent relay of the same shared file rather than opening the camera itself. (This is also why `app.run()` in `webapp.py` needs `threaded=True` - a stream holds its HTTP connection open indefinitely, which would otherwise block every other page on the dashboard behind it.) The live view is the actual point of the camera feature - being able to look in on the enclosure the same way you'd walk over and look yourself.
-
-A 💡 icon overlaid in the corner of the live view turns on the enclosure's door/lid light on demand - the same relay (`PIN_LIGHT` in `climate.py`) the reed switch already drives whenever the lid is physically open, so you can actually see something in the live view without opening it. It's a manual override on top of the switch, not a replacement for it: opening the lid always turns the light on regardless of this button, and this button can only ever add light-on time, never block the switch. Clicking it POSTs to `/api/light-override`, which just sets a timestamp in `config.json` - `climate.py`'s existing `light_loop()` thread (already polling the door switch 20x/sec) checks that timestamp about once a second and treats "door open OR override still in its window" as "light on." The override expires on its own 5 minutes after being turned on (`LIGHT_OVERRIDE_DURATION_SECONDS` in `shared_state.py`) - deliberately self-expiring rather than a plain toggle, so a forgotten click or a closed browser tab can't leave the light on indefinitely; clicking the icon again while it's lit clears the override immediately instead of waiting out the timer. No `sudoers` entry needed for this one - unlike the camera/update buttons, this never shells out to `systemctl`, it's a config value `climate.py` already reads as the same process that owns the GPIO pin.
-
-**Pi health** (small readout under the Home page's live view, and two extra columns on the Data page's raw table): the Pi's own CPU temperature and load average - entirely separate from the enclosure's own climate sensors, useful for confirming the Pi itself has headroom before pushing the camera's capture/relay intervals faster (see above), or for spotting whether a webcam's power draw is pushing the Pi toward thermal throttling. `shared_state.get_pi_health()` reads it via `vcgencmd measure_temp`/`vcgencmd get_throttled` (Raspberry Pi firmware tools - returns all-`None` harmlessly if they're not present, e.g. running this code somewhere other than a real Pi) plus `os.getloadavg()`, sampled once per `climate.py` control cycle alongside the sensor readings and logged into the same `readings` table (`cpu_temp_f`/`cpu_load_1m` columns) - so it's both a live number to watch and a historical trail, without a second sampling loop or a new table. The Home page readout turns amber past 158°F/70°C and red past 176°F/80°C (`PI_TEMP_WARN_F`/`PI_TEMP_DANGER_F` in `home.html`) - the Pi doesn't actually start throttling until a few degrees past the red threshold, so amber is "keep an eye on it," not yet a real problem. The `get_throttled` under-/over-voltage flags themselves (the same ones checked by hand throughout this project's BLE troubleshooting - see `PROJECT_STATUS.md`) aren't currently surfaced on the dashboard, just temp/load; still worth checking `vcgencmd get_throttled` directly if you suspect a power issue specifically.
-
-**Timelapse** (its own page, renamed from "Camera"): each of the three modes (Dormant/Ready/Cleaning) has its own `snapshot_interval_minutes` on the Config page, right next to that mode's setpoints - `0` means never (no timelapse capture while in that mode). Whichever mode is currently active is the one whose interval applies; switching modes doesn't itself trigger an immediate snapshot, it just changes how often future ones happen.
-
-Unlike the live view, this isn't just a nice-to-have gallery of stills - every time the enclosure leaves a mode that was capturing snapshots (a mode change, or `camera_service.py` restarting mid-session and correctly recovering where that session started), the frames from that session are automatically compiled into an actual `.mp4` video with `ffmpeg` (at a fixed `TIMELAPSE_VIDEO_FPS`, currently 12), so a multi-hour cleaning session plays back in a few seconds - the intended use is showing someone the whole process, not scrubbing through hundreds of individual JPEGs by hand. Compiling happens in a background thread so it never blocks the live-capture loop, and needs at least `MINIMUM_FRAMES_FOR_VIDEO` (3) frames to bother - a session with fewer than that (interval set too long, or the mode change happened almost immediately) is skipped rather than producing a near-empty video. Requires `ffmpeg` on the Pi:
-```bash
-sudo apt install ffmpeg
-```
-If `ffmpeg` isn't installed, compiling is skipped with a logged warning rather than crashing the service - the raw frames for that session are simply left in place (see disk space below) until it's installed and a future session compiles normally.
-
-The Timelapse page lists every compiled video, newest first (poster thumbnail, mode, duration, frame count, file size), with a lightbox player, per-video Download/Delete, and multi-select for bulk download or delete - same "Load more" pagination as the Logs and Data pages.
-
-**Disk space**: a session's raw frames are deleted automatically once they're successfully compiled into that session's video - the video is what's meant to be kept, not the frames it was built from, so there's no separate retention setting for finished videos to worry about day-to-day. Before compiling happens (the current, still-in-progress session, or if `ffmpeg` is missing), the same hardcoded safety net as before still applies: if free disk space drops below 200MB, the service deletes the oldest saved snapshots (logging a warning, once, not every cycle) to keep the SD card from actually filling up and taking the whole Pi down - which would also kill climate control, the actually safety-critical part of this project. If you see that warning regularly, lower the snapshot interval, resolution, or JPEG quality rather than relying on it to keep bailing you out.
+   A device/resolution change auto-restarts `dermestid-camera.service`. `live_capture_fps` is how often a frame is grabbed from the USB device; `stream_relay_fps` is how often the dashboard re-sends the latest frame to each open browser tab — both take effect within a cycle, no restart needed. Watch the header's Pi temp/load/disk-free readout while raising either, since the Pi shares its CPU with `climate.py`.
+3. Run it: `python3 camera_service.py`
 
 ```bash
 sudo cp systemd/dermestid-camera.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dermestid-camera.service
 ```
+
+**Live view** (Home page) is a genuine MJPEG stream, not a slideshow — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) auto-compiles each mode session's frames into an `.mp4` once it ends; set `snapshot_interval_minutes` per mode on the Config page (`0` = off). A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
 
 ## Run permanently (recommended)
 
@@ -227,44 +163,28 @@ sudo cp systemd/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dermestid-climate.service
 sudo systemctl enable --now dermestid-web.service
-# only if you're using a BLE external sensor:
-sudo systemctl enable --now dermestid-ble.service
-# optional daily battery check, see below:
-sudo systemctl enable --now dermestid-battery.timer
-# only if you're using a USB webcam, see "Camera" above:
-sudo systemctl enable --now dermestid-camera.service
+sudo systemctl enable --now dermestid-ble.service       # only if using a BLE sensor
+sudo systemctl enable --now dermestid-battery.timer      # optional
+sudo systemctl enable --now dermestid-camera.service     # only if using a webcam
 ```
 
-Check status/logs:
 ```bash
 systemctl status dermestid-climate.service
 journalctl -u dermestid-climate.service -f
 tail -f /home/pi/dermestid/logs/climate.log
 ```
 
-The unit files assume the folder is at `/home/pi/dermestid` and the user is `pi` — edit `WorkingDirectory`/`ExecStart`/`User` if yours differs.
+Unit files assume `/home/pi/dermestid` and user `pi` — edit `WorkingDirectory`/`ExecStart`/`User` if yours differs.
 
-## Optional: update notifications + one-click apply
+## Automatic updates
 
-By default, getting a code change onto the Pi means `git pull` + restarting the affected service by hand every time. This project can now tell you when an update is waiting and apply it with one click, instead.
+`webapp.py` checks GitHub every 15 minutes (configurable) and shows a banner with an **Update now** button when a commit is waiting — read-only until you click it. The Config page's branch dropdown lets you track something other than `main` for testing.
 
-**Checking for updates works out of the box, no setup needed.** `webapp.py` runs a background check every 15 minutes by default (configurable on the Config page, 1–1440 minutes) — read-only, it only compares your local commit to GitHub's, never pulls or restarts anything by itself. When it finds something new, a banner appears at the top of every page (Home, Logs, Config) linking to the Config page, which also shows the specific commit message and an **"Update now"** button. A separate **"Check now"** button runs that same read-only check immediately, for whenever the configured interval feels too slow to wait out.
-
-**Actually applying an update — either via that button, or the fully-hands-off timer below — needs a one-time permission setup**, since both ultimately restart services without anyone there to type a password:
-
-### Tracking a different branch
-
-The Config page's Software updates tile has a branch dropdown, populated from whatever branches actually exist on the remote (`git ls-remote`). By default it tracks `main`. Selecting a different branch and saving means both the periodic checker and the "Update now" button start tracking that branch instead - useful for testing something before it's merged to main, exactly the workflow used for the BLE-sensor-genericization work.
-
-**A branch switch is a different git operation than a normal update**, and `auto_update.sh` handles both correctly: pulling new commits when you're already on the target branch, or actually checking out a different branch when the target changes. Same stash-safety either way for any local uncommitted changes to tracked files. Verified directly against a real git remote with two branches: a clean same-branch update, an actual branch switch (confirmed the working files genuinely changed to match the new branch), running it again immediately afterward correctly reporting "up to date," a clean non-conflicting local change surviving a branch switch, and a genuinely conflicting one degrading exactly the same graceful way the existing config.json-conflict handling already did (a clear warning, not a crash, nothing silently lost).
-
-**What this can't do**: automatically handle deeper structural changes a branch might contain - a renamed systemd service (like the BLE genericization work itself needed), a new required config key with no sensible default, anything that isn't purely "different files at different git commits." A branch switch this way only takes care of the git-level file changes; anything the branch's own commit messages or notes say to do manually still needs to be done manually. Switching branches is meant for deliberate testing, not something to leave set to non-main long-term - switch back to main once you're done.
+Applying an update (via the button, or the fully-hands-off timer below) restarts services without anyone there to type a password, so it needs a one-time setup:
 
 ```bash
 sudo visudo -f /etc/sudoers.d/dermestid
 ```
-
-Paste this in, save, and exit:
 ```
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-climate.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-web.service
@@ -273,89 +193,47 @@ pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-camera.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl stop dermestid-camera.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl start dermestid-camera.service
 ```
-
-(Run `which systemctl` first and double-check it matches `/usr/bin/systemctl` — if your system has it somewhere else, use that exact path instead, since `sudoers` rules must match exactly.)
-
-The `stop`/`start` pair (as opposed to `restart`) is for the Config page's camera **Discover** button (see the Camera section below) — it needs to briefly stop `dermestid-camera.service` so a probing script can open the USB device itself (most UVC webcams only allow one client at a time), then start it again afterward. Without these two lines, Discover still runs, it just won't be able to see whichever index the service already has open — everything else keeps working.
+(Run `which systemctl` first — the path must match exactly.)
 
 ```bash
 chmod +x auto_update.sh
 ```
 
-That's it for the button — the Config page's "Update now" runs `auto_update.sh` for you (as a detached background process, so it survives the web service restarting itself partway through — genuinely tested, not just assumed to work).
+That's it — "Update now" runs `auto_update.sh` as a detached background process so it survives `dermestid-web.service` restarting itself partway through.
 
-**If you'd rather it apply automatically with no click at all**, there's still the fully-hands-off timer option:
-
+**Fully automatic** (no button, checks/applies every 5 minutes on its own):
 ```bash
 sudo cp systemd/dermestid-autoupdate.service systemd/dermestid-autoupdate.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dermestid-autoupdate.timer
 ```
 
-This runs the same `auto_update.sh` every 5 minutes on its own — no banner needed, no button to click, it just happens. Check it's working:
-```bash
-systemctl list-timers dermestid-autoupdate.timer
-journalctl -u dermestid-autoupdate.service -n 20
-```
+Local `config.json` changes are stashed before pulling and restored after (a warning is logged if that ever conflicts). Anything pushed to your GitHub repo can end up running on the Pi within the check interval.
 
-Or trigger it once immediately:
-```bash
-sudo systemctl start dermestid-autoupdate.service
-journalctl -u dermestid-autoupdate.service -n 20
-```
+## Dashboard pages
 
-A few things worth knowing, whichever way you apply an update:
-- If you've customized settings through the dashboard (setpoints, sensor source), `config.json` has local changes that aren't committed to git. The script stashes those before pulling and restores them right after, so they survive an update — this is tested, not just assumed. If an incoming update ever touches the exact same part of `config.json` your local changes touched, the automatic restore can fail; the script logs a clear warning if that happens, and `git stash list` on the Pi will have your changes waiting to be sorted out by hand.
-- Before touching any files, the script verifies passwordless sudo actually works and bails out cleanly with a clear error if it doesn't — rather than pulling new code and then discovering it can't restart the services to run it, leaving you in a half-updated state.
-- Anything pushed to your GitHub repo can end up running on the Pi (within the check interval, or on your next button click). Since only your own GitHub account can push to it, that's the same level of trust as "I trust my own account," but worth being aware of.
-- Restarting `dermestid-climate.service` briefly interrupts climate control for a couple of seconds each time an update actually lands - not meaningfully different from restarting it by hand, just automatic now.
+- **Home** (`/`) — live readings, relay states, mode switch, live camera view, and the temp/humidity history graph (1h–30d).
+- **Logs** (`/logs`) — event log with level filter and pagination.
+- **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
+- **Timelapse** (`/timelapse`) — compiled per-session videos.
+- **Config** (`/config`) — per-mode setpoints, sensor source/calibration, BLE and camera settings, software updates.
 
-## What changed from your original script
-
-**Safety fixes:**
-- **Sensor sanity checking** — readings outside a physically-possible range, or that jump more than `MAX_DELTA_TEMP`/`MAX_DELTA_HUMIDITY` from the last good reading in one cycle, are now rejected as DHT glitches instead of trusted.
-- **Sensor-failure failsafe** — this only applies to the *internal* sensor (temp or humidity): if no valid internal reading comes in for `SENSOR_FAIL_TIMEOUT` (90s), everything (heater, fan, dehumidifier) is forced off and an alarm event is logged, instead of leaving outputs in whatever state they were last in. Every control decision fundamentally depends on internal readings, so there's no safe degraded mode there. The *external* sensor is different: losing it doesn't stop the internal-only decisions (heating, dehumidifying, the scheduled cleaning-mode vent) since none of them need it - it only pauses thermal cooling specifically, since that's the one decision that genuinely can't be made safely without knowing whether outside air would actually help (running the fan blind could just import hotter air). This matters in practice with the wired probe as the automatic fallback for the BLE sensor: a garage-placed wired sensor being less accurate than true outdoor air is a fine tradeoff for a fallback role, since the system only needs the rough direction ("meaningfully cooler out or not") to make safe cooling decisions.
-- **Glitch-vs-real-change recovery** — the anti-glitch filter (rejects a reading that jumps too far from the last accepted one) has a self-recovery mechanism: if several consecutive rejected readings keep landing consistently close to *each other*, even though they all differ from the old accepted value, that's treated as a genuine sustained change (real drift) rather than sensor noise, and gets accepted as the new baseline after a few consistent readings in a row. Without this, a real gradual temperature change that happened to exceed the per-cycle jump limit would get compared forever against an ever-more-stale frozen reference point and never be accepted again - which is exactly what happened once in practice before this was added, triggering a real emergency shutdown that then never recovered on its own until the service was restarted.
-- **DHT22 read retries** — each individual DHT22 read (internal or wired external/fallback probe) gets up to 3 attempts with a short pause between them before giving up for that cycle. DHT sensors fail an occasional single read as a matter of course - a timing-sensitive single-wire bit-banged protocol, not a robust checksummed bus - and this is exactly why the old, now-archived Adafruit_DHT library built retries in by default; the newer CircuitPython library this project uses does not, so it's handled explicitly here. This meaningfully cuts down how often "Internal sensor reading unavailable" shows up in the logs from ordinary sensor flakiness, not a real sustained problem - measured against a simulated 35% single-attempt failure rate, retries cut the fraction of cycles that fail outright from about 37% to under 5%.
-- **Heater runtime cutoff** — the heater can no longer run continuously for more than `HEATER_MAX_ON_SECONDS` (20 min) without reaching setpoint; it cuts off, logs a warning, and locks out for 5 minutes before it's allowed to retry. Same pattern applied to the fan for motor protection.
-- **Heat/cool mutual exclusion** — if genuine thermal cooling and a heat request land in the same cycle, cooling wins and heating is skipped that cycle, with a logged warning, so they can't fight each other. This does *not* apply to the cleaning-mode scheduled ventilation cycle, which is a separate, deliberate carve-out: that vent fires on a fixed schedule purely to flush air quality, not because it's hot, so heat is allowed to run right alongside it if it's genuinely cold - otherwise a routine air-quality flush could cause a real temperature dip that has nothing to do with why the fan turned on.
-- **Crash resilience** — an unexpected exception inside the control loop is now caught, logged, and the loop continues on the next cycle instead of taking the whole service down. `systemd` with `Restart=on-failure` is a second layer of defense on top of that.
-- **Clean shutdown on `systemctl stop`/restart** — added a `SIGTERM` handler so GPIO cleanup (closing the servo, turning outputs off) actually runs when systemd stops or restarts the service, not just on Ctrl+C.
-- **`PIN_LIGHT` moved from GPIO15 to GPIO26** — GPIO15 doubles as UART0 RXD, which caused unpredictable behavior on Pis with the serial console enabled. Rewire the door/light circuit to GPIO26, or edit `PIN_LIGHT` in `climate.py` back if you'd rather disable the serial console instead (`sudo raspi-config` → Interface Options → Serial Port → login shell off, hardware enabled off).
-- **Logging** — switched from bare `print()` to Python's `logging` module with a rotating file (`logs/climate.log`, 5 x 2MB), plus every meaningful state change/alarm is also written to the SQLite `events` table so it shows up in the dashboard.
-
-**New: activity modes**
-
-`config.json` now holds three modes, each with its own temperature/humidity setpoints. `climate.py` re-reads this file every 15-second cycle, so a mode change from the dashboard takes effect almost immediately.
+## Activity modes
 
 | Mode | Behavior |
 |---|---|
-| **Dormant** | Lower temperature band (55–60°F default) to slow the colony's metabolism — less feeding, less breeding, useful when you don't want them actively working. |
-| **Ready** | Warmer/humid band (78–85°F, 50% RH default) for active feeding and breeding. |
-| **Cleaning** | Same thermal targets as Ready, plus a scheduled forced-ventilation cycle (defaults: 5 minutes of fan+servo-open every 30 minutes) that runs regardless of temperature, to keep odor from building up in the ducted intake/exhaust while a job is in progress. |
+| **Dormant** | Lower temp band (55–60°F default) — slows the colony down. |
+| **Ready** | Warmer/humid band (78–85°F, 50% RH default) — active feeding/breeding. |
+| **Cleaning** | Same as Ready, plus scheduled forced ventilation (default: 5 min every 30 min) to control odor. |
 
-The default numbers are a reasonable starting point, not a substitute for your own care-sheet — dermestid tolerances vary a bit by species and colony size, so watch how yours responds over the first week or two and tune from the dashboard.
+Defaults are a starting point, not a care sheet — tune from the dashboard based on how your colony responds.
 
-**Web dashboard — four pages**
-- **Home** (`/`) — purely informational: live internal/external temp, humidity, relay states (refreshing every 5s), a mode dropdown (Dormant/Ready/Cleaning), and the history graph (1h/6h/24h/7d/30d) of internal, external, and fallback temp/humidity, downsampled server-side so long ranges stay fast. The 1h view buckets into 2-minute intervals - a close-up window for spotting exactly when something changed, finer than the 6h view's 15-minute buckets.
-- **Logs** (`/logs`) — the full event log (mode changes, relay on/off, warnings, alarms) with a level filter (info/warning/error/critical) and a "Load more" button for paging further back. Auto-refreshes only while you're on the newest page, so paging back doesn't get yanked out from under you.
-- **Data** (`/data`) — raw readings table, one row per control cycle, every column exactly as stored - see "Data page" above.
-- **Config** (`/config`) — per-mode setpoint editing (with server-side range/sanity validation — e.g. it won't let you set low temp ≥ high temp, or a vent duration longer than the interval), the internal sensor source switch (DHT22 vs SHT31), per-sensor calibration offsets, and the BLE sensor's address/brand (external source failover itself is automatic, not a manual switch - see "External reading" above).
+## Safety behaviors (not configurable from the dashboard)
 
-All three share the same `/api/*` endpoints as before; `/api/events` now also accepts `level` and `before` query params for the logs page's filtering and pagination.
+- No valid **internal** reading for 90s → everything forced off, alarm logged (no safe degraded mode without internal data).
+- Losing the **external** reading only pauses thermal cooling — heating/dehumidifying/scheduled venting don't need it.
+- Heater max continuous runtime: 20 min; fan: 60 min — each cuts off and locks out for 5 min if hit.
+- Simultaneous heat + genuine cooling → cooling wins, heat skipped that cycle (the scheduled cleaning-mode vent is exempt — it's not a thermal decision).
+- Readings that jump too far from the last accepted value in one cycle are rejected as glitches, with self-recovery if several consecutive rejections agree with each other (treated as a real sustained change, not noise).
 
-**Internal sensor: switchable between DHT22 and SHT31**
-
-`internal_source` in `config.json` (or the Config page dropdown) picks which sensor `climate.py` reads for the internal temp/humidity — `dht22` (default, GPIO27) or `sht31` (I2C). Switching takes effect within one control cycle, no restart needed. Whichever one isn't selected is never touched — with `dht22` selected, `climate.py` doesn't import or call anything I2C-related at all, so there's no risk of it trying to talk to hardware that isn't there.
-
-If you're running the SHT31: it's a genuine upgrade — tighter accuracy (±0.2°C/±2%RH vs the DHT22's ±0.5°C/±2-5%RH) and, more importantly for this enclosure, an onboard heater it can use to dry itself off after condensation. With humidity actively held around 50% and a dehumidifier cycling, condensation on the sensor element is a realistic failure mode; the DHT22 has no way to recover from that on its own.
-
-`climate.py` watches for internal humidity pegged at or above 99% for more than a minute (SHT31 mode only — this check is skipped entirely on DHT22, which has no heater to pulse) and, when it sees that, pulses the SHT31's heater for 10 seconds (rate-limited to once per 10 minutes) rather than just reporting garbage until it dries out on its own. This check runs on the raw reading *before* the delta-glitch filter, deliberately — a real condensation event can jump straight to ~100% faster than the filter's normal tolerance, and if the recovery logic only looked at filtered readings, a real condensation event would look identical to a dead sensor and slide straight into the emergency-shutdown failsafe instead of ever getting a chance to dry out. The delta-filtered value is still the only thing the actual heat/cool/dehumidify decisions act on, so control quality isn't affected — only the recovery trigger sees the raw value.
-
-The external probe fallback (`local_gpio` mode, wired DHT22/AM2302 on GPIO5) is untouched and still available if you ever stop using a BLE sensor.
-
-## Tuning knobs that stay hardcoded (on purpose)
-
-Things like hysteresis bands, the sensor-failure timeout, the heater/fan runtime cutoffs, and the SHT31 condensation-recovery thresholds live as constants at the top of `climate.py` rather than in the web UI — they're safety guardrails, not day-to-day settings. If you want to adjust them, edit the constants directly and restart the service.
-
-Same idea in `camera_service.py`: its capture-stall watchdog timeout, the consecutive-failure count before it proactively reopens the device, and the low-disk-space snapshot-pruning threshold are all constants at the top of that file, not Config-page settings — see the "Camera" section above for the reasoning.
+These live as constants at the top of `climate.py` (and `camera_service.py`, for its own watchdog/disk-space thresholds) — edit and restart the service to change them.

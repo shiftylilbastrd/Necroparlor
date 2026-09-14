@@ -1469,3 +1469,35 @@ pattern has been consistent: tie things to identity, never to role.
   - **Not yet confirmed on real hardware/deployed** - needs
     `dermestid-web.service` restarted to pick up the `webapp.py`/
     `base.html` changes.
+
+- **[2026-09-14] README rewritten for concision, GPIO pinout diagram added**
+  - User asked for `README.md` to be made "as clear, concise, and
+    streamlined as possible." It had grown to 361 lines/36KB, much of it
+    narrative justification and troubleshooting-anecdote prose that
+    belongs in this file, not there (this project already draws that
+    line - the README's own opening line says as much). Rewrote it down
+    to ~11.9KB: every actionable command, wiring table, config key, and
+    safety-relevant constant kept (cross-checked several against the
+    actual code while rewriting - e.g. caught that the README claimed a
+    20-minute fan runtime cutoff, but `climate.py`'s real
+    `FAN_MAX_ON_SECONDS` is 60 minutes, only the heater is 20 - fixed to
+    match code, not the old README text). Dropped entirely: the "What
+    changed from your original script" changelog section (redundant with
+    this file), verified-this-specifically QA anecdotes, and multi-
+    paragraph design-rationale digressions. Also fixed a stale "Pi 3B+"
+    CPU-sharing reference in the camera fps paragraph that predated this
+    session's Pi 4 migration.
+  - Added `docs/gpio-pinout.svg` - a full 40-pin header diagram,
+    color-coded (used-by-this-project / I2C-optional / power / ground /
+    reserved / unused / dead-on-this-board), generated from
+    `climate.py`'s actual `PIN_*` constants rather than a generic Pi
+    pinout graphic. Built via a small generator script,
+    `docs/gen_gpio_pinout.py` (not part of the running app - rerun it by
+    hand and commit the regenerated SVG if `PIN_*` ever changes again,
+    same as the GPIO4->5 move earlier this session would have needed).
+    Verified by rendering to PNG with `cairosvg` and visually inspecting
+    - caught and fixed a legend-text-clipping issue and a low-contrast
+    swatch-color issue on the first pass before finalizing.
+  - **Not yet confirmed by the user** - both the trimmed README and the
+    new diagram are pushed but not yet reviewed for accuracy/readability
+    on their end.
