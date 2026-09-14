@@ -9,6 +9,18 @@
      generate or host. Supported by all current major browsers; one that
      doesn't support it just shows no icon at all, not a broken one. -->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪲</text></svg>">
+<!-- iOS's "Add to Home Screen" specifically does NOT use rel="icon" (nor
+     does it render emoji/SVG data URIs even where it does look at a
+     touch-icon) - it only ever looks for rel="apple-touch-icon", and
+     falls back to a plain letter tile when that's missing, which is
+     exactly what was happening here. static/apple-touch-icon.png is a
+     real 180x180 PNG (the size Apple's own HIG recommends so it's sharp
+     on Retina without iOS upscaling it) of the same beetle emoji,
+     rendered via headless Chromium + Noto Color Emoji since Pillow can't
+     draw color emoji glyphs itself, then autocropped and centered on the
+     app's own --bg color as a flat background (a transparent PNG here
+     gets shown as plain black by iOS, not the app's dark panel color). -->
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
 {% block head_extra %}{% endblock %}
 <style>
   :root {

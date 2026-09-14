@@ -34,6 +34,23 @@
   .mode-option:hover { background: rgba(79,178,134,0.12); }
   .mode-option.active { background: rgba(79,178,134,0.16); }
   .mode-option small { display: block; color: var(--text-dim); margin-top: 2px; }
+  /* Mobile: .header-row wraps and the mode-dropdown ends up alone on its
+     own line, pinned to the LEFT edge of the screen (a lone flex item on
+     a wrapped line with justify-content:space-between collapses to
+     flex-start). The desktop .mode-options above anchors with `right: 0`
+     against the 170px trigger specifically because on desktop the
+     trigger sits at the far RIGHT of the header row, so opening further
+     right would run off that edge - but that same right-anchor, applied
+     to a 220px-wide panel against a trigger now pinned at the screen's
+     LEFT edge, pushes the panel's left edge off-screen instead (exactly
+     the reported bug). Fix: below this breakpoint, make the trigger
+     full-width and have the options panel match it exactly (left/right
+     both 0) so it's anchored to both edges of the same on-screen box
+     instead of overhanging either side of it. */
+  @media (max-width: 640px) {
+    .mode-dropdown { width: 100%; }
+    .mode-options { left: 0; right: 0; width: auto; }
+  }
   .chart-label { font-size: 0.8rem; color: var(--text-dim); margin: 14px 0 6px 0; font-weight: 600; }
   .tile-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
   .tile-side { text-align: right; flex-shrink: 0; }
