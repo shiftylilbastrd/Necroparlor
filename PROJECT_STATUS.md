@@ -15,6 +15,29 @@ rather than just editing it silently.
 
 ## Current state (as of this writing)
 
+**[STANDING CONTEXT, stated by Ryan 2026-09-14 - re-read this every session,
+it keeps getting lost across auto-summaries]**
+1. **This is still benchtop development.** Nothing here is installed in
+   the actual freezer enclosure yet. Don't treat "confirmed on real
+   hardware" entries elsewhere in this file as "confirmed in the final
+   deployment" - they mean "confirmed on the benchtop rig."
+2. **All three sensors (internal DHT22, external DHT22, and the BLE
+   sensor if attached) are sitting within inches of each other** on the
+   bench right now. Internal/external readings tracking each other
+   closely is expected right now and is NOT evidence the fixed-identity/
+   fallback logic is broken - there's no real environmental separation
+   yet to tell them apart.
+3. **The relays are not switching any actual devices** - no real heater,
+   fan, dehumidifier, or light is connected downstream of them right
+   now. A relay "safety cutoff" (e.g. the 20-minute heater max-runtime)
+   firing is expected/mechanical in this state, not evidence of an
+   actual heating/cooling problem, since there's no real thermal load
+   for the internal temperature to ever respond to.
+4. **No separate power supply is available yet.** Everything currently
+   has to be powered off the Pi's own GPIO 5V/3.3V pins for testing -
+   don't suggest an external PSU as a near-term fix without checking
+   whether one has become available.
+
 - **`main` is current and complete.** The `ble-genericization` branch
   (full SensorPush→generic-BLE rebrand, the fixed-sensor-identity
   dashboard redesign, branch-selection in the update system, and
@@ -1564,3 +1587,58 @@ pattern has been consistent: tie things to identity, never to role.
     all five locally; verified via `device_list_dir` that none of them
     remain in the folder. Still needs a commit/push to actually remove
     them from the tracked repo.
+
+- **[open, 2026-09-14] Frequent "Internal sensor reading unavailable"
+  warnings - investigation started**
+  - User reported dashboard logs full of "Internal sensor reading
+    unavailable - starting failsafe countdown" (internal DHT22, GPIO27)
+    - roughly 33 separate outages across ~5 hours on 2026-09-13 (this
+    message only logs once per outage, on the first failed cycle, until
+    a good read clears it - see the code comment at the `log_event` call
+    site in `climate.py`), i.e. a full 3-retry read failure about every
+    8-9 minutes on average. That's well beyond the "occasional
+    single-attempt DHT flakiness" an earlier session's fix assumed was
+    normal. Confirmed these are genuine raw read failures, not the
+    anti-glitch delta filter (`validate_reading()` logs a distinctly
+    different message, "...reading rejected: jumped from X to Y...",
+    which never appeared in the reported logs).
+  - Same log dump also showed 7 "Heater safety cutoff: on continuously
+    for over 20 min" events that evening. **Initial theory (probably
+    wrong, see correction below)**: proposed that frequent sensor
+    outages were blinding the control loop during heating runs (a failed
+    read cycle skips the whole heat/cool decision block entirely, so the
+    heater can't be turned off even if setpoint was actually reached
+    during an outage), contributing to hitting the hard 20-minute cutoff
+    instead of a normal setpoint-reached shutoff.
+  - **Correction, same day**: per the standing benchtop-context note
+    added above, the relay outputs aren't wired to any actual heater/
+    fan/dehumidifier right now. With no real thermal load, the internal
+    temperature was never going to move toward setpoint no matter what
+    the sensor was doing - so hitting the 20-minute heater cutoff every
+    time is expected mechanical behavior in this test rig, not evidence
+    tied to the sensor-outage frequency. The sensor-outage investigation
+    below still stands on its own; the heater-cutoff correlation
+    proposed initially should be treated as unconfirmed/likely
+    coincidental, not a real causal link, unless a real heater load is
+    added later and the cutoffs keep happening just as often.
+  - **Leading hypothesis for the outage frequency, given this session's
+    parallel finding that both DHT22s are wired to 3.3V (see the jumper-
+    color/GPIO-pinout entries above)**: 3.3V is the bottom of the DHT22's
+    spec range, and the sensor draws more current during an actual
+    sample than at idle - more vulnerable to a failed read from wiring
+    resistance/connection quality at 3.3V than at 5V.
+  - **Live experiment, in progress (2026-09-14)**: user temporarily
+    unhooked the relay/servo power from the Pi's 5V pins and moved both
+    DHT22s onto 5V instead, specifically to test the voltage theory -
+    only possible because the relays aren't driving real loads yet (see
+    standing context above) and there's no separate PSU available. This
+    is explicitly a **temporary benchtop test wiring**, not a documented
+    final state - **README.md and docs/gpio-pinout.svg still say 3.3V
+    for both DHT22s and have NOT been changed to match**, pending the
+    result of this test and Ryan confirming whether 5V is the wiring
+    he's keeping. Update both docs once that's settled either way.
+  - Also suggested, not yet done: cross-reference the Data page's Pi
+    load / camera fps columns (added earlier this session) against the
+    outage timestamps to check for CPU-contention correlation as an
+    alternate/additional cause.
+  - **Not yet resolved** - waiting on results from the 5V test.
