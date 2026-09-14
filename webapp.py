@@ -104,11 +104,13 @@ def api_status():
 
     last_valid = state.get_last_valid_timestamps()
     camera_stats = state.get_camera_stats()
+    disk_free_gb = state.get_disk_free_gb()
 
     return jsonify({"config": config, "latest": latest, "stale": stale,
                      "ble_status": ble_status, "door_status": door_status,
                      "last_valid_timestamps": last_valid,
-                     "camera_stats": camera_stats})
+                     "camera_stats": camera_stats,
+                     "disk_free_gb": disk_free_gb})
 
 
 @app.route("/api/light-override", methods=["POST"])

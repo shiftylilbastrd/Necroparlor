@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Home - Dermestid Enclosure{% endblock %}
+{% block title %}Home - Necroparlor{% endblock %}
 {% block head_extra %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -63,7 +63,7 @@
 {% block content %}
 
 <div class="header-row">
-  <h1>🪲 Dermestid Enclosure</h1>
+  <h1>🪲 Necroparlor</h1>
   <div class="status-badges">
     <div class="output-badge off" id="lightBadge" title="Internal light"><span class="badge-icon" id="lightIcon">💡</span> Light</div>
     <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon">🌀</span> Fan</div>
@@ -226,7 +226,7 @@ async function refreshStatus() {
   const data = await res.json();
   document.getElementById('staleBanner').style.display = data.stale ? 'block' : 'none';
   updateDoorBanner(data.door_status);
-  updateNavPiStats(data.latest);
+  updateNavPiStats(data.latest, data.disk_free_gb);
   const lastValid = data.last_valid_timestamps || {};
 
   if (data.latest) {

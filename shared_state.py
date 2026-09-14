@@ -16,6 +16,7 @@ climate.py and webapp.py must live in the same directory as this file.
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -834,6 +835,25 @@ def get_pi_health():
         pass
 
     return result
+
+
+def get_disk_free_gb():
+    """Free space on whatever filesystem this project's own directory
+    lives on - the SD card, on a real Pi - the one thing that actually
+    matters for whether it's at risk of filling up (camera timelapse
+    frames are almost always the culprit; see camera_service.py's
+    CAMERA_LOW_DISK_THRESHOLD_MB, which already watches this same path
+    for a different purpose: pruning old frames before it gets critical).
+    Deliberately its own tiny function rather than folded into
+    get_pi_health() above - this is pure Python (shutil), needs no
+    vcgencmd/Pi-specific tooling, and is cheap enough to call fresh on
+    every /api/status request rather than only once per climate.py
+    cycle. Returns None (never raises) if it can't be read for any
+    reason - shown as unknown rather than a wrong number."""
+    try:
+        return round(shutil.disk_usage(BASE_DIR).free / (1024 ** 3), 2)
+    except OSError:
+        return None
 
 
 # How old camera/stats.json can be before get_camera_stats() treats it as

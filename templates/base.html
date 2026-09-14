@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{% block title %}Dermestid Enclosure{% endblock %}</title>
+<title>{% block title %}Necroparlor{% endblock %}</title>
 <!-- Favicon: the same 🪲 emoji already used in the page's own <h1> -
      an inline SVG data URI, so there's no separate favicon.ico file to
      generate or host. Supported by all current major browsers; one that
@@ -192,32 +192,50 @@ function updateDoorBanner(doorStatus) {
     (doorStatus && doorStatus.is_open) ? 'block' : 'none';
 }
 
-// The Pi's own CPU temp/load (see shared_state.get_pi_health()) - shown
-// in the nav bar, next to the page tabs, on every page (not just Home),
-// same "matters regardless of which tab you're on" reasoning as the door
-// banner above. Was previously Home-page-only, folded into a line under
-// the live view together with the camera's fps reading - moved up here
-// on its own so it's visible while working on any page; the camera fps
+// The Pi's own CPU temp/load (see shared_state.get_pi_health()) plus
+// free disk space (see get_disk_free_gb()) - shown in the nav bar, next
+// to the page tabs, on every page (not just Home), same "matters
+// regardless of which tab you're on" reasoning as the door banner above.
+// Temp/load was previously Home-page-only, folded into a line under the
+// live view together with the camera's fps reading - moved up here on
+// its own so it's visible while working on any page; the camera fps
 // line stays where it was (see updatePiHealth... now updateCameraFpsLine
-// in home.html's own script).
+// in home.html's own script). Disk space is new here - mainly useful
+// since camera timelapse frames are the most likely thing to ever fill
+// the SD card (see camera_service.py's CAMERA_LOW_DISK_THRESHOLD_MB,
+// which prunes automatically at 200MB free as a last resort - the
+// warning/danger thresholds below are meant to give a heads-up well
+// before that safety net would ever need to fire).
 const PI_TEMP_WARN_F = 158;
 const PI_TEMP_DANGER_F = 176;
-function updateNavPiStats(latest) {
+const DISK_FREE_WARN_GB = 2;
+const DISK_FREE_DANGER_GB = 0.5;
+function updateNavPiStats(latest, diskFreeGb) {
   const el = document.getElementById('navPiStats');
   const tempF = latest && latest.cpu_temp_f;
-  if (tempF === null || tempF === undefined) {
+  const haveTemp = tempF !== null && tempF !== undefined;
+  const haveDisk = diskFreeGb !== null && diskFreeGb !== undefined;
+  let parts = [];
+  if (haveTemp) {
+    const load1m = latest.cpu_load_1m;
+    const tempC = (tempF - 32) * 5 / 9;
+    parts.push(`Pi: ${tempF.toFixed(1)}°F (${tempC.toFixed(1)}°C)`);
+    if (load1m !== null && load1m !== undefined) {
+      parts.push(`load ${load1m.toFixed(2)}`);
+    }
+  }
+  if (haveDisk) {
+    parts.push(`${diskFreeGb.toFixed(1)}GB free`);
+  }
+  if (parts.length === 0) {
     el.textContent = '';
     return;
   }
-  const load1m = latest.cpu_load_1m;
-  const tempC = (tempF - 32) * 5 / 9;
-  let parts = [`Pi: ${tempF.toFixed(1)}°F (${tempC.toFixed(1)}°C)`];
-  if (load1m !== null && load1m !== undefined) {
-    parts.push(`load ${load1m.toFixed(2)}`);
-  }
   el.textContent = parts.join(' · ');
-  el.style.color = tempF >= PI_TEMP_DANGER_F ? 'var(--danger)'
-    : tempF >= PI_TEMP_WARN_F ? 'var(--warn)' : '';
+  el.style.color = (haveTemp && tempF >= PI_TEMP_DANGER_F) || (haveDisk && diskFreeGb < DISK_FREE_DANGER_GB)
+    ? 'var(--danger)'
+    : (haveTemp && tempF >= PI_TEMP_WARN_F) || (haveDisk && diskFreeGb < DISK_FREE_WARN_GB)
+    ? 'var(--warn)' : '';
 }
 
 async function checkGlobalDoorBanner() {
@@ -225,7 +243,7 @@ async function checkGlobalDoorBanner() {
     const res = await fetch('/api/status');
     const data = await res.json();
     updateDoorBanner(data.door_status);
-    updateNavPiStats(data.latest);
+    updateNavPiStats(data.latest, data.disk_free_gb);
   } catch (e) { /* status endpoint not reachable - fail quietly, try again next tick */ }
 }
 if (!window.__doorStatusPolledElsewhere) {

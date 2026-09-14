@@ -1433,3 +1433,39 @@ pattern has been consistent: tie things to identity, never to role.
   - **Not yet confirmed on real hardware/deployed** - needs
     `dermestid-web.service` restarted to pick up all three template
     changes.
+  - **[CONFIRMED, 2026-09-14]** User pulled/restarted and confirmed this
+    batch, plus wanted the site's name changed from "Dermestid Enclosure"
+    to "Necroparlor" everywhere it appears (browser tab title on all six
+    pages, and the `<h1>` on Home) - plain find/replace, no other
+    "Dermestid Enclosure" strings existed anywhere else in the codebase
+    (confirmed by grep across all `.py`/`.html` files).
+
+- **[2026-09-14] Free disk space added to the header, next to Pi temp/load**
+  - New `shared_state.get_disk_free_gb()` - free space on this project's
+    own directory (the SD card, on a real Pi), via `shutil.disk_usage()`.
+    Deliberately its own small function rather than folded into
+    `get_pi_health()`: it's pure Python (no `vcgencmd`), and is called
+    fresh on every `/api/status` request from `webapp.py` rather than
+    only once per `climate.py` control cycle - cheaper and simpler than
+    threading it through `log_reading()`/the `readings` table the way
+    `cpu_temp_f`/camera fps are, and this was only asked for as a live
+    header readout, not long-term tracked history (unlike the camera fps
+    ask from earlier today).
+  - `webapp.py`'s `/api/status` now includes a top-level `disk_free_gb`.
+  - `base.html`'s `updateNavPiStats()` (added earlier today for Pi temp/
+    load in the nav bar) now also takes `diskFreeGb` and appends
+    "X.XGB free" to the same line - e.g. "Pi: 95.5°F (35.3°C) · load
+    0.72 · 12.3GB free". Two new warning thresholds, `DISK_FREE_WARN_GB`
+    (2GB) and `DISK_FREE_DANGER_GB` (0.5GB), color the whole line the
+    same way the existing Pi-temp thresholds already do - chosen to give
+    a heads-up well before `camera_service.py`'s own
+    `CAMERA_LOW_DISK_THRESHOLD_MB` (200MB) safety-net pruning would ever
+    need to fire, since camera timelapse frames are the most likely
+    thing to actually fill the SD card.
+  - Verified before pushing: `python3 -m py_compile` on all touched `.py`
+    files, a Jinja2 parse check on all six templates, and confirmed
+    `get_disk_free_gb()` returns a sane real value in this dev
+    environment.
+  - **Not yet confirmed on real hardware/deployed** - needs
+    `dermestid-web.service` restarted to pick up the `webapp.py`/
+    `base.html` changes.
