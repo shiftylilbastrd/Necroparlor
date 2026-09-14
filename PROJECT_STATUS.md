@@ -1718,3 +1718,14 @@ pattern has been consistent: tie things to identity, never to role.
     nothing left to redo).
   - Old 16GB SanDisk card is now a spare/backup, untouched throughout
     this whole process.
+
+- **[2026-09-14, end of session] Next planned work: a new branch to
+  explore switching the live-view pipeline to `camera-streamer`.** See
+  the existing camera-streamer analysis in the "Camera / timelapse"
+  load-bearing-decisions section above (around the MJPEG-relay-vs-
+  camera-streamer trade-off discussion) for the reasoning already
+  worked out before stopping tonight - the plan going in is still to
+  verify it runs standalone on the Pi first, then write dashboard
+  integration against its actual observed behavior rather than
+  documentation alone. Nothing done on this yet as of this entry - a
+  fresh session tomorrow starts the new branch from here.
