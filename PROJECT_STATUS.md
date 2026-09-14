@@ -43,10 +43,21 @@ it keeps getting lost across auto-summaries]**
   dashboard redesign, branch-selection in the update system, and
   several smaller fixes) has been merged into `main`, and the Pi has
   been switched back to tracking `main`.
-- **`add-webcam` is now an active feature branch** (started 2026-09-12):
-  adding an optional USB webcam - live view + per-mode timelapse. See
-  the "Camera / timelapse" load-bearing-decisions section below. Not
-  yet run against real hardware - see Open threads.
+- **`add-webcam` (started 2026-09-12) has been merged into `main`
+  (2026-09-14).** Everything from the webcam work - live view + per-mode
+  timelapse, the camera MJPG/fps fixes, the header/nav UI batch, the
+  README rewrite and GPIO pinout diagram, the jumper-color recolor and
+  3.3V/5V DHT22 wiring correction, and the sensorpush cleanup - is now
+  on `main`. Verified directly by comparing both branches in a fresh
+  clone: `main` fully contains every `add-webcam` commit, 0 remaining
+  divergence. **Merged via GitHub Desktop's local merge+push, not a
+  GitHub PR** - worth remembering because that path does NOT delete the
+  source branch automatically the way a PR merge (with "Delete branch"
+  clicked, or auto-delete-head-branches enabled) does; `add-webcam`
+  stayed on the remote until manually deleted afterward. Still not run
+  against real deployed hardware - see Open threads' camera/timelapse
+  entries above for what remains unconfirmed on that front regardless
+  of which branch it lives on now.
 - **Pi 4 8GB migration completed (2026-09-13)** - moved the existing SD
   card into the Pi 4 as planned (no re-flash/re-clone needed; Raspberry
   Pi OS auto-detected the board via device-tree). Original motivation:
@@ -70,6 +81,13 @@ it keeps getting lost across auto-summaries]**
   verify it runs standalone on the Pi 4 first, then write dashboard
   integration code against its actual observed API behavior, not
   against documentation alone.
+- **SD card upgraded (2026-09-14)**: 16GB SanDisk Class 4 -> 64GB PNY
+  Elite-X (UHS-I U3, A1, V30), cloned over via `rpi-clone` rather than a
+  from-scratch reinstall. See the dated Open-threads entry below for the
+  full story, including a real `rpi-clone` gotcha (it doesn't reliably
+  fix up `/boot/firmware/cmdline.txt`'s PARTUUID the way it does
+  `/etc/fstab`) worth knowing before doing this again. Confirmed booting
+  and running with 48.1GB free. Old 16GB card kept as an untouched spare.
 - The Pi should have `dermestid-ble.service` installed and enabled
   (replacing the old `dermestid-sensorpush.service`, which should be
   stopped/disabled/removed). Sudoers should authorize
@@ -1642,3 +1660,61 @@ pattern has been consistent: tie things to identity, never to role.
     outage timestamps to check for CPU-contention correlation as an
     alternate/additional cause.
   - **Not yet resolved** - waiting on results from the 5V test.
+
+- **[RESOLVED, 2026-09-14] SD card migrated: 16GB SanDisk Class 4 ->
+  64GB PNY Elite-X (UHS-I U3, A1, V30)**
+  - Motivation: the old card's small capacity and old Class-4 controller
+    were both a real concern for a 24/7 project writing to SQLite every
+    ~15s (see the card-comparison discussion earlier the same day) -
+    64GB with an A1 rating gives much more headroom for the database,
+    logs, and timelapse frames, plus a controller better suited to
+    sustained small random writes.
+  - Method: `rpi-clone` (github.com/billw2/rpi-clone), run on the Pi
+    itself against the new card attached via a USB reader while the old
+    card stayed the boot device - avoided a full from-scratch OS/deps/
+    systemd/sudoers setup entirely, just a straight clone. rpi-clone
+    auto-extended the destination partition to fill the card (57.4G) as
+    part of the clone itself - no separate `raspi-config` expand step
+    needed.
+  - **First clone attempt was interrupted, not a real failure**: the
+    user's PC restarted mid-clone, killing the PuTTY/SSH session (and
+    with it the foreground `rpi-clone` process via SIGHUP) partway
+    through. This left `/dev/sda2` mounted at `/mnt/clone` with nothing
+    to clean it up, which then blocked the next attempt with "target is
+    busy" until the leftover mount (`/mnt/clone/boot/firmware` nested
+    under `/mnt/clone`) was manually unmounted. **Lesson for next time**:
+    always run `rpi-clone` inside `tmux` (`sudo apt install -y tmux` if
+    not already present) so a dropped connection can't strand it -
+    `tmux attach` picks the exact same session back up instead of
+    losing the run.
+  - **Real bug, found the hard way over two failed boots**: `rpi-clone`
+    reliably updates `/etc/fstab`'s PARTUUID for the new card (confirmed
+    correct both times, root AND `/boot/firmware` lines) but does **NOT**
+    reliably update `/boot/firmware/cmdline.txt`'s `root=PARTUUID=...` -
+    the log only ever printed one generic "Editing .../etc/fstab
+    PARTUUID..." line, never a matching one for `cmdline.txt`, across
+    two separate full clone runs. Left uncorrected, the cloned card
+    boots the kernel but then hangs forever looking for a root partition
+    by the OLD card's PARTUUID, which doesn't exist once you're booted
+    standalone on the new card - no HDMI needed to see it, it just never
+    comes up on the network/SSH. Diagnosed and fixed **without a
+    monitor**, using the old (still-intact) 16GB card as a known-good
+    fallback to boot into: swap old card back in, boot, SSH in, mount
+    the new card's partitions via the USB reader, and directly compare
+    `cat cmdline.txt`'s PARTUUID against `lsblk -o NAME,PARTUUID
+    /dev/sda`'s real value. Took two rounds to get exactly right - the
+    first manual edit dropped the `-02` partition-number suffix entirely
+    (`root=PARTUUID=e8626dc3` instead of `root=PARTUUID=e8626dc3-02`),
+    which matches neither partition and produces the identical hang.
+    **Lesson for next time, and for any future rpi-clone use on this
+    project**: always manually check (and if needed, fix)
+    `/boot/firmware/cmdline.txt`'s `root=PARTUUID=` against the new
+    card's actual partition PARTUUID (`lsblk -o NAME,PARTUUID`) before
+    trusting a clone to boot standalone - don't rely on the fstab edit
+    alone as proof cmdline.txt was also handled.
+  - **Confirmed working, 2026-09-14**: booted clean on the 64GB card,
+    dashboard reports 48.1GB free (consistent with the auto-extended
+    57.4G partition minus ~5.3G used by the OS/project - no data loss,
+    nothing left to redo).
+  - Old 16GB SanDisk card is now a spare/backup, untouched throughout
+    this whole process.
