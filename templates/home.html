@@ -15,9 +15,11 @@
   .output-badge.off { background: rgba(147,160,171,0.08); color: var(--text-dim); border-color: var(--panel-border); }
   .badge-icon { display: inline-block; transition: opacity 0.25s, filter 0.25s; }
   .output-badge.off .badge-icon { opacity: 0.45; filter: grayscale(1); }
-  /* Fan icon is a real 4-blade PNG (static/fan-icon.png), not an emoji -
-     sized/aligned to sit like the other badges' text-glyph icons do. */
-  .badge-icon img { width: 1em; height: 1em; vertical-align: -0.15em; display: inline-block; }
+  /* Fan icon is a real 4-blade PNG (static/fan-icon.png), and the Dry
+     icon is inline SVG (waves + rising arrows) - neither is an emoji
+     glyph, so both need explicit sizing/alignment to sit like the other
+     badges' text-glyph icons do. */
+  .badge-icon img, .badge-icon svg { width: 1em; height: 1em; vertical-align: -0.15em; display: inline-block; }
   .mode-dropdown { position: relative; width: 170px; flex-shrink: 0; }
   #modeTrigger {
     width: 100%; text-align: left; background: #10151a; border: 1px solid var(--panel-border);
@@ -86,7 +88,21 @@
     <div class="output-badge off" id="lightBadge" title="Internal light"><span class="badge-icon" id="lightIcon">💡</span> Light</div>
     <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon"><img src="{{ url_for('static', filename='fan-icon.png') }}" alt=""></span> Fan</div>
     <div class="output-badge off" id="heaterBadge" title="Heater"><span class="badge-icon" id="heaterIcon">🔥</span> Heat</div>
-    <div class="output-badge off" id="dehumBadge" title="Dehumidifier"><span class="badge-icon" id="dehumIcon">💧</span> Dehum</div>
+    <div class="output-badge off" id="dehumBadge" title="Dehumidifier"><span class="badge-icon" id="dehumIcon">
+      <svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <g stroke="#d9a441" stroke-width="2">
+          <path d="M8 13 V3"/>
+          <polyline points="4.5,7 8,3 11.5,7"/>
+          <path d="M16 13 V5"/>
+          <polyline points="13,8.5 16,5 19,8.5"/>
+        </g>
+        <g stroke="#6ec1e4" stroke-width="1.8">
+          <path d="M2 16.5 Q4.5 14.5 7 16.5 T12 16.5 T17 16.5 T22 16.5"/>
+          <path d="M2 19.5 Q4.5 17.5 7 19.5 T12 19.5 T17 19.5 T22 19.5"/>
+          <path d="M2 22 Q4.5 20 7 22 T12 22 T17 22 T22 22"/>
+        </g>
+      </svg>
+    </span> Dry</div>
   </div>
   <div class="mode-dropdown" id="modeDropdownWrapper">
     <button id="modeTrigger" type="button" onclick="toggleModeDropdown()">
