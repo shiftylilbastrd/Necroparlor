@@ -1603,8 +1603,17 @@ pattern has been consistent: tie things to identity, never to role.
     themselves - no tool in this environment can delete a file on their
     machine directly. **[CONFIRMED DELETED, 2026-09-14]** - user deleted
     all five locally; verified via `device_list_dir` that none of them
-    remain in the folder. Still needs a commit/push to actually remove
-    them from the tracked repo.
+    remain in the folder.
+  - **[CORRECTION, 2026-09-14]** The "still needs a commit/push" note
+    above was stale by the time it was written - checking `.git/logs/
+    HEAD` directly shows the deletion was already committed same-day as
+    the local delete, in the "removing unneeded files" commit (right
+    before "matching jumper colors"), and pushed along with everything
+    else since. Nothing left to do here; this was a documentation lag,
+    not a real pending action - worth remembering that a "not yet
+    committed" claim in this file can go stale if the user commits
+    through Desktop without it being confirmed back in the same
+    conversation.
 
 - **[open, 2026-09-14] Frequent "Internal sensor reading unavailable"
   warnings - investigation started**
@@ -1678,6 +1687,18 @@ pattern has been consistent: tie things to identity, never to role.
     settled, since flipping them now and then having to revert if the
     power budget doesn't work out would just recreate the exact
     doc-drift this file exists to prevent.
+  - **Ryan's expectation, 2026-09-14**: likely going to need a separate
+    power supply once the relays/servo are actually wired in - the
+    Pi's own 5V rail probably can't carry both DHT22s and real
+    relay/servo loads at once. Not confirmed by testing yet (nothing's
+    wired to real loads currently - see this file's own standing
+    benchtop-context note), just the working assumption to test once
+    real hardware goes on the relays. **Deferred to later testing**,
+    listed here so it isn't lost: once a PSU is in hand and the relays
+    have a real load behind them, check whether the Pi's 5V rail alone
+    is still enough with a separate PSU carrying the relay/servo side,
+    or whether the DHT22s specifically need to go back to 3.3V (or their
+    own dedicated supply) at that point.
 
 - **[RESOLVED, 2026-09-14] SD card migrated: 16GB SanDisk Class 4 ->
   64GB PNY Elite-X (UHS-I U3, A1, V30)**
@@ -1747,3 +1768,154 @@ pattern has been consistent: tie things to identity, never to role.
   integration against its actual observed behavior rather than
   documentation alone. Nothing done on this yet as of this entry - a
   fresh session tomorrow starts the new branch from here.
+
+- **[2026-09-14] Dashboard UI session: mobile dropdown fix, iOS
+  home-screen icon, badge icon/label redesign (Heat/Dry), Logs page
+  severity filtering + download.** Six commits shipped directly to
+  `main` (the `camera-streamer` branch existed but sat untouched at
+  the commit it was created from throughout - see the branch-sync
+  entry below).
+  - **Mobile mode-select dropdown fix**: `.mode-options` was anchored
+    with `right: 0`, which only positioned it correctly when the
+    dropdown trigger sat at the right edge of a wide row - on narrow
+    viewports where flex-wrap collapsed it to the screen's left edge,
+    the panel rendered mostly off-screen to the left. Fixed with a
+    `@media (max-width: 640px)` block forcing
+    `.mode-dropdown { width: 100%; }` and
+    `.mode-options { left: 0; right: 0; width: auto; }`. Verified via
+    a real Flask instance + Playwright screenshot at mobile viewport
+    width.
+  - **iOS "Add to Home Screen" icon**: was showing a letter instead of
+    the beetle icon. Root cause: iOS ignores `rel="icon"` (which the
+    dashboard already had - a data-URI 🪲 SVG) for home-screen
+    bookmarks and specifically looks for `rel="apple-touch-icon"`.
+    Added `static/apple-touch-icon.png` (180x180, 🪲 rendered via
+    headless Chromium + Noto Color Emoji, autocropped and centered on
+    the app's `--bg` color rather than left transparent - iOS
+    composites its own rounded-corner mask over a flat background,
+    and transparent apple-touch-icons render inconsistently across
+    iOS versions) and linked it from `base.html`. **Not yet confirmed
+    on a real iOS device** - standard approach, but not yet visually
+    checked on an actual iPhone home screen.
+  - **Fan/Heat/Dry badge redesign** (the fan badge was the only
+    animated one of the four, and didn't match the others):
+    - Removed the spin animation entirely - `.badge-icon.spin` and its
+      `@keyframes spin` deleted from `home.html`'s CSS, `outputBadge()`
+      simplified to just toggle the badge's own `on`/`off` class
+      (dropped the `iconId`/`spins` args it used to take; dimming the
+      icon in the off state is handled purely by CSS off that class
+      now).
+    - Fan icon replaced with a custom-traced 4-blade fan PNG
+      (`static/fan-icon.png`, blue blades / cyan hub), not an emoji.
+      Took two rounds: first swapped the swirl (🌀) for a hand-fan
+      emoji (🪭) by mistake before Ryan clarified he wanted an actual
+      mechanical 4-blade fan shape and wanted to see options before
+      anything was written; corrected by tracing a reference image he
+      supplied via PIL alpha-masking, then splitting it into the
+      two-tone blue/cyan version using a radius-based hub/blade
+      boundary confirmed by actually measuring per-radius opacity in
+      the source image (it's a solid disc hub, not the hollow ring the
+      small preview looked like).
+    - "Heater" badge label shortened to "Heat" (the `title` tooltip
+      attribute left as "Heater").
+    - "Dehum" badge relabeled "Dry" and its icon replaced with a
+      hand-authored inline SVG (amber up-arrows over blue wavy water
+      lines) instead of the swirl. Originally going to use a specific
+      Flaticon icon Ryan linked, but Flaticon's free tier requires
+      attribution (or a paid Premium account) - flagged that rather
+      than embedding it, and Ryan chose an original icon in the same
+      simple style instead. The badge's `id`/`title` attributes
+      (`dehumBadge`/`dehumIcon`/"Dehumidifier") were deliberately left
+      unchanged since nothing downstream keys off the visible label
+      text.
+  - **Logs page**: severity filter changed from exact-match to "at or
+    above" (selecting Warning now also shows Error/Critical rows, the
+    convention most log viewers use, instead of hiding them) -
+    `get_recent_events()` in `shared_state.py` rewritten to filter on
+    an `EVENT_LEVELS`-derived slice instead of a single value, and
+    `limit` made optional (`None` = no `LIMIT` clause) to support a
+    full export. Added `GET /api/events/download`, returning a
+    plain-text log file (`Content-Disposition: attachment`) honoring
+    whatever level filter is currently selected, plus a "Download log"
+    button next to Refresh. Dropdown labels simplified from "Warning &
+    above"/"Critical only" wording down to plain "Warning"/"Critical"
+    per Ryan's request - behavior unchanged, just no longer spelled
+    out in the label text. Verified with a real temp-SQLite-DB test
+    harness plus a live Playwright-driven browser test against the
+    actual `webapp.py` (caught and fixed a leftover duplicate
+    `params.append(limit)` line from the old always-LIMIT code during
+    that testing, which would have crashed the new `limit=None` export
+    path with a param-count mismatch).
+
+- **[2026-09-14] `camera-streamer` branch brought up to date with
+  `main` for testing.** Confirmed directly from `.git/logs/HEAD` and
+  both branches' own ref files (not just assumed from GitHub Desktop's
+  UI) that this is a pure fast-forward, not a real merge:
+  `camera-streamer` was created off `main` at commit `25bbffe...` and
+  received zero commits of its own since - every checkout onto it in
+  the reflog is `25bbffe`→`25bbffe`. All of today's six dashboard
+  commits above happened directly on `main` after switching straight
+  back to `main` post-creation, ending at `main`'s current tip,
+  `ebc53f5...`. Since `camera-streamer`'s tip is a direct ancestor of
+  `main`'s current tip with no divergent commits on either side,
+  bringing it up to date is just moving the branch pointer forward -
+  no merge conflicts are possible here. **To do it in GitHub
+  Desktop**: switch to the `camera-streamer` branch, then Branch menu
+  -> "Update from main" (GitHub Desktop will show it as a
+  fast-forward, no merge commit created). Not yet done as of this
+  entry - instructions given to Ryan, pending him running it locally.
+
+- **[2026-09-14] Researched whether `camera-streamer` can serve both
+  the live view AND the existing timelapse feature despite needing
+  sole access to the camera device** - directly answers the open
+  question raised in the "Camera / timelapse" load-bearing-decisions
+  entry above (the "two-clients problem" paragraph). Fetched
+  camera-streamer's actual docs (`docs/streaming.md`) rather than
+  reasoning from the README alone: it exposes several HTTP endpoints
+  off the one running daemon, not just the live stream -
+  `/stream` (MJPEG), `/video`/`/video.mp4`/`/video.mkv` (H264),
+  `/webrtc`, **and `/snapshot` - a single JPEG still-frame, documented
+  as "works well everywhere."** This is real evidence for the
+  direction already sketched in the load-bearing entry above:
+  `camera-streamer` would be the only process that opens the actual
+  V4L2 device, but that doesn't mean only one *feature* can use it -
+  `camera_service.py`'s timelapse logic could stop opening the device
+  itself entirely and instead HTTP GET `camera-streamer`'s `/snapshot`
+  endpoint once per mode-driven capture interval, the same way
+  `webapp.py` already treats the live view as an HTTP concern rather
+  than a device concern. Still means rewriting `camera_service.py`'s
+  capture loop and probably `discover_camera.py`'s start/stop dance
+  too (nothing rewritten yet - this is confirmation the redesign is
+  viable, not the redesign itself), but the core worry - "will we have
+  to choose between live view and timelapse" - has a real answer now:
+  no, both can be served off the one daemon over HTTP. **Not yet
+  verified against a real running instance** - `docs/streaming.md` is
+  documentation, not an observed response from an actual Pi; per the
+  plan already set for this work (verify it runs standalone on the Pi
+  first, then integrate against its actual observed behavior rather
+  than documentation alone - see the entry above), still worth
+  confirming `/snapshot` behaves as documented before committing to
+  the rewrite.
+
+- **[2026-09-14] Live feed reported "still isn't smooth"** despite the
+  MJPG-capture-format fix's **[CONFIRMED, 2026-09-13]** entry above
+  (in the camera fps discussion) showing real capture rate improved
+  dramatically. Not necessarily a contradiction - worth flagging
+  clearly rather than quietly explaining away: that confirmation was
+  about *capture rate specifically* (frame-duplicate analysis on a
+  screen recording of the raw feed), not the full delivery pipeline a
+  browser viewer actually experiences. The load-bearing-decisions
+  entry above already identifies two other stacked bottlenecks the
+  MJPG fix never touched: `camera_service.py` still does 100% software
+  JPEG encode (`cv2.imencode()`, no hardware acceleration at all), and
+  `webapp.py` still relays it through Flask's built-in Werkzeug dev
+  server (not a production WSGI server) via a disk-file handoff
+  between two separate processes, once per connected browser tab every
+  `STREAM_RELAY_INTERVAL`. Either of those could still produce visible
+  choppiness even with a healthy capture rate underneath it. This is
+  the concrete motivation for actually testing `camera-streamer` now
+  rather than continuing to tune the existing pipeline further - it
+  replaces the software encode with the Pi's hardware JPEG encoder and
+  serves the stream itself instead of through a dev-server relay,
+  addressing both remaining bottlenecks at once rather than one at a
+  time.
