@@ -804,28 +804,22 @@ def run_cycle():
     # needed here.
     pi_health = state.get_pi_health()
 
-    # Camera's own REAL measured capture rate (see shared_state's
-    # get_camera_stats()/save_camera_stats() - written by
-    # camera_service.py, an entirely separate process from this one).
-    # Sampled here, once per control cycle, purely to get it into the
-    # readings table for long-term history (camera/stats.json itself
-    # only ever holds the current value) - same "informational only,
-    # never fed into a control decision" treatment as pi_health above.
-    # None/None whenever dermestid-camera.service isn't installed or
-    # running (get_camera_stats() already returns None for both "never
-    # written" and "stale"), which log_reading() stores as a plain NULL
-    # rather than a misleading 0.
-    camera_stats = state.get_camera_stats()
-    camera_actual_fps = camera_stats["actual_fps"] if camera_stats else None
-    camera_target_fps = camera_stats["target_fps"] if camera_stats else None
-
+    # [2026-09-14] state.get_camera_stats() (a camera_service.py-measured
+    # real-vs-target capture fps) is gone - it measured that process's
+    # own continuous capture loop, which no longer exists now that live
+    # view is served by camera-streamer instead (see
+    # docs/camera-streamer-setup.md and PROJECT_STATUS.md). log_reading()
+    # below still has nullable camera_actual_fps/camera_target_fps
+    # columns from that era - left in place rather than dropped (same
+    # "absence is unknown, not zero" tolerance every other optional
+    # sensor already gets here), just no longer populated; both simply
+    # default to None now.
     state.log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
                        fan_on, heater_on, humidity_on, vent_active,
                        ble_temp=ble_temp, ble_humidity=ble_humidity,
                        wired_temp=wired_temp, wired_humidity=wired_humidity,
                        active_external_source=active_external_source,
-                       cpu_temp_f=pi_health["cpu_temp_f"], cpu_load_1m=pi_health["cpu_load_1m"],
-                       camera_actual_fps=camera_actual_fps, camera_target_fps=camera_target_fps)
+                       cpu_temp_f=pi_health["cpu_temp_f"], cpu_load_1m=pi_health["cpu_load_1m"])
 
     time.sleep(LOOP_INTERVAL)
 

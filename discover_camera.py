@@ -11,13 +11,18 @@ camera.device (or the Config page's camera device field).
 Run: python3 discover_camera.py
 Saved images land next to this script as discover_camera_N.jpg.
 
-If dermestid-camera.service is running, it already has the real camera
+If camera-streamer.service is running, it already has the real camera
 device open, so it won't show up here (most UVC webcams only allow one
 client at a time) - stop it first: `sudo systemctl stop
-dermestid-camera.service`, then restart it afterwards. The dashboard's
-own Config page "Discover" button (Camera card) does this same probing
-without needing the CLI at all, and handles that stop/restart for you -
-see --json below, which is what powers it.
+camera-streamer.service`, then restart it afterwards. [2026-09-14]
+camera-streamer replaced camera_service.py as the process that holds the
+device open for live view (see docs/camera-streamer-setup.md) -
+camera_service.py itself now only pulls occasional timelapse snapshots
+over HTTP and never opens the device, so it doesn't need stopping for
+this anymore. The dashboard's own Config page "Discover" button (Camera
+card) does this same probing without needing the CLI at all, and
+handles that stop/restart for you - see --json below, which is what
+powers it.
 """
 import argparse
 import base64
@@ -172,8 +177,8 @@ def main():
         print(
             "No working camera found on indices 0-9. Check `lsusb` shows the webcam, "
             "that /dev/video* nodes exist at all (`ls /dev/video*`), and that "
-            "dermestid-camera.service isn't already holding it open (`sudo systemctl stop "
-            "dermestid-camera.service` first, if installed)."
+            "camera-streamer.service isn't already holding it open (`sudo systemctl stop "
+            "camera-streamer.service` first, if installed)."
         )
     else:
         for r in results:

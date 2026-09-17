@@ -158,18 +158,24 @@
 
 <div class="section-title">Live view</div>
 <div class="banner" id="cameraUnavailableBanner" style="display:none;">
-  No recent camera frame - check the camera service on the Pi, or see the Timelapse page for more.
+  No recent camera frame - check camera-streamer on the Pi (see docs/camera-streamer-setup.md), or see the Timelapse page for more.
 </div>
 <div class="card">
   <div class="live-frame-wrap">
+    <!-- [2026-09-14] src is set from JS (see refreshCameraStatus below),
+         not hardcoded here - live view now comes straight from
+         camera-streamer's own /stream endpoint (a different port than
+         this dashboard, config.json's camera.streamer_port) instead of
+         being relayed through webapp.py, so the URL depends on a
+         request to /api/camera/status first. See
+         docs/camera-streamer-setup.md for why this switched from the
+         old Flask-relayed MJPEG. -->
     <img class="home-live-frame" id="homeLiveFrame" alt="Live camera view"
-         src="/api/camera/stream.mjpg"
          onerror="setTimeout(reconnectHomeStream, 2000)">
     <button class="light-toggle-btn" id="lightToggleBtn" onclick="toggleLight()"
             title="Turn light on">💡</button>
   </div>
   <div class="stat-sub" id="homeLiveStatus" style="margin-top:8px;"></div>
-  <div class="stat-sub" id="cameraFpsLine" style="margin-top:4px;" title="camera_service.py's own measured real capture rate vs. the live_capture_fps configured on the Config page - see save_camera_stats(). The Pi's own CPU temp/load moved to the nav bar above."></div>
 </div>
 
 <div class="section-title">History</div>
@@ -292,8 +298,6 @@ async function refreshStatus() {
     outputBadge('fanBadge', !!data.latest.fan);
     outputBadge('heaterBadge', !!data.latest.heater);
     outputBadge('dehumBadge', !!data.latest.dehumidifier);
-
-    updateCameraFpsLine(data.camera_stats);
   }
 
   updateModeUI(data.config.current_mode);
@@ -329,25 +333,6 @@ async function refreshStatus() {
 // badge's own on/off class) - this only ever needs to flip that class.
 function outputBadge(badgeId, on) {
   document.getElementById(badgeId).className = 'output-badge ' + (on ? 'on' : 'off');
-}
-
-// The Pi's own CPU temp/load moved to the nav bar (see updateNavPiStats()
-// in base.html) so it's visible on every page, not just here - this is
-// now just the camera's REAL measured capture rate (see shared_state.
-// save_camera_stats()), not just the live_capture_fps setting on the
-// Config page - the two can genuinely differ (a hardware/USB bandwidth
-// ceiling below whatever's configured, most notably), which is exactly
-// why this exists: judge camera settings against what's actually
-// happening, not just what was asked for. Absent/stale (camera_stats is
-// null) just means dermestid-camera.service isn't running or hasn't
-// reported yet - not shown at all rather than a misleading "0 fps".
-function updateCameraFpsLine(cameraStats) {
-  const el = document.getElementById('cameraFpsLine');
-  if (cameraStats && cameraStats.actual_fps !== null && cameraStats.actual_fps !== undefined) {
-    el.textContent = `camera: ${cameraStats.actual_fps.toFixed(1)} fps actual (target ${cameraStats.target_fps})`;
-  } else {
-    el.textContent = '';
-  }
 }
 
 function setRange(hours) {
@@ -472,13 +457,19 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
   });
 }
 
-// The <img> holds one long-lived MJPEG streaming connection (see
-// /api/camera/stream.mjpg on the webapp side) rather than being reloaded
-// on a timer - it only needs reconnecting if that connection actually
-// drops (the web service restarting mid-stream is the main way that
-// happens).
+// The <img> holds one long-lived MJPEG streaming connection straight to
+// camera-streamer (see /api/camera/status on the webapp side, which is
+// what supplies lastStreamUrl - camera-streamer runs on its own port,
+// so the URL isn't knowable until that request returns at least once)
+// rather than being reloaded on a timer - it only needs reconnecting if
+// that connection actually drops (camera-streamer restarting mid-stream
+// is the main way that happens).
+let lastStreamUrl = null;
+
 function reconnectHomeStream() {
-  document.getElementById('homeLiveFrame').src = '/api/camera/stream.mjpg?t=' + Date.now();
+  if (lastStreamUrl) {
+    document.getElementById('homeLiveFrame').src = lastStreamUrl + '?t=' + Date.now();
+  }
 }
 
 let lightOverrideActive = false;
@@ -507,14 +498,27 @@ async function toggleLight() {
   btn.disabled = false;
 }
 
+// [2026-09-14] data.available is now a real, short-timeout check against
+// camera-streamer's own /snapshot endpoint (see api_camera_status in
+// webapp.py), not a local file's mtime - and stream_url is where the
+// <img> actually points, built server-side from this request's own Host
+// header so it matches whatever hostname/IP the browser used to reach
+// the dashboard. The <img>'s src is only ever set here (once per poll,
+// same 5s cadence as the rest of refreshStatus) or by reconnectHomeStream
+// after a drop - never reset on every poll, which would restart the
+// stream connection constantly instead of letting it run continuously.
 async function refreshCameraStatus() {
   try {
     const res = await fetch('/api/camera/status');
     const data = await res.json();
     document.getElementById('cameraUnavailableBanner').style.display = data.available ? 'none' : 'block';
     document.getElementById('homeLiveStatus').textContent = data.available
-      ? `Live - last frame ${Math.round(data.age_seconds)}s ago`
+      ? 'Live'
       : 'Camera feed unavailable';
+    if (data.stream_url && data.stream_url !== lastStreamUrl) {
+      lastStreamUrl = data.stream_url;
+      document.getElementById('homeLiveFrame').src = lastStreamUrl;
+    }
   } catch (e) {
     document.getElementById('cameraUnavailableBanner').style.display = 'block';
     document.getElementById('homeLiveStatus').textContent = '';

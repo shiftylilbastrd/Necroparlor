@@ -4,6 +4,7 @@ dermestid.db-shm
 dermestid.db-wal
 config.json
 camera/
+camera-streamer.env
 
 # Logs
 logs/

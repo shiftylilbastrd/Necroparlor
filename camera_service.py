@@ -1,37 +1,35 @@
 #!/usr/bin/env python3
 """
-USB webcam service for the dermestid enclosure - entirely optional, like
+Timelapse capture for the dermestid enclosure - entirely optional, like
 ble_listener.py. If you're not using a webcam, don't install/enable
-systemd/dermestid-camera.service; nothing else in this project depends
-on it.
+systemd/dermestid-camera.service (or systemd/camera-streamer.service);
+nothing else in this project depends on either.
 
-Two independent things happen on the same loop, both driven by
-config.json so a dashboard change takes effect within one cycle without
-a restart (same reasoning as climate.py re-reading its own config):
+[2026-09-14] This used to also own live view - it was the only process
+that opened the USB device, capturing continuously via OpenCV and
+writing camera/latest.jpg for webapp.py to relay as an MJPEG stream.
+Live view now goes through camera-streamer instead (a purpose-built
+V4L2 streaming daemon using the Pi's hardware JPEG encoder - see
+docs/camera-streamer-setup.md and PROJECT_STATUS.md's 2026-09-14
+entries for why), which is the only process that opens the USB device
+now. This file no longer touches the device at all: it just wakes up
+on the CURRENTLY ACTIVE MODE's own `snapshot_interval_minutes` (per-mode
+in config.json, 0 = never) and pulls one still frame from
+camera-streamer's own /snapshot HTTP endpoint - the same way
+webapp.py's live view now gets its frames too, just a single request
+instead of an open stream. That single change is also why this loop is
+so much lighter than it used to be: no continuous capture, no per-frame
+JPEG encode, nothing to watchdog for a wedged device handle - the
+worst that can happen here now is an HTTP request timing out, which
+just gets logged and retried next cycle.
 
-  - Live view: `camera.live_capture_fps` times a second (default 5fps -
-    a real live feed, not a slideshow), grab a frame and atomically
-    overwrite camera/latest.jpg. webapp.py relays that
-    same file to browsers as an MJPEG stream (/api/camera/stream.mjpg,
-    multipart/x-mixed-replace) - still just one process, this one,
-    ever opening the actual USB device, so any number of simultaneous
-    dashboard viewers never each try to grab it themselves (most UVC
-    webcams only support one client at a time in the first place, so
-    that would just break the second viewer). This is also why the
-    frame rate is a config setting rather than hardcoded fast: a Pi 3B+
-    shares this CPU with climate.py, the actually safety-critical part
-    of this project, so push it faster than the default only if you've
-    confirmed there's headroom (check `top`/CPU temp under load), and
-    back off resolution/quality first if not.
-  - Timelapse: on the CURRENTLY ACTIVE MODE's own
-    `snapshot_interval_minutes` (per-mode in config.json, 0 = never),
-    save a permanent frame into camera/timelapse/ plus a DB row via
-    shared_state.save_camera_snapshot(). Tracked with a single
-    last-saved timestamp regardless of which mode was active when it
-    was set - switching from a long-interval mode to a short-interval
-    one doesn't itself fire an immediate snapshot just because the mode
-    changed; the new interval simply starts being measured against
-    whenever the last snapshot actually happened.
+Saved frames land in camera/timelapse/ plus a DB row via
+shared_state.save_camera_snapshot(). Tracked with a single
+last-saved timestamp regardless of which mode was active when it was
+set - switching from a long-interval mode to a short-interval one
+doesn't itself fire an immediate snapshot just because the mode
+changed; the new interval simply starts being measured against
+whenever the last snapshot actually happened.
 
 When the CURRENT MODE CHANGES, whatever frames were just accumulated for
 the mode being left get compiled into an actual .mp4 via ffmpeg (a
@@ -40,7 +38,9 @@ raw frames that went into it are deleted - the video is the lasting
 record from then on, not a growing pile of loose JPEGs. See
 maybe_compile_session()/compile_session_video() below for the full
 reasoning (session-boundary tracking, why compiling runs in a background
-thread, the concat-demuxer approach, and the too-few-frames case).
+thread, the concat-demuxer approach, and the too-few-frames case). None
+of this changed in the camera-streamer switch - it never touched the
+capture device directly, only the DB/filesystem.
 
 A hardcoded, non-configurable disk-space safety net (see
 CAMERA_LOW_DISK_THRESHOLD_MB below) prunes the OLDEST timelapse frames
@@ -49,8 +49,8 @@ to keep frames, so this is a last resort to keep the SD card from
 filling up and taking down the Pi (which would also kill climate
 control - the actually safety-critical part of this project), not a
 day-to-day retention policy. If you're hitting it regularly, lower the
-snapshot interval, resolution, or JPEG quality on the Config page
-instead of relying on it.
+snapshot interval or camera-streamer's own resolution/quality flags
+(see docs/camera-streamer-setup.md) instead of relying on it.
 
 Run under systemd (see systemd/dermestid-camera.service).
 """
@@ -61,8 +61,8 @@ import shutil
 import subprocess
 import threading
 import time
-
-import cv2
+import urllib.error
+import urllib.request
 
 import shared_state as state
 
@@ -78,22 +78,24 @@ logging.basicConfig(
     ]
 )
 
-# If no frame has been successfully read in this long, assume the
-# capture device itself is wedged - a known real-world failure mode for
-# USB UVC webcams on Linux (the device node can hang, or vanish and
-# reappear, after a transient USB fault) rather than failing cleanly on
-# every call. Same watchdog philosophy as ble_listener.py's BLE-scan-
-# stall watchdog: exit hard so systemd's Restart=on-failure brings the
-# process back up with a fresh cv2.VideoCapture, since a wedged capture
-# handle inside THIS process usually can't be recovered any other way.
-WATCHDOG_TIMEOUT = 60
+# How long to wait for camera-streamer's /snapshot endpoint before giving
+# up on a single timelapse capture attempt. Generous relative to how
+# fast a still-frame JPEG request "should" be (well under a second on
+# localhost) because a slow response is far more likely than a fast
+# failure - camera-streamer momentarily busy serving a live /stream
+# viewer, or briefly reinitializing the device after a USB hiccup - and
+# this only runs once per snapshot_interval_minutes, not in a tight
+# loop, so there's no real cost to waiting a bit before treating it as a
+# real failure.
+SNAPSHOT_HTTP_TIMEOUT_SECONDS = 5
 
-# Well before the full watchdog timeout, proactively release() and
-# reopen the device on a run of consecutive failures - recovers from
-# some USB transients without a full process restart. Reset after each
-# attempt so it can fire again roughly every ~10 cycles if the device
-# stays unavailable, rather than only once per process lifetime.
-CONSECUTIVE_FAILURES_BEFORE_REOPEN = 10
+# How often this loop wakes up to check whether a snapshot is due -
+# independent of snapshot_interval_minutes itself (which can be as long
+# as 24h). Same fixed-wake-cadence pattern climate.py uses for its own
+# main loop, rather than computing an exact sleep-until-due duration -
+# simpler, and cheap enough to check this often given there's no device
+# to hold open anymore.
+POLL_INTERVAL_SECONDS = 15
 
 # See the module docstring - a safety net, deliberately not exposed as
 # a config.json setting (same "guardrail, not a day-to-day knob"
@@ -123,8 +125,9 @@ TIMELAPSE_VIDEO_FPS = 12
 
 # Safety cap on the ffmpeg subprocess itself, same watchdog philosophy as
 # the rest of this file - compiling runs in a background thread (see
-# maybe_compile_session), so a hang here can't block live-view capture,
-# but it should still never be allowed to run forever.
+# maybe_compile_session), so a hang here can't block the (much lighter,
+# now HTTP-only) capture loop, but it should still never be allowed to
+# run forever.
 COMPILE_TIMEOUT_SECONDS = 300
 
 # Which modes currently have a compile running in a background thread -
@@ -142,9 +145,9 @@ def maybe_compile_session(mode, start_ts, end_ts):
     `mode` - decides whether there's enough freshly-accumulated timelapse
     footage from that just-ended session to bother compiling, and if so
     kicks the actual ffmpeg work off in a background thread so it can
-    never stall the live-view capture loop above (an ffmpeg encode of a
-    long session is a real multi-second CPU task - fine as a rare,
-    one-off event per mode change, not fine if it froze live view for
+    never stall this loop (an ffmpeg encode of a long session is a real
+    multi-second CPU task - fine as a rare, one-off event per mode
+    change, not fine if it delayed the next snapshot's due-check for
     that whole time)."""
     frames = state.get_camera_snapshots_in_range(mode, start_ts, end_ts)
     if len(frames) < MINIMUM_FRAMES_FOR_VIDEO:
@@ -270,40 +273,33 @@ def compile_session_video(mode, start_ts, end_ts, frames):
     )
 
 
-def open_capture(device, width, height):
-    """Opens the configured device and requests a resolution - cv2
-    clamps to the nearest mode the hardware actually supports rather
-    than erroring if the exact number isn't available, so there's
-    nothing here to validate against the device's real capabilities.
-    `device` is either a plain integer index as a string (most USB
-    webcams show up as /dev/video0, i.e. index 0) or a path (e.g. a
-    /dev/v4l/by-id/... symlink - more stable across reboots than a bare
-    index if more than one USB video device is ever connected).
+def fetch_snapshot(streamer_port):
+    """Pulls one still-frame JPEG from camera-streamer's own /snapshot
+    endpoint (see docs/camera-streamer-setup.md) - localhost only, since
+    this always runs on the same Pi as camera-streamer itself, never
+    over the LAN. Returns the raw JPEG bytes, or None (logging why) on
+    any failure - a connection refused (camera-streamer not running/not
+    installed yet), a timeout, or a non-200 response all just mean "no
+    snapshot this cycle," not a crash; the next POLL_INTERVAL_SECONDS
+    cycle tries again on its own.
 
-    Forces MJPG as the capture format, requested BEFORE the resolution
-    (some V4L2 drivers only honor a format change if it's set first).
-    Without this, OpenCV/V4L2 is free to negotiate an uncompressed
-    format (commonly YUYV) once a high resolution is requested - a raw
-    1920x1080 YUYV frame is ~4MB, and over USB2 that alone caps real
-    throughput to a handful of fps no matter what camera.live_capture_fps
-    is set to in config.json, since cap.read() just blocks until the
-    hardware/bus can deliver the next one. This was diagnosed
-    2026-09-13 from an actual screen-recorded live feed (see
-    PROJECT_STATUS.md): real content only updated ~4.5x/sec with
-    noticeable jitter even at live_capture_fps=20, meaning the config
-    knob was never the bottleneck. MJPG frames at the same resolution
-    are roughly 10-20x smaller, which should let the actual hardware
-    ceiling be much higher if the camera supports it at all - if a
-    connected camera doesn't support MJPG, this is a harmless no-op and
-    behavior is unchanged from before."""
-    cam_id = int(device) if device.isdigit() else device
-    cap = cv2.VideoCapture(cam_id)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    if width:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    if height:
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    return cap
+    Plain urllib rather than adding a `requests` dependency - this is a
+    single GET with a timeout, which urllib already does natively, and
+    nothing else in this project has needed `requests` so far."""
+    url = f"http://127.0.0.1:{streamer_port}/snapshot"
+    try:
+        with urllib.request.urlopen(url, timeout=SNAPSHOT_HTTP_TIMEOUT_SECONDS) as resp:
+            if resp.status != 200:
+                logging.warning(f"camera-streamer returned HTTP {resp.status} for {url}")
+                return None
+            return resp.read()
+    except urllib.error.URLError as e:
+        # Covers connection-refused (camera-streamer not running) and a
+        # genuine timeout alike - both are the same "no frame this
+        # cycle" case from here, just logged with whichever reason
+        # urllib actually gives.
+        logging.warning(f"Could not reach camera-streamer at {url}: {e}")
+        return None
 
 
 def maybe_prune_for_disk_space():
@@ -321,8 +317,8 @@ def maybe_prune_for_disk_space():
                 f"Camera: free disk space ({free_mb:.0f}MB) below "
                 f"{CAMERA_LOW_DISK_THRESHOLD_MB}MB - pruned {removed} oldest "
                 "timelapse snapshot(s) as a safety net. If this keeps "
-                "happening, lower the snapshot interval, resolution, or "
-                "JPEG quality on the Config page."
+                "happening, lower the snapshot interval or camera-streamer's "
+                "resolution/quality (see docs/camera-streamer-setup.md)."
             )
             _low_disk_warned = True
     elif _low_disk_warned:
@@ -335,36 +331,16 @@ def main():
     os.makedirs(state.CAMERA_DIR, exist_ok=True)
 
     config = state.load_config()
-    cam_cfg = config.get("camera", {})
-    device = cam_cfg.get("device", "0")
-    width = cam_cfg.get("width", 1280)
-    height = cam_cfg.get("height", 720)
+    last_snapshot_time = 0.0  # 0 lets the first eligible cycle actually save one
 
-    logging.info(f"Opening camera device '{device}' at {width}x{height}...")
-    cap = open_capture(device, width, height)
-    if not cap.isOpened():
-        logging.error(
-            f"Could not open camera device '{device}' - check it's plugged in and that "
-            "the device index/path in config.json's camera.device matches. "
-            "Run discover_camera.py to list what's actually available."
-        )
-
-    last_success_time = time.time()  # grace period, same idea as ble_listener's watchdog
-    last_snapshot_time = 0.0         # 0 lets the first eligible cycle actually save one
+    # Consecutive-failure tracking is purely informational now (a log
+    # line, not a watchdog exit) - there's no device handle in THIS
+    # process to recover by reopening, unlike the old capture loop.
+    # camera-streamer owns whatever recovery its own device handle
+    # needs; if IT is wedged, that's outside what this process can fix,
+    # only notice and report.
     consecutive_failures = 0
-    camera_was_available = cap.isOpened()
-
-    # Real, measured capture rate - see save_camera_stats()'s docstring
-    # in shared_state.py for why this exists (config.json's
-    # live_capture_fps is what's ASKED for, this is what's actually
-    # happening). An EMA rather than a plain per-cycle 1/interval so a
-    # single unusually fast or slow cycle doesn't make the dashboard
-    # number jump around - ALPHA is a "how quickly should this react to
-    # a real change" tradeoff, not a tuned constant worth exposing.
-    _FPS_EMA_ALPHA = 0.3
-    actual_fps_ema = None
-    last_capture_time = None
-    last_stats_write_time = 0.0
+    streamer_was_reachable = True
 
     # Session-boundary tracking for timelapse video compiling (see
     # maybe_compile_session above). last_mode/session_start_ts start from
@@ -378,110 +354,59 @@ def main():
     if session_start_ts is None:
         session_start_ts = time.time()
 
-    try:
-        while True:
-            # Re-read config every cycle - a mode switch or a settings
-            # change from the dashboard should take effect within one
-            # cycle, not require restarting this service.
-            config = state.load_config()
-            cam_cfg = config.get("camera", {})
-            # config.json stores this as frames/sec now (see shared_state's
-            # DEFAULT_CONFIG comment for why) - this loop still just needs
-            # a sleep duration, so convert once per cycle rather than
-            # threading fps through the rest of this function.
-            live_fps = cam_cfg.get("live_capture_fps", 5)
-            interval_seconds = 1.0 / live_fps if live_fps > 0 else 0.2
-            quality = cam_cfg.get("jpeg_quality", 80)
-            current_mode = config.get("current_mode", "ready")
-            mode_settings = config.get("modes", {}).get(current_mode, {})
-            snapshot_interval_minutes = mode_settings.get("snapshot_interval_minutes", 0)
+    logging.info("Timelapse capture loop starting - pulling snapshots from "
+                  "camera-streamer's /snapshot endpoint, not opening the "
+                  "camera device directly (see docs/camera-streamer-setup.md).")
 
-            if current_mode != last_mode:
-                transition_time = time.time()
-                maybe_compile_session(last_mode, session_start_ts, transition_time)
-                last_mode = current_mode
-                session_start_ts = transition_time
+    while True:
+        # Re-read config every cycle - a mode switch or a settings
+        # change from the dashboard should take effect within one
+        # cycle, not require restarting this service.
+        config = state.load_config()
+        cam_cfg = config.get("camera", {})
+        streamer_port = cam_cfg.get("streamer_port", 8090)
+        current_mode = config.get("current_mode", "ready")
+        mode_settings = config.get("modes", {}).get(current_mode, {})
+        snapshot_interval_minutes = mode_settings.get("snapshot_interval_minutes", 0)
 
-            ok, frame = cap.read() if cap.isOpened() else (False, None)
+        if current_mode != last_mode:
+            transition_time = time.time()
+            maybe_compile_session(last_mode, session_start_ts, transition_time)
+            last_mode = current_mode
+            session_start_ts = transition_time
 
-            if ok:
-                consecutive_failures = 0
-                now = time.time()
-                last_success_time = now
-                if not camera_was_available:
-                    state.log_event("info", "Camera reconnected - frames are being captured again")
-                    camera_was_available = True
-
-                # Measure the ACTUAL interval between successful reads,
-                # not the requested one - this is what exposes a gap
-                # between live_capture_fps and what the hardware/USB
-                # bus can really deliver (see open_capture()'s docstring
-                # and PROJECT_STATUS.md's 2026-09-13 entry). Skips the
-                # very first frame (nothing to measure an interval
-                # against yet) and any interval that's absurdly small/
-                # zero (clock weirdness, not a real 1000fps camera).
-                if last_capture_time is not None:
-                    dt = now - last_capture_time
-                    if dt > 0.001:
-                        instant_fps = 1.0 / dt
-                        actual_fps_ema = (instant_fps if actual_fps_ema is None
-                                           else (_FPS_EMA_ALPHA * instant_fps
-                                                 + (1 - _FPS_EMA_ALPHA) * actual_fps_ema))
-                last_capture_time = now
-
-                # Written about once/sec regardless of how fast frames
-                # are actually coming in - this is a status readout for
-                # the dashboard, not something that needs to be as fresh
-                # as the live JPEG itself.
-                if actual_fps_ema is not None and (now - last_stats_write_time) >= 1.0:
-                    state.save_camera_stats(actual_fps_ema, live_fps)
-                    last_stats_write_time = now
-
-                encode_ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
-                if encode_ok:
-                    jpeg_bytes = buf.tobytes()
-                    state.atomic_write_bytes(state.CAMERA_LIVE_PATH, jpeg_bytes)
-
-                    if snapshot_interval_minutes > 0:
-                        due = (time.time() - last_snapshot_time) >= snapshot_interval_minutes * 60
-                        if due:
-                            maybe_prune_for_disk_space()
-                            state.save_camera_snapshot(current_mode, jpeg_bytes)
-                            last_snapshot_time = time.time()
-                else:
-                    logging.warning("JPEG encode failed for a captured frame - skipping this cycle")
-            else:
-                consecutive_failures += 1
-                if camera_was_available:
-                    state.log_event("warning", "Camera unavailable - no frame could be read")
-                    camera_was_available = False
-
-                if consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_REOPEN:
-                    logging.warning(
-                        f"{consecutive_failures} consecutive failed reads - "
-                        "releasing and reopening the capture device"
-                    )
-                    cap.release()
-                    cap = open_capture(device, width, height)
+        if snapshot_interval_minutes > 0:
+            due = (time.time() - last_snapshot_time) >= snapshot_interval_minutes * 60
+            if due:
+                jpeg_bytes = fetch_snapshot(streamer_port)
+                if jpeg_bytes:
                     consecutive_failures = 0
+                    if not streamer_was_reachable:
+                        state.log_event("info", "camera-streamer reachable again - "
+                                                 "timelapse snapshots resuming")
+                        streamer_was_reachable = True
+                    maybe_prune_for_disk_space()
+                    state.save_camera_snapshot(current_mode, jpeg_bytes)
+                    last_snapshot_time = time.time()
+                else:
+                    consecutive_failures += 1
+                    if streamer_was_reachable:
+                        state.log_event(
+                            "warning",
+                            "Could not reach camera-streamer for a timelapse snapshot - "
+                            "check it's installed and running (see "
+                            "docs/camera-streamer-setup.md). Will keep retrying."
+                        )
+                        streamer_was_reachable = False
+                    # Still advance last_snapshot_time so a camera-streamer
+                    # outage doesn't cause a burst of retries every
+                    # POLL_INTERVAL_SECONDS for the rest of a long
+                    # snapshot_interval_minutes window - one attempt per
+                    # interval is enough while it stays down; it'll be
+                    # caught up to within one interval once it's back.
+                    last_snapshot_time = time.time()
 
-                if time.time() - last_success_time > WATCHDOG_TIMEOUT:
-                    logging.error(
-                        f"No frame successfully captured in over {WATCHDOG_TIMEOUT}s - "
-                        "the capture device is likely wedged. Exiting immediately "
-                        "(not attempting a graceful release() first, in case that "
-                        "itself is part of what's stuck) so systemd restarts this "
-                        "service with a fresh device handle."
-                    )
-                    os._exit(1)
-
-            # 0.05s floor (20fps hard ceiling), not interval_seconds' own
-            # 0.1s config-validation floor - protects against a corrupt or
-            # hand-edited config.json with an even smaller/zero/negative
-            # value pegging this loop (and a CPU core) at 100%.
-            time.sleep(max(0.05, interval_seconds))
-    finally:
-        cap.release()
+        time.sleep(POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":

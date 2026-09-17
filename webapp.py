@@ -17,6 +17,8 @@ import subprocess
 import threading
 import logging
 import fcntl
+import urllib.error
+import urllib.request
 
 from flask import Flask, jsonify, request, render_template, send_file, abort, Response
 
@@ -24,25 +26,14 @@ import shared_state as state
 
 app = Flask(__name__)
 
-# A live camera frame is considered stale once it's older than this many
-# multiples of the CONFIGURED live-capture interval, rather than a fixed
-# number of seconds - keeps the staleness threshold proportional to
-# however fast camera_service.py is actually set to capture, instead of
-# being wrong at either extreme (a fixed 10s threshold would falsely
-# flag a deliberately slow 5s-interval setup, or too slowly notice a
-# genuinely dead 1s-interval one).
-CAMERA_STALE_MULTIPLIER = 5
-
-# Fallback default (frames/sec) for /api/camera/stream.mjpg's relay rate,
-# only used if config.json's camera.stream_relay_fps is somehow missing
-# (e.g. a config.json written before that key existed, before load_config's
-# own DEFAULT_CONFIG backfill has run) - the actual value used every frame
-# comes from config.json now, a dashboard-tunable Config-page setting, not
-# this constant. Independent of how fast camera_service.py itself is
-# actually capturing (camera.live_capture_fps) - capture rate is a
-# Pi-CPU-vs-smoothness tradeoff for camera_service.py, this is a
-# per-viewer relay cost for webapp.py.
-STREAM_RELAY_FPS_DEFAULT = 7
+# [2026-09-14] Live view switched to camera-streamer (see
+# docs/camera-streamer-setup.md and PROJECT_STATUS.md) - webapp.py no
+# longer relays live frames itself (the dashboard's <img> points
+# straight at camera-streamer's own /stream now), so
+# CAMERA_STALE_MULTIPLIER/STREAM_RELAY_FPS_DEFAULT, which sized that
+# relay, are gone. api_camera_status() below now checks reachability
+# with a quick direct request to camera-streamer instead.
+CAMERA_STREAMER_STATUS_TIMEOUT_SECONDS = 2
 
 # How recent a BLE reading has to be to show up in the Config page's
 # "Discover" list - generous relative to how often sensors actually
@@ -104,13 +95,11 @@ def api_status():
         door_status = {"is_open": door["is_open"], "age_seconds": time.time() - door["ts"]}
 
     last_valid = state.get_last_valid_timestamps()
-    camera_stats = state.get_camera_stats()
     disk_free_gb = state.get_disk_free_gb()
 
     return jsonify({"config": config, "latest": latest, "stale": stale,
                      "ble_status": ble_status, "door_status": door_status,
                      "last_valid_timestamps": last_valid,
-                     "camera_stats": camera_stats,
                      "disk_free_gb": disk_free_gb})
 
 
@@ -279,90 +268,51 @@ def api_set_internal_source():
 
 @app.route("/api/camera/status")
 def api_camera_status():
+    """[2026-09-14] `available` used to be a staleness check on
+    camera/latest.jpg's mtime (the file camera_service.py wrote every
+    capture). Now that camera-streamer serves live view directly (see
+    docs/camera-streamer-setup.md), there's no local file to check the
+    age of - this makes a real, short-timeout request to
+    camera-streamer's own /snapshot endpoint instead. A quick real check
+    rather than just trusting "the process is running": camera-streamer
+    can be running but still not delivering frames (device unplugged,
+    wedged after a USB fault), the same failure mode the old file-based
+    check was built to catch.
+
+    Also returns stream_url/snapshot_url, built from THIS REQUEST's own
+    Host header rather than a hardcoded IP - camera-streamer runs on the
+    same Pi as webapp.py, just a different port (config.json's
+    camera.streamer_port), so whatever hostname/IP the browser used to
+    reach the dashboard is also how it can reach camera-streamer
+    directly. This is what templates/home.html points its live-view
+    <img> at.
+    """
     config = state.load_config()
     cam_cfg = config.get("camera", {})
-    live_fps = cam_cfg.get("live_capture_fps", 5)
-    interval = 1.0 / live_fps if live_fps > 0 else 0.2
+    port = cam_cfg.get("streamer_port", 8090)
+    host = request.host.split(":")[0]
+    snapshot_url = f"http://{host}:{port}/snapshot"
+    stream_url = f"http://{host}:{port}/stream"
+
     available = False
-    age_seconds = None
-    if os.path.exists(state.CAMERA_LIVE_PATH):
-        age_seconds = time.time() - os.path.getmtime(state.CAMERA_LIVE_PATH)
-        available = age_seconds < interval * CAMERA_STALE_MULTIPLIER
+    try:
+        req = urllib.request.Request(snapshot_url, method="GET")
+        with urllib.request.urlopen(req, timeout=CAMERA_STREAMER_STATUS_TIMEOUT_SECONDS) as resp:
+            available = resp.status == 200
+    except (urllib.error.URLError, OSError):
+        available = False
+
     disk = shutil.disk_usage(state.BASE_DIR)
     return jsonify({
         "available": available,
-        "age_seconds": age_seconds,
+        "stream_url": stream_url,
+        "snapshot_url": snapshot_url,
         "camera": cam_cfg,
         "current_mode": config.get("current_mode"),
         "snapshot_interval_minutes": config.get("modes", {}).get(config.get("current_mode"), {}).get("snapshot_interval_minutes", 0),
         "snapshot_count": state.get_camera_snapshot_count(),
         "disk_free_mb": disk.free / (1024 * 1024),
     })
-
-
-@app.route("/api/camera/latest.jpg")
-def api_camera_latest():
-    if not os.path.exists(state.CAMERA_LIVE_PATH):
-        abort(404)
-    response = send_file(state.CAMERA_LIVE_PATH, mimetype="image/jpeg")
-    # Every poll should get whatever's freshest right now, never a
-    # browser-cached copy from the last one - same reasoning as the
-    # rest of this dashboard's live-updating tiles.
-    response.headers["Cache-Control"] = "no-store"
-    return response
-
-
-@app.route("/api/camera/stream.mjpg")
-def api_camera_stream():
-    """A genuine live video feed, not the old still-image polling - a
-    plain browser <img> tag renders a multipart/x-mixed-replace response
-    natively as continuously-updating video, no player/codec/JS polling
-    loop needed. This still doesn't touch the USB device itself: it just
-    re-reads camera/latest.jpg (the file camera_service.py is the sole
-    writer of) on a short timer and relays whatever's currently there
-    into this one HTTP connection. That's what keeps "only one process
-    ever opens the camera" true even with the dashboard open in several
-    browser tabs at once - each tab just gets its own independent relay
-    of the same file, same reasoning as the old polling endpoint, just
-    pushed from the server instead of pulled by the client.
-
-    Requires threaded=True on app.run() below - this request stays open
-    indefinitely, and the single-threaded dev-server default would let
-    one open camera tab freeze every other page on the dashboard for as
-    long as it stayed open.
-
-    The relay rate is read from config.json's camera.stream_relay_fps
-    every frame (falling back to STREAM_RELAY_FPS_DEFAULT above if that
-    key is somehow missing) rather than being a fixed constant - a
-    dashboard change to it takes effect on this already-open
-    connection's very next frame, no reconnect needed, same "re-read
-    every cycle" pattern climate.py and camera_service.py already use
-    for their own config-driven timings.
-    """
-    def generate():
-        boundary = b"--frame"
-        while True:
-            try:
-                with open(state.CAMERA_LIVE_PATH, "rb") as f:
-                    frame = f.read()
-                yield (boundary + b"\r\n"
-                       b"Content-Type: image/jpeg\r\n"
-                       b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" +
-                       frame + b"\r\n")
-            except (FileNotFoundError, OSError):
-                # camera_service.py hasn't written a first frame yet, or
-                # isn't running - just keep retrying on the same schedule
-                # rather than ending the stream; the browser <img> will
-                # start showing frames the moment one appears on disk.
-                pass
-            relay_fps = state.load_config().get("camera", {}).get(
-                "stream_relay_fps", STREAM_RELAY_FPS_DEFAULT)
-            time.sleep(1.0 / relay_fps if relay_fps > 0 else 1.0 / STREAM_RELAY_FPS_DEFAULT)
-    return Response(
-        generate(),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 @app.route("/api/camera/snapshots")
@@ -447,32 +397,30 @@ def api_timelapse_videos_delete_many():
 
 @app.route("/api/camera-settings", methods=["POST"])
 def api_set_camera_settings():
-    """device/width/height are only read once at camera_service.py's own
-    startup (see its main()), so a change to any of those three is
-    restarted automatically here. jpeg_quality and live_capture_fps are
-    re-read from config.json every capture cycle by camera_service.py,
-    and stream_relay_fps is read every frame by webapp.py's own
-    api_camera_stream - all three apply on their own within a second or
-    two, so restarting for any of them would just be a pointless
-    live-view interruption."""
+    """[2026-09-14] device/width/height are camera-streamer's OWN capture
+    settings now, not camera_service.py's (see docs/camera-streamer-
+    setup.md) - a change to any of them (or streamer_port) is written
+    into camera-streamer.env via state.write_camera_streamer_env() and
+    then needs camera-streamer.service restarted to pick it up, which
+    this does automatically. Unlike the old jpeg_quality/live_capture_fps/
+    stream_relay_fps settings (removed - see the "camera" DEFAULT_CONFIG
+    comment in shared_state.py), there's no config here anymore that
+    takes effect without a restart - camera-streamer only reads its
+    launch args/env once, at its own startup."""
     body = request.get_json(force=True, silent=True) or {}
     cleaned, error = state.validate_camera_settings(body)
     if error:
         return jsonify({"error": error}), 400
     config = state.load_config()
-    old_cam = config.get("camera", {})
-    needs_restart = any(
-        str(old_cam.get(key)) != str(cleaned.get(key)) for key in ("device", "width", "height")
-    )
     config["camera"] = cleaned
     state.save_config(config)
-    restarted = _restart_service("dermestid-camera.service") if needs_restart else False
+    state.write_camera_streamer_env(cleaned)
+    restarted = _restart_service("camera-streamer.service")
     state.log_event("info", "Camera settings updated" +
-                             (" - camera service restarted automatically" if needs_restart and restarted else
-                              " - automatic restart failed, restart dermestid-camera.service by hand"
-                              if needs_restart else ""))
+                             (" - camera-streamer restarted automatically" if restarted else
+                              " - automatic restart failed, restart camera-streamer.service by hand"))
     response = dict(config)
-    response["restart_attempted"] = needs_restart
+    response["restart_attempted"] = True
     response["restart_ok"] = restarted
     return jsonify(response)
 
@@ -495,17 +443,20 @@ def api_camera_discover():
     was found). A subprocess keeps that property; if cv2 is missing or
     broken, only this one request fails.
 
-    Also stops dermestid-camera.service first (if installed) and
-    restarts it afterward: that service holds the real camera device
-    open continuously, and most UVC webcams only allow one client at a
-    time, so without this the current in-use index just wouldn't show
-    up in the scan at all - not a crash, just a silently confusing
-    "no camera found" result. Both systemctl calls are best-effort
-    (sudo -n, non-interactive) - if the service isn't installed, or the
-    Pi's sudoers isn't set up for it yet, they simply fail quietly and
-    discovery still runs, it just might not see whichever index the
-    service was already holding."""
-    subprocess.run(["sudo", "-n", "systemctl", "stop", "dermestid-camera.service"],
+    [2026-09-14] Stops/restarts camera-streamer.service now, not
+    dermestid-camera.service - camera-streamer is the process that holds
+    the real camera device open continuously since the switch (see
+    docs/camera-streamer-setup.md), and most UVC webcams only allow one
+    client at a time, so without this the current in-use index just
+    wouldn't show up in the scan at all - not a crash, just a silently
+    confusing "no camera found" result. dermestid-camera.service (the
+    timelapse-only process now) never opens the device itself, so it
+    doesn't need stopping for this anymore. Both systemctl calls are
+    best-effort (sudo -n, non-interactive) - if camera-streamer isn't
+    installed, or the Pi's sudoers isn't set up for it yet, they simply
+    fail quietly and discovery still runs, it just might not see
+    whichever index camera-streamer was already holding."""
+    subprocess.run(["sudo", "-n", "systemctl", "stop", "camera-streamer.service"],
                     capture_output=True, timeout=15)
     try:
         result = subprocess.run(
@@ -515,7 +466,7 @@ def api_camera_discover():
     except subprocess.TimeoutExpired:
         return jsonify({"error": f"Discovery timed out after {CAMERA_DISCOVER_TIMEOUT_SECONDS}s"}), 500
     finally:
-        subprocess.run(["sudo", "-n", "systemctl", "start", "dermestid-camera.service"],
+        subprocess.run(["sudo", "-n", "systemctl", "start", "camera-streamer.service"],
                         capture_output=True, timeout=15)
 
     if result.returncode != 0:
@@ -541,7 +492,7 @@ def api_camera_discover():
 
     response = {"devices": devices}
     if not devices:
-        response["hint"] = ("No camera found on indices 0-9. If dermestid-camera.service is "
+        response["hint"] = ("No camera found on indices 0-9. If camera-streamer is "
                              "installed but the Pi's sudoers isn't set up to let the dashboard "
                              "stop/restart it (see README), the in-use index won't show up here - "
                              "check README's sudoers section, or stop the service by hand first.")

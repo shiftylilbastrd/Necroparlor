@@ -1,6 +1,6 @@
 [Unit]
-Description=Dermestid enclosure USB webcam (live view + timelapse)
-After=network.target
+Description=Dermestid enclosure timelapse capture (live view is camera-streamer.service - see docs/camera-streamer-setup.md)
+After=network.target camera-streamer.service
 
 [Service]
 Type=simple

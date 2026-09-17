@@ -16,7 +16,7 @@ Raspberry Pi climate control for a dermestid beetle colony living in a converted
 | `ble_listener.py` | Optional — listens for a BLE temp/humidity sensor (SensorPush, Govee, INKBIRD, Xiaomi, RuuviTag) as the external reading. |
 | `ble_battery.py` | Optional — periodic battery check (SensorPush HT1 only; other brands broadcast battery for free). |
 | `discover_ble_sensor.py` | One-time helper to find a BLE sensor's address. |
-| `camera_service.py` | Optional — USB webcam live view + per-mode timelapse. |
+| `camera_service.py` | Optional — per-mode timelapse capture only (pulls snapshots from camera-streamer's HTTP API). Live view itself is served by camera-streamer, a separate daemon — see `docs/camera-streamer-setup.md`. |
 | `discover_camera.py` | One-time helper to find the webcam's `/dev/videoN` index. |
 | `auto_update.sh` | Pulls from git and restarts the affected services. |
 | `systemd/` | Unit/timer files so everything runs on boot and restarts on crash. |
@@ -130,33 +130,41 @@ Checks at most once/day; warns at 15% or below.
 
 ## Camera (optional)
 
+[2026-09-14] Live view is served by **camera-streamer** now, a separate
+hardware-accelerated streaming daemon — not this project's own OpenCV
+capture loop anymore. Full build/config walkthrough (including two
+flags you'll need to confirm from `camera-streamer --help` on your own
+Pi, since they weren't pinned down from documentation alone) is in
+**[`docs/camera-streamer-setup.md`](docs/camera-streamer-setup.md)** —
+follow that doc for the actual setup. Short version once it's built and
+running:
+
 ```bash
-pip3 install opencv-python-headless --break-system-packages
 sudo apt install ffmpeg   # needed to compile timelapse sessions into .mp4
 ```
 
-1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `dermestid-camera.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
-2. Set it on the Config page, or in `config.json`:
+1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
+2. Set device/resolution/port on the Config page, or in `config.json`:
    ```json
    "camera": {
      "device": "0",
      "width": 1280,
      "height": 720,
-     "jpeg_quality": 80,
-     "live_capture_fps": 5,
-     "stream_relay_fps": 7
+     "streamer_port": 8090
    }
    ```
-   A device/resolution change auto-restarts `dermestid-camera.service`. `live_capture_fps` is how often a frame is grabbed from the USB device; `stream_relay_fps` is how often the dashboard re-sends the latest frame to each open browser tab — both take effect within a cycle, no restart needed. Watch the header's Pi temp/load/disk-free readout while raising either, since the Pi shares its CPU with `climate.py`.
-3. Run it: `python3 camera_service.py`
+   `streamer_port` can't be `8080` — that's this dashboard's own port. A save here regenerates `camera-streamer.env` and restarts `camera-streamer.service` automatically. JPEG quality and capture rate are camera-streamer's own CLI flags now (see `docs/camera-streamer-setup.md`), not a Config-page setting.
+3. `camera_service.py` no longer opens the USB device at all — it only wakes up to pull a timelapse snapshot from camera-streamer's own `/snapshot` endpoint on each mode's `snapshot_interval_minutes`. Run/enable it as before:
 
 ```bash
+sudo cp systemd/camera-streamer.service /etc/systemd/system/
 sudo cp systemd/dermestid-camera.service /etc/systemd/system/
 sudo systemctl daemon-reload
+sudo systemctl enable --now camera-streamer.service
 sudo systemctl enable --now dermestid-camera.service
 ```
 
-**Live view** (Home page) is a genuine MJPEG stream, not a slideshow — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) auto-compiles each mode session's frames into an `.mp4` once it ends; set `snapshot_interval_minutes` per mode on the Config page (`0` = off). A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
+**Live view** (Home page) connects straight to camera-streamer's own `/stream` endpoint — not relayed through this dashboard's own server anymore — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) auto-compiles each mode session's frames into an `.mp4` once it ends; set `snapshot_interval_minutes` per mode on the Config page (`0` = off). A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
 
 ## Run permanently (recommended)
 
@@ -167,7 +175,8 @@ sudo systemctl enable --now dermestid-climate.service
 sudo systemctl enable --now dermestid-web.service
 sudo systemctl enable --now dermestid-ble.service       # only if using a BLE sensor
 sudo systemctl enable --now dermestid-battery.timer      # optional
-sudo systemctl enable --now dermestid-camera.service     # only if using a webcam
+sudo systemctl enable --now camera-streamer.service       # only if using a webcam - see docs/camera-streamer-setup.md
+sudo systemctl enable --now dermestid-camera.service      # only if using a webcam (timelapse capture)
 ```
 
 ```bash
@@ -192,8 +201,9 @@ pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-climate.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-web.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-ble.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-camera.service
-pi ALL=(root) NOPASSWD: /usr/bin/systemctl stop dermestid-camera.service
-pi ALL=(root) NOPASSWD: /usr/bin/systemctl start dermestid-camera.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart camera-streamer.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl stop camera-streamer.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl start camera-streamer.service
 ```
 (Run `which systemctl` first — the path must match exactly.)
 

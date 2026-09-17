@@ -1919,3 +1919,113 @@ pattern has been consistent: tie things to identity, never to role.
   serves the stream itself instead of through a dev-server relay,
   addressing both remaining bottlenecks at once rather than one at a
   time.
+
+- **[2026-09-17] `camera-streamer` switch actually implemented on the
+  `camera-streamer` branch.** Ryan said explicitly not to worry about
+  preserving `camera_service.py`/`webapp.py`'s old camera code as long
+  as live view + timelapse both still work - this is a real rewrite of
+  the camera pipeline, not an incremental patch. **Nothing in this
+  entry has been run against real hardware yet** - see "What's actually
+  verified" at the end before assuming any of this just works.
+
+  **`camera_service.py`** no longer touches the USB device at all - the
+  whole OpenCV capture loop (`open_capture()`, the watchdog/reopen
+  logic, the per-frame JPEG encode) is gone. It now only wakes every
+  `POLL_INTERVAL_SECONDS` (15s) to check whether the CURRENT mode's
+  `snapshot_interval_minutes` is due, and if so pulls one still frame
+  from `camera-streamer`'s own `http://127.0.0.1:<port>/snapshot`
+  endpoint (plain `urllib`, no new dependency) instead of grabbing one
+  itself. Session-boundary tracking, `maybe_compile_session()`/
+  `compile_session_video()` (the ffmpeg concat-demuxer compile-on-
+  mode-change logic), and the low-disk-space pruning safety net are
+  all **unchanged** - none of that ever touched the capture device
+  directly, only the DB/filesystem, so the camera-streamer switch
+  doesn't touch it either.
+
+  **`webapp.py`**: `/api/camera/stream.mjpg` (the old Flask-relayed
+  MJPEG endpoint) and `/api/camera/latest.jpg` are both **removed** -
+  the dashboard's live-view `<img>` now points straight at
+  camera-streamer's own `/stream` endpoint instead, eliminating the
+  disk-file-handoff-through-a-dev-server relay identified above as a
+  real bottleneck. `/api/camera/status`'s `available` check changed from
+  a local-file mtime check to an actual short-timeout (2s) HTTP request
+  to camera-streamer's `/snapshot` - a real reachability check, not
+  just "is the systemd unit active." It also now returns `stream_url`/
+  `snapshot_url`, built from the INCOMING REQUEST's own `Host` header
+  (`request.host`) rather than a hardcoded IP - since camera-streamer
+  runs on the same Pi as webapp.py, just a different port, whatever
+  hostname/IP the browser used to reach the dashboard is also how it
+  can reach camera-streamer directly, no matter how the Pi's actually
+  reached on the LAN (bare IP, mDNS name, etc.).
+
+  **Port conflict, handled**: camera-streamer's documented default HTTP
+  port is 8080 - the exact same port `webapp.py` already uses
+  (`app.run(..., port=8080, ...)`). `config.json`'s new
+  `camera.streamer_port` (default **8090**) moves it off that collision,
+  and `validate_camera_settings()` now rejects 8080 outright rather than
+  just documenting the conflict, so a typo here fails loudly at save
+  time instead of quietly breaking whichever service starts second.
+
+  **Config page (Camera card)**: JPEG-quality/live-capture-fps/
+  stream-relay-fps fields are gone - those were `camera_service.py`'s
+  own OpenCV settings, which no longer exist; quality/capture-rate are
+  camera-streamer's own CLI flags now (see
+  `docs/camera-streamer-setup.md`), not something this dashboard
+  controls. Device/Resolution/Discover are unchanged in shape but now
+  feed camera-streamer's config instead of `cv2.VideoCapture` - saving
+  writes `camera-streamer.env` (new, gitignored, read by
+  `systemd/camera-streamer.service` via `EnvironmentFile=`) and
+  restarts `camera-streamer.service`, not `dermestid-camera.service`.
+  Discover's stop/restart-around-the-probe dance now targets
+  `camera-streamer.service` too, since that's the process holding the
+  device open now - `dermestid-camera.service` (timelapse-only) never
+  opens the device itself anymore, so it doesn't need stopping for
+  discovery at all, one less moving part than before.
+
+  **Real bug caught before shipping**: `climate.py` still called
+  `state.get_camera_stats()` once per control cycle (to log
+  `camera_actual_fps`/`camera_target_fps` into the readings table) after
+  `get_camera_stats()`/`save_camera_stats()` were removed from
+  `shared_state.py` - would have thrown `AttributeError` and crashed
+  `climate.py`, the actually safety-critical process, on its very next
+  cycle after deploy. Caught during a deliberate re-read of every file
+  that referenced the removed functions before considering this done,
+  not by running the code (can't, no real Pi here) - fixed by dropping
+  the dead camera-fps sampling from `climate.py` entirely; those two
+  readings-table columns are left in the schema (nullable, same
+  "absence is unknown, not zero" treatment every other optional sensor
+  here already gets) so old history stays visible on the Data page, they
+  just stop getting new values from here on.
+
+  **New: `systemd/camera-streamer.service`, `docs/camera-streamer-
+  setup.md`.** The setup doc has real, sourced build steps (apt
+  packages, `git clone --recursive`, `make && sudo make install`) and is
+  explicit about the two things that could NOT be confirmed from
+  camera-streamer's own docs/source as of this entry and need checking
+  against real `camera-streamer --help` output on the Pi before trusting
+  the unit file as-is: (1) the exact flag for changing the HTTP port off
+  its 8080 default (guessed as `--http-port` - not found documented
+  anywhere, only `--http-listen` for the bind address was confirmed);
+  (2) whether `sudo make install` actually puts the binary at
+  `/usr/local/bin/camera-streamer` (a reasonable guess for a `make
+  install` C project, not something directly confirmed). Both are called
+  out inline in the systemd unit's own comments, not just in the doc, so
+  they're not easy to miss while actually setting this up.
+
+  **What's actually verified**: `python3 -m py_compile` on every touched
+  `.py` file (`shared_state.py`, `camera_service.py`, `webapp.py`,
+  `discover_camera.py`, `climate.py`), a Jinja2 parse check on
+  `home.html`/`config.html` (the two templates touched), and a careful
+  read-through for every caller of everything removed (the
+  `climate.py` bug above is exactly what that read-through was for).
+  **What's NOT verified**: nothing has actually run against
+  camera-streamer or a real camera - not `/snapshot`'s actual response
+  shape, not whether `--camera-type=libcamera --camera-format=MJPEG` is
+  really right for this project's specific USB webcam, not the guessed
+  port flag, not a live Playwright/browser test of the new `<img>`
+  pointing cross-port at camera-streamer. This is exactly the kind of
+  thing this project's own stated plan for camera-streamer already
+  called for verifying against real observed behavior before trusting
+  documentation alone - next step is following `docs/camera-streamer-
+  setup.md` on the actual Pi, start to finish, and correcting whatever
+  in this entry turns out wrong once it's real.

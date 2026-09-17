@@ -114,8 +114,9 @@
   <div class="card" style="max-width:420px;">
     <h2>USB webcam</h2>
     <div class="stat-sub" style="margin-bottom:10px;">
-      Optional - only relevant if <code>camera_service.py</code> is installed and running.
-      Per-mode timelapse intervals are set above, next to each mode's setpoints.
+      Optional - only relevant if <code>camera-streamer</code> is installed and running (see
+      <code>docs/camera-streamer-setup.md</code>). Per-mode timelapse intervals are set above,
+      next to each mode's setpoints.
     </div>
     <div class="field">
       <label>Device (index, e.g. "0", or a /dev path)</label>
@@ -133,20 +134,18 @@
       <div class="stat-sub" id="cameraResolutionHint">Common resolutions shown - click Discover above to narrow this to only what your camera actually supports.</div>
     </div>
     <div class="field" style="margin-top:10px;">
-      <label>JPEG quality (30-95)</label>
-      <input type="number" min="30" max="95" id="cameraQualityInput">
-    </div>
-    <div class="field" style="margin-top:10px;">
-      <label>Live capture rate (frames/sec - HIGHER is faster/smoother, e.g. 5 = a frame every 0.2s)</label>
-      <input type="number" min="0.1" max="10" step="0.1" id="cameraFpsInput">
-    </div>
-    <div class="field" style="margin-top:10px;">
-      <label>Stream relay rate (frames/sec sent to your browser - HIGHER is faster/smoother, e.g. 7 = a frame every ~0.14s)</label>
-      <input type="number" min="0.2" max="20" step="0.1" id="cameraRelayFpsInput">
-      <div class="stat-sub">How often each open dashboard tab gets a new frame - separate from the capture rate above. Takes effect immediately, no restart needed. Also see the CPU temp/load readout on the Home page while you test this.</div>
+      <label>camera-streamer HTTP port</label>
+      <input type="number" min="1024" max="65535" id="cameraStreamerPortInput">
+      <div class="stat-sub">Can't be 8080 - that's this dashboard's own port. The live view on the Home page connects to your Pi on this port directly.</div>
     </div>
     <button class="save-btn" onclick="saveCameraSettings()">Save</button>
     <div class="save-msg" id="cameraSettingsMsg"></div>
+    <div class="stat-sub" style="margin-top:8px;">
+      Saving restarts <code>camera-streamer.service</code> to apply device/resolution/port changes -
+      expect a few seconds of live-view interruption. JPEG quality and capture rate are set on the
+      Pi itself now (camera-streamer's own flags - see <code>docs/camera-streamer-setup.md</code>),
+      not from this page.
+    </div>
   </div>
 
   <div class="card" style="max-width:420px;">
@@ -264,9 +263,7 @@ async function loadConfig() {
   knownCameraResolutions = data.config.camera_known_resolutions || {};
   document.getElementById('cameraDeviceInput').value = cam.device ?? '0';
   applyResolutionsForDevice(cam.device ?? '0', cam.width ?? 1280, cam.height ?? 720);
-  document.getElementById('cameraQualityInput').value = cam.jpeg_quality ?? 80;
-  document.getElementById('cameraFpsInput').value = cam.live_capture_fps ?? 5;
-  document.getElementById('cameraRelayFpsInput').value = cam.stream_relay_fps ?? 7;
+  document.getElementById('cameraStreamerPortInput').value = cam.streamer_port ?? 8090;
 }
 
 async function saveCameraSettings() {
@@ -275,9 +272,7 @@ async function saveCameraSettings() {
     device: document.getElementById('cameraDeviceInput').value.trim(),
     width: resWidth,
     height: resHeight,
-    jpeg_quality: parseInt(document.getElementById('cameraQualityInput').value, 10),
-    live_capture_fps: parseFloat(document.getElementById('cameraFpsInput').value),
-    stream_relay_fps: parseFloat(document.getElementById('cameraRelayFpsInput').value),
+    streamer_port: parseInt(document.getElementById('cameraStreamerPortInput').value, 10),
   };
   const res = await fetch('/api/camera-settings', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
@@ -288,11 +283,11 @@ async function saveCameraSettings() {
     msg.textContent = data.error || 'Save failed';
     msg.className = 'save-msg err';
   } else if (data.restart_attempted && !data.restart_ok) {
-    msg.textContent = 'Saved, but the automatic restart failed - restart dermestid-camera.service by hand';
+    msg.textContent = 'Saved, but the automatic restart failed - restart camera-streamer.service by hand';
     msg.className = 'save-msg err';
   } else {
     msg.textContent = data.restart_attempted
-      ? 'Saved - camera service restarted automatically'
+      ? 'Saved - camera-streamer restarted automatically'
       : 'Saved';
     msg.className = 'save-msg ok';
     setTimeout(() => { msg.textContent = ''; }, 4500);
