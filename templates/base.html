@@ -158,12 +158,13 @@
   <a href="/data" class="{{ 'active' if active_page == 'data' }}">Data</a>
   <a href="/timelapse" class="{{ 'active' if active_page == 'timelapse' }}">Timelapse</a>
   <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
-  <div class="nav-pi-stats" id="navPiStats" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings. Useful while tuning the camera's capture/relay settings on the Config page: watch this doesn't climb into the warning range as those get pushed faster."></div>
+  <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">Settings</a>
+  <div class="nav-pi-stats" id="navPiStats" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings. Useful while tuning the camera's capture/relay settings on the Settings page: watch this doesn't climb into the warning range as those get pushed faster."></div>
 </nav>
 <div class="page">
 <div class="banner" id="globalDoorBanner">🚪 Enclosure door is open</div>
 <div class="update-banner" id="globalUpdateBanner">
-  <span id="globalUpdateText">🔄 An update is available</span> - <a href="/config">go to Config to apply it</a>.
+  <span id="globalUpdateText">🔄 An update is available</span> - <a href="/settings">go to Settings to apply it</a>.
 </div>
 {% block content %}{% endblock %}
 </div>
@@ -173,8 +174,8 @@
 // for an available update and shows a banner if one's found, regardless
 // of which page you're currently on.
 //
-// [2026-09-18] Checks a pending BRANCH SWITCH the same way the Config
-// page's own status tile does (see renderUpdateStatus in config.html),
+// [2026-09-18] Checks a pending BRANCH SWITCH the same way the Settings
+// page's own status tile does (see renderUpdateStatus in settings.html),
 // not just is_available - a branch switch where the target's commits
 // happen to already match HEAD (e.g. right after merging a feature
 // branch into main) leaves is_available false even though the Pi is

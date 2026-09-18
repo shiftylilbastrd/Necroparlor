@@ -60,8 +60,6 @@
         <th class="rot"><span class="rot-label">Dehum</span></th>
         <th class="rot"><span class="rot-label">Pi °F</span></th>
         <th class="rot"><span class="rot-label">Pi load</span></th>
-        <th class="rot"><span class="rot-label">Cam FPS</span></th>
-        <th class="rot"><span class="rot-label">Cam target</span></th>
       </tr>
     </thead>
     <tbody id="dataRows"></tbody>
@@ -130,14 +128,12 @@ function renderRows(rows, append) {
       <td>${flag(!!r.dehumidifier)}</td>
       <td>${num(r.cpu_temp_f, 1)}</td>
       <td>${num(r.cpu_load_1m, 2)}</td>
-      <td>${num(r.camera_actual_fps, 1)}</td>
-      <td>${num(r.camera_target_fps, 1)}</td>
     </tr>
   `).join('');
   if (append) {
     tbody.insertAdjacentHTML('beforeend', html);
   } else {
-    tbody.innerHTML = html || '<tr><td colspan="16" class="stat-sub">No data yet</td></tr>';
+    tbody.innerHTML = html || '<tr><td colspan="14" class="stat-sub">No data yet</td></tr>';
   }
   if (rows.length > 0) {
     oldestLoadedTs = rows[rows.length - 1].ts;

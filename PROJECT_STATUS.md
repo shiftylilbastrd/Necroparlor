@@ -565,14 +565,37 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
-- **[open, 2026-09-17]** Notification system (`notification-system` branch) - built and reviewed but **not
-  run on the Pi, and not verified against a real Pushover account, SMTP server, or webhook receiver** (no
-  credentials on hand while building it). Before relying on it: merge, restart `dermestid-web.service` and
-  `dermestid-climate.service`, configure at least one channel on the Config page, Save, then use "Send test"
-  to confirm it actually arrives - and separately, confirm a real triggering event (easiest: leave the door
-  open past `door_open_alert_minutes`) produces a real push. See the Load-bearing decisions entry above for
-  the design; nothing about the design itself is in question, only whether it survives contact with a real Pi
-  and real credentials.
+- **[2026-09-17]** `readings.camera_actual_fps`/`camera_target_fps` (unused since the 2026-09-14
+  camera-streamer switch, previously left in the schema unwritten - see the two dated `PROJECT_STATUS.md`
+  entries further down from when they were added) are now actually DROPPED, not just unpopulated: gone from
+  `log_reading()`'s signature, `get_readings_table()`'s SELECT, and the Data page's "Cam FPS"/"Cam target"
+  columns. `_migrate_readings_columns()` in shared_state.py drops them from any existing DB on the next
+  `init_db()` (the Pi's real DB has them - old rows' OTHER columns are untouched, only the two dead ones go
+  away) - needs SQLite 3.35+, which any current Raspberry Pi OS has; wrapped in try/except so an unexpectedly
+  old sqlite3 just leaves the (already-dead) columns in place and logs why instead of crashing the service on
+  startup. Verified against a simulated pre-migration DB (existing row survived, columns gone, idempotent on
+  a second `init_db()` call) - not yet run against the actual Pi's real `dermestid.db`, so the DROP COLUMN
+  step there specifically is still worth confirming once this branch updates it (`dermestid-web.service`'s
+  restart runs `init_db()` on the very first request after startup).
+- **[partially resolved, 2026-09-17]** Notification system (`notification-system` branch, pushed to GitHub
+  and running on the Pi) - **Discord webhook confirmed working end-to-end** ("Send test" delivered a real
+  message after fixing two real bugs the first live test surfaced: Discord's Cloudflare front door blocks
+  Python's default `User-Agent` outright (HTTP 403, error 1010) before the request reaches Discord's own
+  webhook handler, and the original generic JSON payload had no `content` field, which Discord requires to
+  actually display anything - both fixed in `_send_webhook()`, see shared_state.py). **Pushover and email are
+  still unverified** - no credentials tested against those two yet. Per-channel "Send test" buttons (added
+  after the branch's first push) make this fast to check once credentials are entered - Save isn't even
+  required first for those. Still worth confirming a real triggering event (not just the test button) produces
+  a push, e.g. leaving the door open past `door_open_alert_minutes`.
+- **[2026-09-17]** Internal-sensor-outage rows now written to the readings table (see the internal-sensor
+  Load-bearing decision above for the "why") - worth flagging one side effect on the Home page: the page-level
+  "stale" banner (`data.stale`, >90s since the latest row) used to also catch an internal-sensor outage,
+  since no row got written at all while one was ongoing. Now that a row IS written every cycle during an
+  outage (with `internal_temp`/`internal_humidity` null), `latest.ts` stays fresh and that banner no longer
+  fires for this specific case - the Internal tile going to "--°F"/"--%RH" immediately (next cycle, not after
+  90s) is the replacement signal, which is arguably more specific/useful, but it's a real behavior change from
+  before, not just a Data-page cosmetic fix. The banner still fires correctly if the whole control loop is
+  actually dead (climate.py crashed/hung) - that path never wrote a row before either and still doesn't.
 - **[resolved]** `ble-genericization` merged into `main`; Pi confirmed
   switched back to tracking `main`.
 - **[open]** A Data-page report of "Fallback missing for a while" came

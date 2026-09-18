@@ -698,6 +698,34 @@ def run_cycle():
         if elapsed > SENSOR_FAIL_TIMEOUT and not alarm_active:
             alarm_active = True
             emergency_shutdown_outputs(f"No valid internal sensor readings for over {SENSOR_FAIL_TIMEOUT}s")
+
+        # Still write a row for this cycle, with internal_temp/humidity
+        # NULL, instead of skipping log_reading() entirely (which is
+        # what this branch used to do, by returning before ever reaching
+        # the log_reading() call at the bottom of this function). An
+        # internal-sensor outage used to leave a GAP in the readings
+        # table - no row at all for as long as it lasted - which made it
+        # indistinguishable, on the Data page, from the control loop
+        # itself being down, and meant spotting a real outage required
+        # noticing a jump in timestamps rather than just seeing a blank
+        # cell the way a lost external/fallback reading already shows
+        # (that path was never gated like this - see the external-sensor
+        # comment above). Everything passed here is already known at
+        # this point in the cycle - external/ble/wired readings were all
+        # read and validated above before the internal check runs, and
+        # fan_on/heater_on/humidity_on/vent_active are last cycle's
+        # actual relay states, still accurate since nothing below this
+        # branch has run yet to change them (emergency_shutdown_outputs()
+        # above, if it fired, already updated those globals to reflect
+        # the forced-off state before this call).
+        pi_health = state.get_pi_health()
+        state.log_reading(mode, None, None, external_temp, external_humidity,
+                           fan_on, heater_on, humidity_on, vent_active,
+                           ble_temp=ble_temp, ble_humidity=ble_humidity,
+                           wired_temp=wired_temp, wired_humidity=wired_humidity,
+                           active_external_source=active_external_source,
+                           cpu_temp_f=pi_health["cpu_temp_f"], cpu_load_1m=pi_health["cpu_load_1m"])
+
         time.sleep(LOOP_INTERVAL)
         return
 
@@ -842,12 +870,11 @@ def run_cycle():
     # real-vs-target capture fps) is gone - it measured that process's
     # own continuous capture loop, which no longer exists now that live
     # view is served by camera-streamer instead (see
-    # docs/camera-streamer-setup.md and PROJECT_STATUS.md). log_reading()
-    # below still has nullable camera_actual_fps/camera_target_fps
-    # columns from that era - left in place rather than dropped (same
-    # "absence is unknown, not zero" tolerance every other optional
-    # sensor already gets here), just no longer populated; both simply
-    # default to None now.
+    # docs/camera-streamer-setup.md and PROJECT_STATUS.md). The matching
+    # camera_actual_fps/camera_target_fps readings-table columns were
+    # dropped on 2026-09-17 (see shared_state.py's
+    # _migrate_readings_columns()) - log_reading() no longer takes them
+    # at all.
     state.log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
                        fan_on, heater_on, humidity_on, vent_active,
                        ble_temp=ble_temp, ble_humidity=ble_humidity,

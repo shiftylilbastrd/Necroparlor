@@ -64,6 +64,11 @@ def config_page():
     return render_template("config.html", active_page="config")
 
 
+@app.route("/settings")
+def settings_page():
+    return render_template("settings.html", active_page="settings")
+
+
 @app.route("/timelapse")
 def timelapse_page():
     return render_template("timelapse.html", active_page="timelapse")

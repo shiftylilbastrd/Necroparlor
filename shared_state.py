@@ -923,20 +923,33 @@ def _migrate_readings_columns(conn):
         conn.execute("ALTER TABLE readings ADD COLUMN cpu_temp_f REAL")
     if "cpu_load_1m" not in existing:
         conn.execute("ALTER TABLE readings ADD COLUMN cpu_load_1m REAL")
-    # [2026-09-14] camera_actual_fps/camera_target_fps: history columns
-    # from when camera_service.py measured its own continuous capture
-    # rate (save_camera_stats()/get_camera_stats(), both removed - see
-    # the "camera" DEFAULT_CONFIG comment above and
-    # docs/camera-streamer-setup.md). That loop no longer exists now
-    # that camera-streamer serves live view directly, so nothing writes
-    # these anymore - left in the schema rather than dropped so old
-    # history stays visible on the Data page's raw table, same "absence
-    # reads as unknown, not zero" treatment as everywhere else in this
-    # table.
-    if "camera_actual_fps" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN camera_actual_fps REAL")
-    if "camera_target_fps" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN camera_target_fps REAL")
+    # [2026-09-17] camera_actual_fps/camera_target_fps actually DROPPED
+    # here now, not just left unwritten. They were history columns from
+    # when camera_service.py measured its own continuous capture rate
+    # (save_camera_stats()/get_camera_stats(), both removed when live
+    # view switched to camera-streamer - see the "camera" DEFAULT_CONFIG
+    # comment above and docs/camera-streamer-setup.md) - kept in the
+    # schema for a few months afterward purely so already-recorded
+    # history stayed visible on the Data page's raw table, same "don't
+    # destroy real historical data over a column nothing writes anymore"
+    # caution this project applies elsewhere (see fallback_external_*
+    # below, which is still in that "kept, unwritten" state - these two
+    # graduated past it because they'd been meaningless long enough that
+    # every remaining row showing them was already just empty). DROP
+    # COLUMN needs SQLite 3.35+ (any current Raspberry Pi OS has it) -
+    # wrapped in try/except so a much older sqlite3 on some other install
+    # doesn't crash init_db() over it, just leaves the (already-unused)
+    # columns in place and logs why.
+    if "camera_actual_fps" in existing:
+        try:
+            conn.execute("ALTER TABLE readings DROP COLUMN camera_actual_fps")
+        except sqlite3.OperationalError:
+            logging.exception("Could not drop readings.camera_actual_fps (SQLite too old?) - leaving it in place")
+    if "camera_target_fps" in existing:
+        try:
+            conn.execute("ALTER TABLE readings DROP COLUMN camera_target_fps")
+        except sqlite3.OperationalError:
+            logging.exception("Could not drop readings.camera_target_fps (SQLite too old?) - leaving it in place")
 
 
 def _migrate_events_columns(conn):
@@ -1024,8 +1037,7 @@ def get_all_ble_readings():
 def log_reading(mode, internal_temp, internal_humidity, external_temp, external_humidity,
                  fan, heater, dehumidifier, vent,
                  ble_temp=None, ble_humidity=None, wired_temp=None, wired_humidity=None,
-                 active_external_source=None, cpu_temp_f=None, cpu_load_1m=None,
-                 camera_actual_fps=None, camera_target_fps=None):
+                 active_external_source=None, cpu_temp_f=None, cpu_load_1m=None):
     """external_temp/humidity is whichever physical sensor is currently
     ACTIVE (drives control decisions) - it's the value the delta-glitch
     filter and failsafe machinery track continuously across cycles,
@@ -1037,21 +1049,23 @@ def log_reading(mode, internal_temp, internal_humidity, external_temp, external_
     because the wired probe happens to be the one currently active.
     cpu_temp_f/cpu_load_1m are the Pi's OWN health (see get_pi_health()),
     unrelated to the enclosure's climate - purely informational.
-    camera_actual_fps/camera_target_fps: [2026-09-14] no longer written
-    by anything (see the readings-table column comment above) - nothing
-    passes these as kwargs anymore, so they're always None/NULL now.
-    Left in the schema/this signature rather than removed, so old
-    history stays queryable."""
+
+    [2026-09-17] camera_actual_fps/camera_target_fps params removed -
+    see _migrate_readings_columns' comment on why the columns themselves
+    were finally dropped, not just left unwritten. Nothing called this
+    with those kwargs anyway (camera-streamer has owned live view since
+    2026-09-14), so removing them here is a no-op for every real
+    caller."""
     conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "fan, heater, dehumidifier, vent, ble_temp, ble_humidity, wired_temp, wired_humidity, "
-        "active_external_source, cpu_temp_f, cpu_load_1m, camera_actual_fps, camera_target_fps) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "active_external_source, cpu_temp_f, cpu_load_1m) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
          int(fan), int(heater), int(dehumidifier), int(vent), ble_temp, ble_humidity, wired_temp, wired_humidity,
-         active_external_source, cpu_temp_f, cpu_load_1m, camera_actual_fps, camera_target_fps)
+         active_external_source, cpu_temp_f, cpu_load_1m)
     )
     conn.commit()
     conn.close()
@@ -1151,12 +1165,10 @@ def get_disk_free_gb():
 # they measured camera_service.py's OWN continuous capture loop, which
 # no longer exists now that live view is served by camera-streamer (see
 # the "camera" DEFAULT_CONFIG comment above and
-# docs/camera-streamer-setup.md). climate.py's readings table still has
-# nullable camera_actual_fps/camera_target_fps columns from that era
-# (see log_reading() below) - left in place rather than dropped, same
-# "absence is unknown, not zero" tolerance this project already gives
-# every other optional sensor, but nothing writes them going forward;
-# existing history stays visible on the Data page's raw table.
+# docs/camera-streamer-setup.md). The readings table's matching
+# camera_actual_fps/camera_target_fps columns (from that same era) were
+# dropped outright on 2026-09-17, not just left unwritten - see
+# _migrate_readings_columns() above and log_reading() below.
 
 
 # Ascending severity - shared by log_event's write side (nothing here
@@ -1772,8 +1784,7 @@ def get_readings_table(limit=50, before_ts=None):
     query = (
         "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "ble_temp, ble_humidity, wired_temp, wired_humidity, active_external_source, "
-        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m, "
-        "camera_actual_fps, camera_target_fps FROM readings WHERE 1=1"
+        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m FROM readings WHERE 1=1"
     )
     params = []
     if before_ts:
@@ -1785,8 +1796,7 @@ def get_readings_table(limit=50, before_ts=None):
     conn.close()
     keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
             "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
-            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m",
-            "camera_actual_fps", "camera_target_fps"]
+            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
     return [dict(zip(keys, r)) for r in rows]
 
 

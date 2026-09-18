@@ -270,8 +270,19 @@ async function refreshStatus() {
   const lastValid = data.last_valid_timestamps || {};
 
   if (data.latest) {
-    document.getElementById('statInternalTemp').textContent = data.latest.internal_temp.toFixed(1) + '°F';
-    document.getElementById('statInternalHumidity').textContent = data.latest.internal_humidity.toFixed(1) + ' %RH';
+    // internal_temp/humidity can now be null on a row logged during a
+    // sensor outage (see run_cycle()'s failsafe branch in climate.py -
+    // it writes a row with these blank rather than skipping the row
+    // entirely, so a Data-page gap doesn't require reading timestamps
+    // to spot). Guarded the same way the BLE/wired tiles below always
+    // have been, rather than assuming - as this line used to - that a
+    // row existing at all means internal_temp is present.
+    document.getElementById('statInternalTemp').textContent =
+      (data.latest.internal_temp !== null && data.latest.internal_temp !== undefined)
+        ? data.latest.internal_temp.toFixed(1) + '°F' : '--°F';
+    document.getElementById('statInternalHumidity').textContent =
+      (data.latest.internal_humidity !== null && data.latest.internal_humidity !== undefined)
+        ? data.latest.internal_humidity.toFixed(1) + ' %RH' : '-- %RH';
     document.getElementById('statInternalUpdated').textContent = 'Updated: ' + fmtAgo(lastValid.internal);
 
     document.getElementById('statBleTemp').textContent =
