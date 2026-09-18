@@ -597,6 +597,15 @@ that aren't obvious from reading the code cold.
   instead of `/config`. Not yet confirmed on the Pi as of this entry - purely a template/route reorg, no
   backend or schema change, so low risk, but worth a quick look that both tabs render and every button on
   each still works after the update.
+- **[deferred, 2026-09-18]** iOS home-screen badge (a number on the dashboard's icon, like a native app) for
+  notifications - discussed, not started. Technically possible via the Badging API (Safari 16.4+ supports it
+  for a site Added to Home Screen), but a badge that updates while the app is closed needs real Web Push - a
+  service worker, VAPID keys, a push subscription stored server-side, and the push handler calling
+  `setAppBadge()`. Service workers refuse to register over plain HTTP except on `localhost`, and this dashboard
+  is plain Flask over HTTP on the Pi's LAN IP (no login, no TLS - see README), so this is blocked on the Pi
+  getting real HTTPS first. Ryan's plan is to revisit once Traefik + Authelia are set up (would give it a
+  proper hostname + cert + auth in front). Pushover already covers "notice it on my phone" in the meantime -
+  this would just be a nicer-feeling badge on top of that, not a new capability.
 - **[2026-09-17]** Internal-sensor-outage rows now written to the readings table (see the internal-sensor
   Load-bearing decision above for the "why") - worth flagging one side effect on the Home page: the page-level
   "stale" banner (`data.stale`, >90s since the latest row) used to also catch an internal-sensor outage,
