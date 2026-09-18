@@ -101,6 +101,15 @@ python3 webapp.py       # in another
 
 Visit `http://<pi-ip-address>:8080`. **There's no login on this dashboard** — fine on your home network, don't port-forward it to the internet.
 
+`webapp.py` runs as the unprivileged `pi` user (see the systemd unit below), so it can't bind port 80 directly - ports under 1024 need root, and running a Flask dev server as root just to shave a port number off the URL isn't worth it. If you'd rather not type `:8080` every time, redirect port 80 to it at the firewall level instead, which doesn't touch the app's own privileges at all:
+
+```bash
+sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080
+sudo apt-get install iptables-persistent   # answer "yes" to save current rules - this is what makes it survive a reboot
+```
+
+**[2026-09-17] CONFIRMED** - added on a real Pi and survived a reboot. This redirect happens at the network layer before anything about who's asking, so it also covers traffic arriving over a VPN like Tailscale, not just the LAN - `http://<pi-tailscale-ip>/` works with no port either, if you're using one.
+
 ## BLE external sensor (optional)
 
 ```bash
