@@ -185,7 +185,8 @@ def compile_session_video(mode, start_ts, end_ts, frames):
             f"ended ({len(frames)} frames). Install it with: sudo apt install ffmpeg. "
             "The raw frames are kept, and this session's video can't be recovered "
             "retroactively once a future compile succeeds and deletes them, so install "
-            "ffmpeg before too many more sessions pass if you want this feature."
+            "ffmpeg before too many more sessions pass if you want this feature.",
+            category="camera_issue"
         )
         return
 
@@ -229,7 +230,8 @@ def compile_session_video(mode, start_ts, end_ts, frames):
         )
     except subprocess.TimeoutExpired:
         state.log_event("error", f"Timelapse: ffmpeg timed out compiling {mode} session "
-                                  f"({len(frames)} frames) after {COMPILE_TIMEOUT_SECONDS}s - raw frames kept.")
+                                  f"({len(frames)} frames) after {COMPILE_TIMEOUT_SECONDS}s - raw frames kept.",
+                         category="camera_issue")
         os.remove(list_path)
         return
     finally:
@@ -240,7 +242,8 @@ def compile_session_video(mode, start_ts, end_ts, frames):
         state.log_event(
             "error",
             f"Timelapse: ffmpeg failed compiling {mode} session ({len(frames)} frames) - "
-            f"raw frames kept. {result.stderr[-500:] if result.stderr else ''}"
+            f"raw frames kept. {result.stderr[-500:] if result.stderr else ''}",
+            category="camera_issue"
         )
         if os.path.exists(video_path):
             os.remove(video_path)
@@ -315,7 +318,8 @@ def maybe_prune_for_disk_space():
                 f"{CAMERA_LOW_DISK_THRESHOLD_MB}MB - pruned {removed} oldest "
                 "timelapse snapshot(s) as a safety net. If this keeps "
                 "happening, lower the snapshot interval or camera-streamer's "
-                "resolution/quality (see docs/camera-streamer-setup.md)."
+                "resolution/quality (see docs/camera-streamer-setup.md).",
+                category="camera_issue"
             )
             _low_disk_warned = True
     elif _low_disk_warned:
@@ -392,7 +396,8 @@ def main():
                             "warning",
                             "Could not reach camera-streamer for a timelapse snapshot - "
                             "check it's installed and running (see "
-                            "docs/camera-streamer-setup.md). Will keep retrying."
+                            "docs/camera-streamer-setup.md). Will keep retrying.",
+                            category="camera_issue"
                         )
                         streamer_was_reachable = False
                     # Still advance last_snapshot_time so a camera-streamer

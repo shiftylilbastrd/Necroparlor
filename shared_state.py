@@ -17,12 +17,19 @@ import json
 import os
 import re
 import shutil
+import smtplib
 import sqlite3
 import subprocess
+import threading
+import queue
 import time
 import fcntl
 import logging
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
+from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -172,6 +179,90 @@ DEFAULT_CONFIG = {
         # rather than just discouraged in a comment.
         "streamer_port": 8090,
     },
+    # Outbound alerting - see the "Notifications" section below
+    # (EVENT_CATEGORIES, log_event()'s notify hook, _send_all_channels())
+    # for the actual dispatch logic. This block is just the saved
+    # settings; "enabled" is a single master switch so a half-configured
+    # channel (credentials filled in while still testing) can't fire for
+    # real until you're actually ready, without having to blank out
+    # every field again.
+    "notifications": {
+        "enabled": False,
+        # Events below this severity never notify, regardless of the
+        # per-category toggles below - same "at or above" convention as
+        # EVENT_LEVELS/get_recent_events's level filter, so raising this
+        # to "critical" is a fast way to go quiet without touching any
+        # category individually.
+        "min_level": "warning",
+        # Per-category on/off - only consulted for a log_event() call
+        # that actually passed a `category` matching EVENT_CATEGORIES;
+        # an uncategorized call (most "info" logging, and any future
+        # call site nobody's gotten around to tagging yet) is governed
+        # by min_level alone and always passes this gate. Defaults here
+        # intentionally leave the noisiest, least actionable category
+        # (a single rejected glitchy reading - usually resolves itself
+        # next cycle) off, everything else on.
+        "categories": {
+            "emergency_shutdown": True,
+            "internal_sensor_failsafe": True,
+            "sensor_reading_rejected": False,
+            "external_sensor_failover": True,
+            "door_open_timeout": True,
+            "heater_safety_cutoff": True,
+            "fan_safety_cutoff": True,
+            "ble_battery_low": True,
+            "camera_issue": True,
+            "control_loop_error": True,
+        },
+        # Per-category cooldown - the same category won't notify again
+        # until this many minutes have passed since it last did, so a
+        # flapping condition (e.g. BLE sensor bouncing in and out of
+        # range) can't turn into a phone full of identical pushes.
+        # Deliberately per-category, not global - a genuinely NEW alert
+        # type (say, emergency_shutdown right after an unrelated
+        # heater_safety_cutoff) should never be held back by some other
+        # category's cooldown window.
+        "cooldown_minutes": 15,
+        "quiet_hours": {
+            "enabled": False,
+            "start": "22:00",
+            "end": "07:00",
+            # Whether "critical" events still get through during the
+            # quiet window - on by default, since a critical is by
+            # definition the "everything just got forced off, no safe
+            # degraded mode" case (see emergency_shutdown_outputs() in
+            # climate.py), not something worth finding out about only
+            # after waking up.
+            "allow_critical": True,
+        },
+        # How long the door can sit open before it's worth a push, not
+        # just the door-open/closed "info" event already logged on every
+        # transition (see light_loop() in climate.py). 0 disables this
+        # specific check - same never sentinel convention as
+        # snapshot_interval_minutes elsewhere in this file.
+        "door_open_alert_minutes": 15,
+        "channels": {
+            "pushover": {
+                "enabled": False,
+                "api_token": "",
+                "user_key": "",
+            },
+            "email": {
+                "enabled": False,
+                "smtp_host": "",
+                "smtp_port": 587,
+                "use_tls": True,
+                "smtp_user": "",
+                "smtp_password": "",
+                "from_addr": "",
+                "to_addr": "",
+            },
+            "webhook": {
+                "enabled": False,
+                "url": "",
+            },
+        },
+    },
     # Cache of discover_camera.py's own probed results, keyed by device
     # index as a string (e.g. "0") - NOT a user-facing setting, just
     # memory of what Discover already found, so switching back to a
@@ -245,6 +336,12 @@ CAMERA_STREAMER_PORT_BOUNDS = (1024, 65535)  # avoid privileged ports
 # way (whichever of the two processes starts second can't bind the port
 # at all) rather than a clear validation error at save time.
 CAMERA_STREAMER_FORBIDDEN_PORT = 8080
+
+# Sanity bounds for the Notifications card on the Config page.
+NOTIFY_COOLDOWN_BOUNDS = (0, 1440)          # minutes; 0 = no cooldown (every match notifies)
+DOOR_OPEN_ALERT_BOUNDS = (1, 1440)          # minutes, when not 0/never (see DEFAULT_CONFIG)
+SMTP_PORT_BOUNDS = (1, 65535)
+QUIET_HOURS_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")  # "HH:MM", 24h
 
 # How long a dashboard-triggered light override lasts before it expires on
 # its own (climate.py's light_loop() just compares against this timestamp,
@@ -381,6 +478,108 @@ def write_camera_streamer_env(cam_cfg):
     _atomic_write(CAMERA_STREAMER_ENV_PATH, "\n".join(lines) + "\n")
 
 
+def validate_notification_settings(values):
+    """Validates the whole "notifications" block coming from the Config
+    page's Notifications card. Returns (cleaned_dict, None) on success or
+    (None, error) on failure - same shape as validate_camera_settings
+    above. Deliberately does NOT try to contact Pushover/SMTP/the webhook
+    URL to confirm credentials actually work - that's what the Config
+    page's "Send test" button (send_test_notification() below) is for;
+    this just sanity-checks the shape of the input so a typo doesn't
+    silently corrupt config.json's notifications block."""
+    cleaned = {"enabled": bool(values.get("enabled", False))}
+
+    min_level = values.get("min_level", "warning")
+    if min_level not in EVENT_LEVELS:
+        return None, f"min_level must be one of {EVENT_LEVELS}"
+    cleaned["min_level"] = min_level
+
+    categories = values.get("categories", {})
+    cleaned["categories"] = {
+        cat: bool(categories.get(cat, True)) for cat in EVENT_CATEGORIES
+    }
+
+    try:
+        cooldown = int(values.get("cooldown_minutes", 15))
+    except (TypeError, ValueError):
+        return None, "cooldown_minutes must be a whole number"
+    if not (NOTIFY_COOLDOWN_BOUNDS[0] <= cooldown <= NOTIFY_COOLDOWN_BOUNDS[1]):
+        return None, (f"cooldown_minutes must be between "
+                       f"{NOTIFY_COOLDOWN_BOUNDS[0]} and {NOTIFY_COOLDOWN_BOUNDS[1]}")
+    cleaned["cooldown_minutes"] = cooldown
+
+    try:
+        door_minutes = int(values.get("door_open_alert_minutes", 15))
+    except (TypeError, ValueError):
+        return None, "door_open_alert_minutes must be a whole number"
+    if door_minutes != 0 and not (DOOR_OPEN_ALERT_BOUNDS[0] <= door_minutes <= DOOR_OPEN_ALERT_BOUNDS[1]):
+        return None, (f"door_open_alert_minutes must be 0 (never) or between "
+                       f"{DOOR_OPEN_ALERT_BOUNDS[0]} and {DOOR_OPEN_ALERT_BOUNDS[1]}")
+    cleaned["door_open_alert_minutes"] = door_minutes
+
+    qh = values.get("quiet_hours", {})
+    start = qh.get("start", "22:00")
+    end = qh.get("end", "07:00")
+    if not QUIET_HOURS_TIME_RE.match(start):
+        return None, "quiet_hours.start must look like HH:MM (24h)"
+    if not QUIET_HOURS_TIME_RE.match(end):
+        return None, "quiet_hours.end must look like HH:MM (24h)"
+    cleaned["quiet_hours"] = {
+        "enabled": bool(qh.get("enabled", False)),
+        "start": start,
+        "end": end,
+        "allow_critical": bool(qh.get("allow_critical", True)),
+    }
+
+    channels = values.get("channels", {})
+
+    pushover = channels.get("pushover", {})
+    cleaned_pushover = {
+        "enabled": bool(pushover.get("enabled", False)),
+        "api_token": str(pushover.get("api_token", "")).strip(),
+        "user_key": str(pushover.get("user_key", "")).strip(),
+    }
+    if cleaned_pushover["enabled"] and not (cleaned_pushover["api_token"] and cleaned_pushover["user_key"]):
+        return None, "Pushover is enabled but api_token/user_key are missing"
+
+    email = channels.get("email", {})
+    try:
+        smtp_port = int(email.get("smtp_port", 587))
+    except (TypeError, ValueError):
+        return None, "email.smtp_port must be a whole number"
+    if not (SMTP_PORT_BOUNDS[0] <= smtp_port <= SMTP_PORT_BOUNDS[1]):
+        return None, f"email.smtp_port must be between {SMTP_PORT_BOUNDS[0]} and {SMTP_PORT_BOUNDS[1]}"
+    cleaned_email = {
+        "enabled": bool(email.get("enabled", False)),
+        "smtp_host": str(email.get("smtp_host", "")).strip(),
+        "smtp_port": smtp_port,
+        "use_tls": bool(email.get("use_tls", True)),
+        "smtp_user": str(email.get("smtp_user", "")).strip(),
+        # An empty incoming password means "leave whatever's already
+        # saved alone" (see api_set_notification_settings in webapp.py) -
+        # by the time it gets here it's already been filled back in from
+        # the existing config if left blank, so this function never has
+        # to special-case "enabled but no password" itself.
+        "smtp_password": str(email.get("smtp_password", "")),
+        "from_addr": str(email.get("from_addr", "")).strip(),
+        "to_addr": str(email.get("to_addr", "")).strip(),
+    }
+    if cleaned_email["enabled"] and not (cleaned_email["smtp_host"] and cleaned_email["from_addr"]
+                                          and cleaned_email["to_addr"]):
+        return None, "Email is enabled but smtp_host/from_addr/to_addr are missing"
+
+    webhook = channels.get("webhook", {})
+    cleaned_webhook = {
+        "enabled": bool(webhook.get("enabled", False)),
+        "url": str(webhook.get("url", "")).strip(),
+    }
+    if cleaned_webhook["enabled"] and not cleaned_webhook["url"].startswith(("http://", "https://")):
+        return None, "Webhook is enabled but url must start with http:// or https://"
+
+    cleaned["channels"] = {"pushover": cleaned_pushover, "email": cleaned_email, "webhook": cleaned_webhook}
+    return cleaned, None
+
+
 CALIBRATION_KEYS = (
     "internal_temp_offset", "internal_humidity_offset",
     "ble_temp_offset", "ble_humidity_offset",
@@ -501,6 +700,38 @@ def load_config():
     # still backfills whichever camera settings it's missing from
     # DEFAULT_CONFIG, rather than silently losing them.
     merged["camera"] = {**DEFAULT_CONFIG["camera"], **data.get("camera", {})}
+    # Three levels deep (notifications -> categories/quiet_hours/channels
+    # -> individual keys), so a plain shallow merge like camera/calibration
+    # above would silently drop a whole nested dict backfill (e.g. an old
+    # config.json with no "notifications" key at all would merge in an
+    # empty "categories": {} instead of every category defaulting to
+    # visible/on). _merge_notifications below does the same "keep
+    # whatever's on disk, backfill whatever's missing" merge one level
+    # deeper.
+    merged["notifications"] = _merge_notifications(
+        DEFAULT_CONFIG["notifications"], data.get("notifications", {})
+    )
+    return merged
+
+
+def _merge_notifications(defaults, saved):
+    """Backfills a saved "notifications" block against DEFAULT_CONFIG's,
+    one level deeper than the shallow {**defaults, **saved} pattern used
+    for camera/calibration above - notifications nests dicts inside
+    dicts (categories, quiet_hours, channels.pushover, channels.email,
+    channels.webhook), and a shallow merge would replace e.g. the whole
+    "categories" dict wholesale the moment a saved config has ANY
+    categories key at all, silently losing every category added in a
+    later version rather than defaulting it to on/off like everything
+    else in this file does for a config.json from before it existed."""
+    merged = {**defaults, **saved}
+    merged["categories"] = {**defaults["categories"], **saved.get("categories", {})}
+    merged["quiet_hours"] = {**defaults["quiet_hours"], **saved.get("quiet_hours", {})}
+    saved_channels = saved.get("channels", {})
+    merged["channels"] = {
+        name: {**chan_defaults, **saved_channels.get(name, {})}
+        for name, chan_defaults in defaults["channels"].items()
+    }
     return merged
 
 
@@ -598,6 +829,7 @@ def init_db():
             message TEXT
         )
     """)
+    _migrate_events_columns(conn)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ble_readings (
             address TEXT PRIMARY KEY,
@@ -705,6 +937,18 @@ def _migrate_readings_columns(conn):
         conn.execute("ALTER TABLE readings ADD COLUMN camera_actual_fps REAL")
     if "camera_target_fps" not in existing:
         conn.execute("ALTER TABLE readings ADD COLUMN camera_target_fps REAL")
+
+
+def _migrate_events_columns(conn):
+    """Adds the "category" column to events for DBs that predate the
+    notification system - see EVENT_CATEGORIES/log_event() below. NULL
+    on every pre-existing row (and on any future row logged without a
+    category) is the correct value, not a gap to backfill - it means
+    "no per-category notification filter applies to this one," which is
+    exactly true for events logged before this column existed."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+    if "category" not in existing:
+        conn.execute("ALTER TABLE events ADD COLUMN category TEXT")
 
 
 def _migrate_ble_readings_columns(conn):
@@ -921,16 +1165,314 @@ def get_disk_free_gb():
 # tuple in webapp.py's own request validation, so the two can't drift.
 EVENT_LEVELS = ["info", "warning", "error", "critical"]
 
+# Registry of the specific warning/error/critical situations worth an
+# individual on/off toggle on the Config page's Notifications card,
+# keyed by the same short id every relevant log_event() call site passes
+# as `category` (climate.py, camera_service.py, ble_battery.py). NOT
+# every log_event() call needs one - most "info" logging (mode changes,
+# relay on/off, etc.) never will - this only covers the call sites that
+# were already warning/error/critical before notifications existed, plus
+# door_open_timeout (new - see light_loop() in climate.py). The label is
+# what the Config page displays; kept here rather than duplicated in
+# config.html so the two can't drift, same reasoning as EVENT_LEVELS
+# above and BLE_SENSOR_LIBRARIES elsewhere in this file.
+EVENT_CATEGORIES = {
+    "emergency_shutdown": "Emergency shutdown (no valid internal reading)",
+    "internal_sensor_failsafe": "Internal sensor failsafe countdown started",
+    "sensor_reading_rejected": "A sensor reading rejected as an implausible glitch",
+    "external_sensor_failover": "External sensor failed over to the wired probe",
+    "door_open_timeout": "Door left open too long",
+    "heater_safety_cutoff": "Heater safety cutoff (max runtime exceeded)",
+    "fan_safety_cutoff": "Fan safety cutoff (max runtime exceeded)",
+    "ble_battery_low": "BLE sensor battery low",
+    "camera_issue": "Camera / timelapse problem",
+    "control_loop_error": "Unexpected error in the control loop",
+}
 
-def log_event(level, message):
+
+def log_event(level, message, category=None):
     """Records a state-change/alarm event to SQLite AND to the Python
     logging module, so it shows up in both the dashboard event log and
-    the on-disk log file."""
+    the on-disk log file. `category` is optional - see EVENT_CATEGORIES
+    above - and, when given, is what lets a warning/error/critical event
+    be individually muted from the Notifications card without raising
+    min_level and losing every OTHER category at that severity too.
+
+    Also the single choke point that decides whether this event should
+    trigger an outbound notification (Pushover/email/webhook) - see
+    _maybe_notify() below. Deliberately wrapped in its own try/except
+    here rather than left to propagate: a bug in the notification path
+    must never prevent the event itself from being recorded, which is
+    the one thing every single caller across this project actually
+    depends on log_event() for."""
     conn = get_db()
-    conn.execute("INSERT INTO events VALUES (?,?,?)", (time.time(), level, message))
+    conn.execute("INSERT INTO events VALUES (?,?,?,?)", (time.time(), level, message, category))
     conn.commit()
     conn.close()
     getattr(logging, level.lower(), logging.info)(message)
+    try:
+        _maybe_notify(level, message, category)
+    except Exception:
+        logging.exception("Notification dispatch check failed (event above was still logged normally)")
+
+
+# --------------------------------------------------------------------------
+# Outbound notifications (Pushover / email / generic webhook)
+# --------------------------------------------------------------------------
+# Fired from log_event() above for anything at or above notifications.
+# min_level, gated by the per-category toggle (when a category was
+# given), quiet hours, and a per-category cooldown - see DEFAULT_CONFIG's
+# "notifications" block for what each setting means.
+#
+# The actual network call (Pushover HTTP POST / SMTP / webhook HTTP
+# POST) never runs on the caller's thread. climate.py's control loop has
+# a fixed LOOP_INTERVAL cadence that sensor reads and relay timing both
+# depend on - stalling it for however long an unreachable Pushover API
+# or a slow SMTP handshake takes would turn a notification problem into
+# a climate control problem, which is strictly worse. A tiny background
+# worker thread + queue absorbs that; log_event() only ever enqueues.
+_notify_queue = queue.Queue()
+_notify_thread_lock = threading.Lock()
+_notify_thread_started = False
+
+# Per-category (or, for an uncategorized call, per-message) last-sent
+# timestamp, in-memory only - NOT persisted to config.json or the DB.
+# Deliberate: this state resets on every process restart, which means a
+# climate.py restart right after a real alert can re-notify immediately
+# even if it's within the configured cooldown window. That's the correct
+# failure mode here, not a bug to fix later - a process that just
+# restarted (possibly BECAUSE of whatever tripped the alert) is exactly
+# when you most want to know if the same condition is still true, not
+# when a stale in-memory cooldown should stay silent about it.
+_notify_last_sent = {}
+_notify_state_lock = threading.Lock()
+
+NOTIFY_HTTP_TIMEOUT_SECONDS = 10
+NOTIFY_SMTP_TIMEOUT_SECONDS = 10
+
+
+def _ensure_notify_thread():
+    """Lazily starts the background dispatch thread on first use, not at
+    import time - shared_state.py is imported by one-off helper scripts
+    too (discover_ble_sensor.py, discover_camera.py) that call
+    log_event() rarely or never; those shouldn't gain a permanent
+    background thread just for importing this module."""
+    global _notify_thread_started
+    if _notify_thread_started:
+        return
+    with _notify_thread_lock:
+        if _notify_thread_started:
+            return
+        threading.Thread(target=_notify_worker, daemon=True).start()
+        _notify_thread_started = True
+
+
+def _notify_worker():
+    """Runs for the life of the process, pulling queued (level, message)
+    pairs and actually sending them. Any exception sending to one channel
+    must not stop the others, or stop this loop from picking up the next
+    queued item - see _send_all_channels below."""
+    while True:
+        level, message = _notify_queue.get()
+        try:
+            _send_all_channels(level, message)
+        except Exception:
+            logging.exception("Notification dispatch failed")
+
+
+def _in_quiet_hours(quiet_hours):
+    """quiet_hours: the "quiet_hours" sub-dict (enabled/start/end).
+    Handles a window that wraps midnight (e.g. 22:00-07:00) as well as
+    one that doesn't (e.g. 09:00-17:00, if someone wants the OPPOSITE of
+    quiet hours by naming a daytime-only window instead)."""
+    if not quiet_hours.get("enabled"):
+        return False
+    now = datetime.now(LOCAL_TZ).strftime("%H:%M")
+    start, end = quiet_hours["start"], quiet_hours["end"]
+    if start <= end:
+        return start <= now < end
+    return now >= start or now < end   # wraps midnight
+
+
+def _passes_cooldown(cooldown_minutes, key):
+    """key: the category id, or (for an uncategorized event) the message
+    text itself - either way, the thing that has to repeat before this
+    gate suppresses it again. Returns True (and records `now` as the new
+    last-sent time) if this key hasn't notified within cooldown_minutes;
+    False if it's still within the window."""
+    if cooldown_minutes <= 0:
+        return True
+    now = time.time()
+    with _notify_state_lock:
+        last = _notify_last_sent.get(key)
+        if last is not None and (now - last) < cooldown_minutes * 60:
+            return False
+        _notify_last_sent[key] = now
+        return True
+
+
+def _maybe_notify(level, message, category):
+    """The gate log_event() calls on every write - checks enabled,
+    min_level, the per-category toggle (when categorized), quiet hours,
+    and cooldown, in that order (cheapest/most-likely-to-reject checks
+    first), before actually enqueueing anything for _notify_worker."""
+    config = load_config().get("notifications", DEFAULT_CONFIG["notifications"])
+    if not config.get("enabled"):
+        return
+    min_level = config.get("min_level", "warning")
+    if EVENT_LEVELS.index(level) < EVENT_LEVELS.index(min_level):
+        return
+    if category in EVENT_CATEGORIES and not config.get("categories", {}).get(category, True):
+        return
+    quiet_hours = config.get("quiet_hours", {})
+    if _in_quiet_hours(quiet_hours) and not (level == "critical" and quiet_hours.get("allow_critical", True)):
+        return
+    if not _passes_cooldown(config.get("cooldown_minutes", 15), category or message):
+        return
+    _ensure_notify_thread()
+    _notify_queue.put((level, message))
+
+
+def _send_all_channels(level, message, config=None):
+    """Sends through every ENABLED channel in `config` (or the live
+    saved config, if not given - see send_test_notification() below for
+    why a caller would pass one explicitly). Each channel's own failure
+    is caught and logged via the plain `logging` module, deliberately
+    NOT via log_event() - a failed notification calling log_event() would
+    itself be notification-worthy by the same rule that got it here,
+    which is exactly the infinite-recursion trap this avoids. Returns a
+    per-channel {ok, error} dict so the Config page's "Send test" button
+    can show which channel(s), if any, actually failed."""
+    if config is None:
+        config = load_config().get("notifications", DEFAULT_CONFIG["notifications"])
+    channels = config.get("channels", {})
+    results = {}
+    title = f"Necroparlor [{level.upper()}]"
+
+    pushover = channels.get("pushover", {})
+    if pushover.get("enabled"):
+        ok, error = _send_pushover(pushover, level, title, message)
+        results["pushover"] = {"ok": ok, "error": error}
+        if not ok:
+            logging.error(f"Pushover notification failed: {error}")
+
+    email = channels.get("email", {})
+    if email.get("enabled"):
+        ok, error = _send_email(email, title, message)
+        results["email"] = {"ok": ok, "error": error}
+        if not ok:
+            logging.error(f"Email notification failed: {error}")
+
+    webhook = channels.get("webhook", {})
+    if webhook.get("enabled"):
+        ok, error = _send_webhook(webhook, level, message)
+        results["webhook"] = {"ok": ok, "error": error}
+        if not ok:
+            logging.error(f"Webhook notification failed: {error}")
+
+    return results
+
+
+def _send_pushover(cfg, level, title, message):
+    """https://pushover.net/api - a single form-encoded POST, no SDK
+    needed. priority=1 ("high priority") for critical bypasses the
+    recipient's device quiet hours on Pushover's own side too and
+    requires acknowledgment-style delivery; ordinary priority (0) for
+    everything else."""
+    data = urllib.parse.urlencode({
+        "token": cfg.get("api_token", ""),
+        "user": cfg.get("user_key", ""),
+        "title": title,
+        "message": message,
+        "priority": 1 if level == "critical" else 0,
+    }).encode()
+    req = urllib.request.Request("https://api.pushover.net/1/messages.json", data=data)
+    try:
+        with urllib.request.urlopen(req, timeout=NOTIFY_HTTP_TIMEOUT_SECONDS) as resp:
+            if resp.status == 200:
+                return True, None
+            return False, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:300]
+        return False, f"HTTP {e.code}: {body}"
+    except (urllib.error.URLError, OSError) as e:
+        return False, str(e)
+
+
+def _send_email(cfg, subject, message):
+    """Plain smtplib - no third-party dependency needed for a single
+    outbound message. use_tls uses STARTTLS on the given port (587 is
+    the conventional submission port for this); a bare SSL connection on
+    465 isn't offered as a separate option since STARTTLS-on-587 covers
+    every mainstream provider (Gmail app passwords included) this
+    project is realistically configured against."""
+    try:
+        msg = MIMEText(message)
+        msg["Subject"] = subject
+        msg["From"] = cfg.get("from_addr", "")
+        msg["To"] = cfg.get("to_addr", "")
+        with smtplib.SMTP(cfg.get("smtp_host", ""), cfg.get("smtp_port", 587),
+                           timeout=NOTIFY_SMTP_TIMEOUT_SECONDS) as smtp:
+            if cfg.get("use_tls", True):
+                smtp.starttls()
+            if cfg.get("smtp_user"):
+                smtp.login(cfg["smtp_user"], cfg.get("smtp_password", ""))
+            smtp.sendmail(cfg.get("from_addr", ""), [cfg.get("to_addr", "")], msg.as_string())
+        return True, None
+    except (smtplib.SMTPException, OSError, TimeoutError) as e:
+        return False, str(e)
+
+
+def _send_webhook(cfg, level, message):
+    """POSTs a small JSON payload to an arbitrary URL - Discord/Slack
+    incoming webhooks both accept a bare {"content": ...}/{"text": ...}
+    shaped payload, but plenty of other receivers (ntfy.sh, a
+    self-rolled endpoint, Home Assistant's webhook trigger) expect their
+    own shape instead, so this sends a generic, superset-ish payload
+    (level/message/ts/source) rather than guessing which specific
+    service is on the other end - matches this project's existing
+    "generic webhook, you own the formatting on the other end" framing
+    rather than special-casing any one destination."""
+    payload = json.dumps({
+        "source": "Necroparlor",
+        "level": level,
+        "message": message,
+        "ts": time.time(),
+    }).encode()
+    req = urllib.request.Request(
+        cfg.get("url", ""), data=payload,
+        headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=NOTIFY_HTTP_TIMEOUT_SECONDS) as resp:
+            if 200 <= resp.status < 300:
+                return True, None
+            return False, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:300]
+        return False, f"HTTP {e.code}: {body}"
+    except (urllib.error.URLError, OSError) as e:
+        return False, str(e)
+
+
+def send_test_notification():
+    """Sends a one-off test message through every ENABLED channel right
+    now, for the Config page's "Send test" button - bypasses
+    notifications.enabled/min_level/category toggles/quiet hours/cooldown
+    entirely (none of those should stand between "I just typed in a
+    Pushover token" and finding out immediately whether it actually
+    works), but still only actually sends through whichever channel(s)
+    are individually enabled, using whatever's currently saved in
+    config.json (including any as-yet-unsaved... no - this reads the
+    saved config, so Save must happen before Send test, same as every
+    other Config page card in this project). Returns the per-channel
+    {ok, error} dict from _send_all_channels directly."""
+    config = load_config().get("notifications", DEFAULT_CONFIG["notifications"])
+    return _send_all_channels(
+        "info",
+        "Test notification from Necroparlor - if you got this, it's configured correctly.",
+        config=config,
+    )
 
 
 def get_last_valid_timestamps():
@@ -1206,7 +1748,7 @@ def get_recent_events(limit=50, level=None, before_ts=None):
     them, and the events table is small enough (state-change/alarm
     events only, not a per-cycle sensor log) that this is cheap."""
     conn = get_db()
-    query = "SELECT ts, level, message FROM events WHERE 1=1"
+    query = "SELECT ts, level, message, category FROM events WHERE 1=1"
     params = []
     if level:
         at_or_above = EVENT_LEVELS[EVENT_LEVELS.index(level):]
@@ -1221,7 +1763,10 @@ def get_recent_events(limit=50, level=None, before_ts=None):
         params.append(limit)
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    return [{"ts": r[0], "level": r[1], "message": r[2]} for r in rows]
+    # category is a bonus field (None on any pre-migration row, or any
+    # event logged without one) - existing consumers that only look at
+    # ts/level/message are unaffected by its presence.
+    return [{"ts": r[0], "level": r[1], "message": r[2], "category": r[3]} for r in rows]
 
 
 # --------------------------------------------------------------------------

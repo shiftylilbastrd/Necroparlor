@@ -486,6 +486,59 @@ pattern has been consistent: tie things to identity, never to role.
   decision logic (climate.py itself can't be imported/run in a sandbox
   without real `RPi.GPIO` hardware) - **not yet run on the actual Pi**.
 
+### Notification system (added on `notification-system`, 2026-09-17)
+
+Outbound alerting - Pushover / email (SMTP) / generic webhook - for warning-or-above `log_event()` calls, plus
+one genuinely new alert type (door left open too long) that didn't exist as a logged event before this.
+Config-page card, README section, and full design notes are covered there - this entry is about the choices
+that aren't obvious from reading the code cold.
+
+- **Lives in `shared_state.py`, not a new module.** `notifications.py` was the initial plan (mirroring how
+  `camera_service.py`/`ble_listener.py`/`ble_battery.py` are separate concern-specific scripts), but the
+  dispatch logic is tightly bound to `log_event()` and `config.json` - both already owned by `shared_state.py`
+  - and a separate module would need `shared_state.py` to import it back (for the config/log_event hooks),
+  creating a circular import for no real benefit. Centralizing it here instead matches this file's existing
+  "shared config + logging helpers used by every other script" role.
+- **`log_event()` is the single choke point**, not something threaded through every caller's own logic. Every
+  script already calls `log_event(level, message)` for anything alarm-worthy; adding an optional `category`
+  kwarg (only needed for the specific call sites that get a per-category mute toggle - see `EVENT_CATEGORIES`)
+  and firing the notification check from inside `log_event()` itself meant zero new call sites anywhere, just
+  one new optional argument at existing ones.
+- **Dispatch never runs on the caller's thread.** `climate.py`'s control loop has a fixed `LOOP_INTERVAL`
+  cadence that sensor timing and relay safety cutoffs both depend on - a slow/unreachable Pushover API or SMTP
+  handshake stalling that loop would turn a notification problem into a climate-control problem. A lazily-
+  started background thread + `queue.Queue` (`_ensure_notify_thread`/`_notify_worker` in `shared_state.py`)
+  absorbs this; `log_event()` only ever enqueues. Lazy start (not at import time) so one-off helper scripts
+  that import `shared_state.py` but rarely/never call `log_event()` (`discover_ble_sensor.py`,
+  `discover_camera.py`) don't gain a permanent background thread just for importing the module.
+- **Per-category cooldown state is in-memory only, not persisted.** A `climate.py` restart clears it, which
+  means a restart right after a real alert can re-notify immediately even within the configured cooldown
+  window. **This is intentional, not a gap** - a process that just restarted (possibly *because of* whatever
+  tripped the alert) is exactly when you most want to know if the condition is still true, not when a stale
+  cooldown from before the restart should stay silent about it.
+- **A notification failure must never call `log_event()`.** Delivery failures (a bad Pushover token, SMTP auth
+  failure, unreachable webhook URL) are logged via the plain `logging` module only. Routing them through
+  `log_event()` would make a failed notification itself notification-worthy by the same rule that produced it
+  - an infinite-recursion trap disguised as "just log everything consistently."
+- **The email password is never round-tripped to the browser.** `/api/status` returns the saved config
+  wholesale (same as everything else on the Config page - see the "no login" note in the README, which now
+  explicitly covers this), but `api_set_notification_settings()` in `webapp.py` strips `smtp_password` out of
+  its own save-response, and the Config page's password field is always left blank on load rather than
+  pre-filled - typing nothing and saving keeps whatever's already stored, on the same "empty means unchanged,
+  not cleared" convention used for the email password specifically (every OTHER notification field, including
+  the Pushover token/user key, round-trips normally the same as BLE/camera settings already do - only the SMTP
+  password gets this treatment, since it's the one credential this project stores that isn't already
+  effectively public on the LAN via some other already-visible field).
+- **Categories cover the call sites that were already warning/error/critical before this existed**, plus
+  `door_open_timeout` (new). `EVENT_CATEGORIES` in `shared_state.py` is the single source of truth the Config
+  page's checklist renders from (`/api/notification-categories`) - adding a new categorized alert later means
+  adding one entry there and passing `category=` at that one `log_event()` call site, nothing else.
+- **Not yet tested against a real Pushover account, real SMTP server, or real webhook receiver** - no
+  credentials were available while building this. The "Send test" button exists specifically so this gets a
+  real end-to-end check the first time real credentials are entered, rather than only finding out a channel is
+  broken the next time something actually goes wrong. Verify all three (or whichever you configure) with Send
+  test before relying on any of it.
+
 ## Established workflows / things that look like bugs but aren't
 
 - Deployment is via dragging files into GitHub's web UI, not git CLI
@@ -512,6 +565,14 @@ pattern has been consistent: tie things to identity, never to role.
 
 ## Open threads / known issues
 
+- **[open, 2026-09-17]** Notification system (`notification-system` branch) - built and reviewed but **not
+  run on the Pi, and not verified against a real Pushover account, SMTP server, or webhook receiver** (no
+  credentials on hand while building it). Before relying on it: merge, restart `dermestid-web.service` and
+  `dermestid-climate.service`, configure at least one channel on the Config page, Save, then use "Send test"
+  to confirm it actually arrives - and separately, confirm a real triggering event (easiest: leave the door
+  open past `door_open_alert_minutes`) produces a real push. See the Load-bearing decisions entry above for
+  the design; nothing about the design itself is in question, only whether it survives contact with a real Pi
+  and real credentials.
 - **[resolved]** `ble-genericization` merged into `main`; Pi confirmed
   switched back to tracking `main`.
 - **[open]** A Data-page report of "Fallback missing for a while" came

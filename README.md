@@ -175,6 +175,42 @@ sudo systemctl enable --now dermestid-camera.service
 
 **Live view** (Home page) connects straight to camera-streamer's own `/stream` endpoint — not relayed through this dashboard's own server anymore — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) auto-compiles each mode session's frames into an `.mp4` once it ends; set `snapshot_interval_minutes` per mode on the Config page (`0` = off). A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
 
+## Notifications (optional)
+
+The Config page's **Notifications** card can push warning-or-above events (a safety cutoff, the emergency
+shutdown, a sensor failover, a door left open too long, ...) out to your phone or inbox, through any
+combination of:
+
+- **Pushover** - a one-time app purchase at [pushover.net](https://pushover.net); needs an API token (from
+  a Pushover Application you create there) and your user key.
+- **Email** - plain SMTP with STARTTLS (port 587). A Gmail "App Password" works here if using Gmail as the
+  sender.
+- **Generic webhook** - POSTs `{"source": "Necroparlor", "level": ..., "message": ..., "ts": ...}` as JSON to
+  any URL. Works as-is with a Discord or Slack incoming webhook, [ntfy.sh](https://ntfy.sh), a Home Assistant
+  webhook trigger, or your own endpoint - you own the formatting on the other end.
+
+No new dependency is needed for any of this - Pushover/webhook use plain HTTP (`urllib`), email uses
+`smtplib`, both already in Python's standard library.
+
+**Nothing fires until two things are both true**: "Enable notifications" is checked, *and* at least one
+channel is individually enabled (with its credentials filled in and saved). A **minimum severity** picker
+(default: warning) and a per-event-type checklist underneath it let you mute specific event types (a rejected
+glitchy reading is off by default - it's the noisiest, least actionable one) without raising the threshold
+for everything else. A **cooldown** (per event type, default 15 min) keeps a flapping condition from turning
+into a wall of identical pushes, and optional **quiet hours** can suppress everything except critical events
+overnight. A **"Send test"** button next to Save fires a real message through every enabled channel
+immediately, so a bad token or SMTP password shows up right away instead of only being discovered the next
+time something actually goes wrong.
+
+**Door left open too long** is new alerting, not a new safety behavior - no relay or output responds to it,
+it only ever logs a `warning`/`door_open_timeout` event (once per open episode) if the door's been open
+continuously for longer than the configured number of minutes (0 disables it). The existing safety behaviors
+below are unaffected either way.
+
+Like every other setting on this dashboard, notification settings (including channel credentials) are saved
+to `config.json` in plain text and are visible to anything on your LAN that can reach the dashboard - see the
+"no login" note above. Don't put credentials here you wouldn't put anywhere else on this network.
+
 ## Run permanently (recommended)
 
 ```bash
@@ -237,7 +273,7 @@ Local `config.json` changes are stashed before pulling and restored after (a war
 - **Logs** (`/logs`) — event log with level filter and pagination.
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
-- **Config** (`/config`) — per-mode setpoints, sensor source/calibration, BLE and camera settings, software updates.
+- **Config** (`/config`) — per-mode setpoints, sensor source/calibration, BLE and camera settings, software updates, notifications.
 
 ## Activity modes
 
@@ -257,4 +293,4 @@ Defaults are a starting point, not a care sheet — tune from the dashboard base
 - Simultaneous heat + genuine cooling → cooling wins, heat skipped that cycle (the scheduled cleaning-mode vent is exempt — it's not a thermal decision).
 - Readings that jump too far from the last accepted value in one cycle are rejected as glitches, with self-recovery if several consecutive rejections agree with each other (treated as a real sustained change, not noise).
 
-These live as constants at the top of `climate.py` (and `camera_service.py`, for its own watchdog/disk-space thresholds) — edit and restart the service to change them.
+These live as constants at the top of `climate.py` (and `camera_service.py`, for its own watchdog/disk-space thresholds) — edit and restart the service to change them. (The door-left-open notification above is a separate, dashboard-configurable alert, not one of these fixed safety behaviors.)

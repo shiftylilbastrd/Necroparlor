@@ -437,6 +437,75 @@ def api_set_camera_settings():
     return jsonify(response)
 
 
+@app.route("/api/notification-categories")
+def api_notification_categories():
+    """The EVENT_CATEGORIES registry (shared_state.py), for populating
+    the Config page's per-category checkbox list - same "server owns the
+    registry, page just renders it" pattern as api_ble_sensor_types
+    above, so the two can't drift out of sync with what log_event()
+    call sites actually tag."""
+    return jsonify(state.EVENT_CATEGORIES)
+
+
+@app.route("/api/notification-settings", methods=["POST"])
+def api_set_notification_settings():
+    """Saves the Config page's Notifications card. No service restart
+    needed for anything here - unlike ble_sensor_type/camera settings,
+    every notification-relevant read (log_event()'s _maybe_notify(),
+    _send_all_channels()) already re-loads config.json fresh each time,
+    the same way climate.py re-reads setpoints every cycle.
+
+    email.smtp_password gets special handling: the Config page never
+    pre-fills the real saved password into the password field (see
+    loadConfig() in config.html) - only a change actually types
+    something there. So an empty/missing smtp_password here means
+    "leave it alone," not "clear it" - filled back in from the
+    currently-saved config before validation ever sees it, exactly like
+    validate_notification_settings' docstring says. A user who genuinely
+    wants to clear a saved password types a single space and saves,
+    since an empty field can never mean that here."""
+    body = request.get_json(force=True, silent=True) or {}
+    config = state.load_config()
+    existing_password = config.get("notifications", {}).get("channels", {}).get("email", {}).get("smtp_password", "")
+    channels = body.setdefault("channels", {})
+    email = channels.setdefault("email", {})
+    if not email.get("smtp_password"):
+        email["smtp_password"] = existing_password
+
+    cleaned, error = state.validate_notification_settings(body)
+    if error:
+        return jsonify({"error": error}), 400
+    config["notifications"] = cleaned
+    state.save_config(config)
+    state.log_event("info", "Notification settings updated")
+    response = dict(config)
+    # Never echo the password back to the browser in the save response -
+    # loadConfig() doesn't need it (see the docstring above), and there's
+    # no reason for it to sit in a network response body it doesn't use.
+    response["notifications"] = dict(cleaned)
+    response["notifications"]["channels"] = dict(cleaned["channels"])
+    response["notifications"]["channels"]["email"] = {
+        k: v for k, v in cleaned["channels"]["email"].items() if k != "smtp_password"
+    }
+    return jsonify(response)
+
+
+@app.route("/api/notification-test", methods=["POST"])
+def api_notification_test():
+    """Sends a real test message through every enabled channel right now
+    (state.send_test_notification()), using whatever's currently SAVED
+    in config.json - Save must happen before Send test, same as every
+    other card on this page. Synchronous (not queued like a real
+    log_event()-triggered notification - see _notify_worker in
+    shared_state.py) since this is a one-off, deliberately-waited-for
+    action from a button click, not something that could stall the
+    control loop the way an automatic alert must never be allowed to."""
+    results = state.send_test_notification()
+    if not results:
+        return jsonify({"error": "No channel is enabled - turn one on and save first"}), 400
+    return jsonify({"results": results})
+
+
 CAMERA_DISCOVER_TIMEOUT_SECONDS = 30
 
 

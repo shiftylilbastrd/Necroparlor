@@ -377,7 +377,8 @@ def validate_reading(new_val, last_val, max_delta, label):
 
     state.log_event("warning", f"{label} reading rejected: jumped from "
                      f"{last_val:.1f} to {new_val:.1f} in one cycle "
-                     f"({streak}/{STREAK_CONFIRM_COUNT} consistent readings so far)")
+                     f"({streak}/{STREAK_CONFIRM_COUNT} consistent readings so far)",
+                     category="sensor_reading_rejected")
     return None
 
 
@@ -408,7 +409,7 @@ def deactivate_cooling():
 
 def emergency_shutdown_outputs(reason):
     global heater_on, heater_on_since, fan_on, servo_open, fan_on_since, humidity_on
-    state.log_event("critical", f"EMERGENCY SHUTDOWN: {reason}")
+    state.log_event("critical", f"EMERGENCY SHUTDOWN: {reason}", category="emergency_shutdown")
     turn_off(PIN_HEATER)
     heater_on = False
     heater_on_since = None
@@ -444,6 +445,16 @@ def light_loop():
     time.time() passes the stored timestamp, override_active just goes
     false on the next poll - nothing needs to actively clear it.
 
+    Also watches how long the door has been continuously open and, past
+    notifications.door_open_alert_minutes (0 = disabled - same "never"
+    sentinel as snapshot_interval_minutes elsewhere in this project),
+    logs ONE warning/door_open_timeout event for that open episode - not
+    a new one every poll for as long as it stays open, and not a fixed
+    safety behavior like the ones in the README (no relay/output is
+    touched here at all) - purely so a genuinely forgotten-open door
+    surfaces as a push notification instead of only showing up as a
+    "Door opened" info-level line someone has to notice on the Logs page.
+
     Runs as a background thread for the life of the process, so any
     exception here needs to be caught and logged rather than allowed to
     kill the thread - an uncaught exception would silently disable the
@@ -452,13 +463,18 @@ def light_loop():
     last_open = None
     last_override_check = 0
     override_until = 0
+    door_open_alert_minutes = 15
+    open_since = None
+    door_alert_sent = False
     while True:
         try:
             is_open = GPIO.input(PIN_SWITCH) == GPIO.LOW
 
             now = time.time()
             if now - last_override_check >= LIGHT_OVERRIDE_POLL_SECONDS:
-                override_until = state.load_config().get("light_override_until", 0) or 0
+                config = state.load_config()
+                override_until = config.get("light_override_until", 0) or 0
+                door_open_alert_minutes = config.get("notifications", {}).get("door_open_alert_minutes", 15)
                 last_override_check = now
             override_active = now < override_until
 
@@ -471,6 +487,20 @@ def light_loop():
                 state.save_door_state(is_open)
                 state.log_event("info", f"Door {'opened' if is_open else 'closed'}")
                 last_open = is_open
+                # New episode either way - a close always resets the
+                # timer, and a fresh open always starts a fresh one, so
+                # the alert (if it fires at all) is always about the
+                # CURRENT stretch of open time, not one carried over
+                # from a previous open/close cycle.
+                open_since = now if is_open else None
+                door_alert_sent = False
+
+            if (is_open and open_since is not None and not door_alert_sent
+                    and door_open_alert_minutes > 0
+                    and (now - open_since) >= door_open_alert_minutes * 60):
+                state.log_event("warning", f"Door has been open for over {door_open_alert_minutes} min",
+                                 category="door_open_timeout")
+                door_alert_sent = True
         except Exception:
             logging.exception("Unexpected error in light_loop - will retry next poll")
         time.sleep(0.05)
@@ -560,7 +590,8 @@ def run_cycle():
     global last_active_external_source
     if last_active_external_source is not None and active_external_source != last_active_external_source:
         if active_external_source == "local_gpio":
-            state.log_event("warning", "Automatically failed over to wired probe (BLE sensor stale)")
+            state.log_event("warning", "Automatically failed over to wired probe (BLE sensor stale)",
+                             category="external_sensor_failover")
         else:
             state.log_event("info", "BLE sensor recovered, resuming as primary external sensor")
     last_active_external_source = active_external_source
@@ -660,7 +691,8 @@ def run_cycle():
             # real hour-long outage never showed up on the dashboard at
             # all until the eventual "critical" shutdown, itself easy
             # to miss if it scrolled out of view.
-            state.log_event("warning", "Internal sensor reading unavailable - starting failsafe countdown")
+            state.log_event("warning", "Internal sensor reading unavailable - starting failsafe countdown",
+                             category="internal_sensor_failsafe")
         elapsed = loop_start - sensor_fail_since
         logging.warning(f"Critical (internal) sensor read failed/rejected ({elapsed:.0f}s since last good reading)")
         if elapsed > SENSOR_FAIL_TIMEOUT and not alarm_active:
@@ -745,7 +777,8 @@ def run_cycle():
     # --- Apply cooling / ventilation, with a runtime safety cutoff ---
     if cooling_needed:
         if fan_on_since and (loop_start - fan_on_since) > FAN_MAX_ON_SECONDS:
-            state.log_event("warning", "Fan safety cutoff: exceeded max continuous runtime")
+            state.log_event("warning", "Fan safety cutoff: exceeded max continuous runtime",
+                             category="fan_safety_cutoff")
             deactivate_cooling()
             fan_lockout_until = loop_start + FAN_LOCKOUT_SECONDS
         elif loop_start > fan_lockout_until:
@@ -763,7 +796,8 @@ def run_cycle():
         elif heater_on_since and (loop_start - heater_on_since) > HEATER_MAX_ON_SECONDS:
             state.log_event("warning",
                              f"Heater safety cutoff: on continuously for over "
-                             f"{HEATER_MAX_ON_SECONDS // 60} min without reaching setpoint")
+                             f"{HEATER_MAX_ON_SECONDS // 60} min without reaching setpoint",
+                             category="heater_safety_cutoff")
             turn_off(PIN_HEATER)
             heater_on = False
             heater_on_since = None
@@ -843,7 +877,8 @@ def main():
                 raise
             except Exception:
                 logging.exception("Unexpected error in control loop - will retry next cycle")
-                state.log_event("error", "Unexpected error in control loop, see climate.log")
+                state.log_event("error", "Unexpected error in control loop, see climate.log",
+                                 category="control_loop_error")
                 time.sleep(LOOP_INTERVAL)
 
     except (KeyboardInterrupt, GracefulExit):

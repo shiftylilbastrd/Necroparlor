@@ -174,6 +174,117 @@
   </div>
 </div>
 
+<div class="section-title">Notifications</div>
+<div class="subtitle" style="margin-top:-6px;">
+  Push a warning-or-above event out to Pushover, email, and/or a generic webhook. Nothing here is sent
+  anywhere until "Enable notifications" below is checked <em>and</em> at least one channel is individually
+  enabled and saved. This dashboard has no login (see the README) - anything saved here, including channel
+  credentials, is visible to anything on your LAN the same way every other setting on this page already is.
+</div>
+<div class="grid">
+  <div class="card" style="max-width:460px;">
+    <h2>General</h2>
+    <div class="field">
+      <label><input type="checkbox" id="notifyEnabled" style="width:auto; margin-right:6px;">Enable notifications</label>
+    </div>
+    <div class="field">
+      <label>Minimum severity</label>
+      <select id="notifyMinLevel">
+        <option value="warning">Warning and above</option>
+        <option value="error">Error and above</option>
+        <option value="critical">Critical only</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Which events notify</label>
+      <div id="notifyCategoryList" class="stat-sub">Loading...</div>
+      <div class="stat-sub" style="margin-top:4px;">Only applies to events at or above the minimum severity above - unchecking one here mutes just that event type, without raising the minimum for everything else.</div>
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>Cooldown between repeats of the same event type (minutes, 0 = none)</label>
+      <input type="number" min="0" max="1440" id="notifyCooldownInput">
+    </div>
+    <div class="field">
+      <label>Alert if the door stays open longer than (minutes, 0 = never)</label>
+      <input type="number" min="0" max="1440" id="notifyDoorOpenInput">
+    </div>
+    <div class="field" style="margin-top:14px;">
+      <label><input type="checkbox" id="notifyQuietEnabled" style="width:auto; margin-right:6px;">Quiet hours</label>
+      <div style="display:flex; gap:8px; margin-top:6px;">
+        <input type="time" id="notifyQuietStart" style="width:50%;">
+        <input type="time" id="notifyQuietEnd" style="width:50%;">
+      </div>
+      <label style="margin-top:8px;"><input type="checkbox" id="notifyQuietAllowCritical" style="width:auto; margin-right:6px;">Still notify for critical events during quiet hours</label>
+    </div>
+    <button class="save-btn" style="margin-top:10px;" onclick="saveNotificationSettings()">Save</button>
+    <button class="save-btn" onclick="sendTestNotification()" style="margin-left:6px;">Send test</button>
+    <div class="save-msg" id="notifySettingsMsg"></div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Pushover</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">One-time app purchase at <a href="https://pushover.net" target="_blank" rel="noopener">pushover.net</a> - create an Application there for the API token.</div>
+    <div class="field">
+      <label><input type="checkbox" id="pushoverEnabled" style="width:auto; margin-right:6px;">Enabled</label>
+    </div>
+    <div class="field">
+      <label>API token</label>
+      <input type="text" id="pushoverToken" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>User key</label>
+      <input type="text" id="pushoverUserKey" autocomplete="off">
+    </div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Email</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">Plain SMTP with STARTTLS (port 587 is the usual submission port) - a Gmail "App Password" works here if using Gmail.</div>
+    <div class="field">
+      <label><input type="checkbox" id="emailEnabled" style="width:auto; margin-right:6px;">Enabled</label>
+    </div>
+    <div class="field">
+      <label>SMTP host</label>
+      <input type="text" id="emailHost" placeholder="smtp.gmail.com">
+    </div>
+    <div class="field">
+      <label>Port</label>
+      <input type="number" min="1" max="65535" id="emailPort" placeholder="587">
+    </div>
+    <div class="field">
+      <label><input type="checkbox" id="emailUseTls" style="width:auto; margin-right:6px;">Use STARTTLS</label>
+    </div>
+    <div class="field">
+      <label>SMTP username</label>
+      <input type="text" id="emailUser" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>SMTP password</label>
+      <input type="password" id="emailPassword" autocomplete="new-password" placeholder="leave blank to keep saved password">
+    </div>
+    <div class="field">
+      <label>From address</label>
+      <input type="text" id="emailFrom" placeholder="necroparlor@example.com">
+    </div>
+    <div class="field">
+      <label>To address</label>
+      <input type="text" id="emailTo" placeholder="you@example.com">
+    </div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Webhook</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">POSTs <code>{"source","level","message","ts"}</code> as JSON to any URL - works as-is with a Discord or Slack incoming webhook, ntfy.sh, Home Assistant's webhook trigger, or your own endpoint.</div>
+    <div class="field">
+      <label><input type="checkbox" id="webhookEnabled" style="width:auto; margin-right:6px;">Enabled</label>
+    </div>
+    <div class="field">
+      <label>URL</label>
+      <input type="text" id="webhookUrl" placeholder="https://...">
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 {% block scripts %}
 <script>
@@ -264,6 +375,132 @@ async function loadConfig() {
   document.getElementById('cameraDeviceInput').value = cam.device ?? '0';
   applyResolutionsForDevice(cam.device ?? '0', cam.width ?? 1280, cam.height ?? 720);
   document.getElementById('cameraStreamerPortInput').value = cam.streamer_port ?? 8090;
+
+  await populateNotificationCategories((data.config.notifications || {}).categories || {});
+  applyNotificationSettings(data.config.notifications || {});
+}
+
+// --- Notifications ---
+
+async function populateNotificationCategories(currentCategories) {
+  const res = await fetch('/api/notification-categories');
+  const categories = await res.json();
+  const list = document.getElementById('notifyCategoryList');
+  list.innerHTML = Object.entries(categories).map(([id, label]) => `
+    <label style="display:block; font-weight:normal; margin-top:4px;">
+      <input type="checkbox" class="notify-category-cb" data-cat="${id}" style="width:auto; margin-right:6px;"
+             ${currentCategories[id] !== false ? 'checked' : ''}>${label}
+    </label>`).join('');
+}
+
+function applyNotificationSettings(n) {
+  document.getElementById('notifyEnabled').checked = !!n.enabled;
+  document.getElementById('notifyMinLevel').value = n.min_level || 'warning';
+  document.getElementById('notifyCooldownInput').value = n.cooldown_minutes ?? 15;
+  document.getElementById('notifyDoorOpenInput').value = n.door_open_alert_minutes ?? 15;
+
+  const qh = n.quiet_hours || {};
+  document.getElementById('notifyQuietEnabled').checked = !!qh.enabled;
+  document.getElementById('notifyQuietStart').value = qh.start || '22:00';
+  document.getElementById('notifyQuietEnd').value = qh.end || '07:00';
+  document.getElementById('notifyQuietAllowCritical').checked = qh.allow_critical !== false;
+
+  const channels = n.channels || {};
+  const pushover = channels.pushover || {};
+  document.getElementById('pushoverEnabled').checked = !!pushover.enabled;
+  document.getElementById('pushoverToken').value = pushover.api_token || '';
+  document.getElementById('pushoverUserKey').value = pushover.user_key || '';
+
+  const email = channels.email || {};
+  document.getElementById('emailEnabled').checked = !!email.enabled;
+  document.getElementById('emailHost').value = email.smtp_host || '';
+  document.getElementById('emailPort').value = email.smtp_port ?? 587;
+  document.getElementById('emailUseTls').checked = email.use_tls !== false;
+  document.getElementById('emailUser').value = email.smtp_user || '';
+  // smtp_password is deliberately never sent back by the server (see
+  // api_set_notification_settings in webapp.py) - left blank here means
+  // "unchanged," not "cleared." A blank field on Save keeps whatever's
+  // already saved.
+  document.getElementById('emailPassword').value = '';
+  document.getElementById('emailFrom').value = email.from_addr || '';
+  document.getElementById('emailTo').value = email.to_addr || '';
+
+  const webhook = channels.webhook || {};
+  document.getElementById('webhookEnabled').checked = !!webhook.enabled;
+  document.getElementById('webhookUrl').value = webhook.url || '';
+}
+
+async function saveNotificationSettings() {
+  const categories = {};
+  document.querySelectorAll('.notify-category-cb').forEach(cb => { categories[cb.dataset.cat] = cb.checked; });
+
+  const body = {
+    enabled: document.getElementById('notifyEnabled').checked,
+    min_level: document.getElementById('notifyMinLevel').value,
+    categories: categories,
+    cooldown_minutes: parseInt(document.getElementById('notifyCooldownInput').value, 10),
+    door_open_alert_minutes: parseInt(document.getElementById('notifyDoorOpenInput').value, 10),
+    quiet_hours: {
+      enabled: document.getElementById('notifyQuietEnabled').checked,
+      start: document.getElementById('notifyQuietStart').value || '22:00',
+      end: document.getElementById('notifyQuietEnd').value || '07:00',
+      allow_critical: document.getElementById('notifyQuietAllowCritical').checked,
+    },
+    channels: {
+      pushover: {
+        enabled: document.getElementById('pushoverEnabled').checked,
+        api_token: document.getElementById('pushoverToken').value.trim(),
+        user_key: document.getElementById('pushoverUserKey').value.trim(),
+      },
+      email: {
+        enabled: document.getElementById('emailEnabled').checked,
+        smtp_host: document.getElementById('emailHost').value.trim(),
+        smtp_port: parseInt(document.getElementById('emailPort').value, 10) || 587,
+        use_tls: document.getElementById('emailUseTls').checked,
+        smtp_user: document.getElementById('emailUser').value.trim(),
+        smtp_password: document.getElementById('emailPassword').value,
+        from_addr: document.getElementById('emailFrom').value.trim(),
+        to_addr: document.getElementById('emailTo').value.trim(),
+      },
+      webhook: {
+        enabled: document.getElementById('webhookEnabled').checked,
+        url: document.getElementById('webhookUrl').value.trim(),
+      },
+    },
+  };
+
+  const res = await fetch('/api/notification-settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  const msg = document.getElementById('notifySettingsMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+    return;
+  }
+  msg.textContent = 'Saved';
+  msg.className = 'save-msg ok';
+  setTimeout(() => { msg.textContent = ''; }, 4500);
+  applyNotificationSettings(data.notifications || {});
+}
+
+async function sendTestNotification() {
+  const msg = document.getElementById('notifySettingsMsg');
+  msg.textContent = 'Sending test...';
+  msg.className = 'save-msg';
+  const res = await fetch('/api/notification-test', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) {
+    msg.textContent = data.error || 'Test failed';
+    msg.className = 'save-msg err';
+    return;
+  }
+  const lines = Object.entries(data.results).map(([channel, r]) =>
+    `${channel}: ${r.ok ? 'ok' : 'failed - ' + r.error}`);
+  const allOk = Object.values(data.results).every(r => r.ok);
+  msg.textContent = lines.join(' | ');
+  msg.className = allOk ? 'save-msg ok' : 'save-msg err';
 }
 
 async function saveCameraSettings() {

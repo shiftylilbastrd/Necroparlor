@@ -165,7 +165,8 @@ async def main():
     state.save_ble_battery(address, pct, voltage)
 
     if pct <= LOW_BATTERY_PCT:
-        state.log_event("warning", f"SensorPush battery low: ~{pct:.0f}% ({voltage:.2f}V) - plan a swap soon")
+        state.log_event("warning", f"SensorPush battery low: ~{pct:.0f}% ({voltage:.2f}V) - plan a swap soon",
+                         category="ble_battery_low")
     else:
         state.log_event("info", f"SensorPush battery check: ~{pct:.0f}% ({voltage:.2f}V)")
 
