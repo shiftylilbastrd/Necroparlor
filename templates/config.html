@@ -50,7 +50,7 @@
       </div>
       <label style="margin-top:8px;"><input type="checkbox" id="notifyQuietAllowCritical" style="width:auto; margin-right:6px;">Still notify for critical events during quiet hours</label>
     </div>
-    <button class="save-btn" style="margin-top:10px;" onclick="saveNotificationSettings()">Save</button>
+    <button class="save-btn" style="margin-top:10px;" onclick="saveNotificationSettings('notifySettingsMsg')">Save</button>
     <button class="save-btn" onclick="sendTestNotification()" style="margin-left:6px;">Send test</button>
     <div class="save-msg" id="notifySettingsMsg"></div>
   </div>
@@ -69,7 +69,8 @@
       <label>User key</label>
       <input type="text" id="pushoverUserKey" autocomplete="off">
     </div>
-    <button class="save-btn" onclick="sendChannelTest('pushover', 'pushoverTestMsg')">Send test</button>
+    <button class="save-btn" onclick="saveNotificationSettings('pushoverTestMsg')">Save</button>
+    <button class="save-btn" onclick="sendChannelTest('pushover', 'pushoverTestMsg')" style="margin-left:6px;">Send test</button>
     <div class="save-msg" id="pushoverTestMsg"></div>
   </div>
 
@@ -106,7 +107,8 @@
       <label>To address</label>
       <input type="text" id="emailTo" placeholder="you@example.com">
     </div>
-    <button class="save-btn" onclick="sendChannelTest('email', 'emailTestMsg')">Send test</button>
+    <button class="save-btn" onclick="saveNotificationSettings('emailTestMsg')">Save</button>
+    <button class="save-btn" onclick="sendChannelTest('email', 'emailTestMsg')" style="margin-left:6px;">Send test</button>
     <div class="save-msg" id="emailTestMsg"></div>
   </div>
 
@@ -120,7 +122,8 @@
       <label>URL</label>
       <input type="text" id="webhookUrl" placeholder="https://...">
     </div>
-    <button class="save-btn" onclick="sendChannelTest('webhook', 'webhookTestMsg')">Send test</button>
+    <button class="save-btn" onclick="saveNotificationSettings('webhookTestMsg')">Save</button>
+    <button class="save-btn" onclick="sendChannelTest('webhook', 'webhookTestMsg')" style="margin-left:6px;">Send test</button>
     <div class="save-msg" id="webhookTestMsg"></div>
   </div>
 </div>
@@ -217,7 +220,18 @@ function readWebhookFields() {
   };
 }
 
-async function saveNotificationSettings() {
+// Saves the WHOLE notifications block (General + all three channel
+// cards) in one request, same as always - the backend only ever takes
+// the full shape (see api_set_notification_settings in webapp.py), so
+// there's no such thing as a partial per-channel save server-side.
+// msgId lets each card's own "Save" button (as well as the General
+// card's) show the result in ITS OWN message line instead of only the
+// General card's, even though the request underneath is identical -
+// added after a real mix-up where credentials typed into the Pushover
+// card looked unsaved because the only Save button was all the way up
+// in the General card, easy to miss/skip after just editing one card.
+async function saveNotificationSettings(msgId) {
+  msgId = msgId || 'notifySettingsMsg';
   const categories = {};
   document.querySelectorAll('.notify-category-cb').forEach(cb => { categories[cb.dataset.cat] = cb.checked; });
 
@@ -244,7 +258,7 @@ async function saveNotificationSettings() {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
   });
   const data = await res.json();
-  const msg = document.getElementById('notifySettingsMsg');
+  const msg = document.getElementById(msgId);
   if (!res.ok) {
     msg.textContent = data.error || 'Save failed';
     msg.className = 'save-msg err';

@@ -149,7 +149,12 @@
     <h2>Software updates</h2>
     <div class="field">
       <label>Branch to track</label>
-      <select id="updateBranchSelect" onchange="onBranchSelectChange()"></select>
+      <!-- Auto-saves on change (see onBranchSelectChange below) - no
+           separate click needed, same as the Internal source select
+           above. The button underneath is just a manual fallback (retry
+           after a failed auto-save, or re-run the check without
+           actually changing the selection). -->
+      <select id="updateBranchSelect" onchange="onBranchSelectManualChange()"></select>
       <div class="stat-sub" id="updateBranchWarning" style="margin-top:6px; display:none; color:var(--warn);">
         ⚠ Non-main branches are for deliberate testing - running code that hasn't gone through the same scrutiny as main. Switching back to main after testing is recommended, not something to leave changed long-term. A branch switch also can't automatically handle deeper structural changes (like a renamed systemd service) - check that branch's own notes for any manual steps.
       </div>
@@ -530,6 +535,19 @@ async function populateUpdateBranches(currentTarget) {
 function onBranchSelectChange() {
   const select = document.getElementById('updateBranchSelect');
   document.getElementById('updateBranchWarning').style.display = select.value === 'main' ? 'none' : 'block';
+}
+
+// The select's own onchange handler - separate from onBranchSelectChange()
+// above because that one ALSO runs once at page load (from
+// populateUpdateBranches, just to set the warning for whatever's already
+// saved) and firing a save then would re-save the branch that's already
+// saved, on every page load, for no reason. This one only runs on an
+// actual user-driven change, and auto-saves it - same "pick it, it's
+// saved" pattern the Internal source select already uses, instead of
+// requiring a separate click on "Save branch" too.
+function onBranchSelectManualChange() {
+  onBranchSelectChange();
+  saveUpdateBranch();
 }
 
 async function saveUpdateBranch() {

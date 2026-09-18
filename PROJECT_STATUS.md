@@ -597,6 +597,26 @@ that aren't obvious from reading the code cold.
   instead of `/config`. Not yet confirmed on the Pi as of this entry - purely a template/route reorg, no
   backend or schema change, so low risk, but worth a quick look that both tabs render and every button on
   each still works after the update.
+- **[resolved, 2026-09-18]** Real-world Pushover test after merging `notification-system` into `main`
+  surfaced an actual bug: Pushover's own API rejected the saved token ("application token is invalid") -
+  root cause was user error (Pushover's User Key and API Token are two separate values from two different
+  places on pushover.net, easy to swap or leave stale), not a code bug, but it exposed a real UX gap - the
+  Pushover/Email/Webhook cards only ever had "Send test" buttons; the only way to actually SAVE credentials
+  was the General card's Save button further up the Notifications section, easy to miss after just editing
+  one channel's card (confirmed to have actually bitten Ryan - re-typed credentials after "losing" the first
+  set, though the deeper cause there was Pushover rejecting an invalid token rather than a straight save
+  failure). Fixed by giving each channel card its own "Save" button (`saveNotificationSettings(msgId)` now
+  takes an optional message-element id so each card can show its own result) - it still saves the SAME full
+  notifications block as before (the backend only ever accepts the whole shape, see
+  api_set_notification_settings in webapp.py), just reachable and confirmable from whichever card you were
+  actually editing.
+- **[2026-09-18]** Auto-save on the Settings page's branch-to-track select (`onBranchSelectManualChange()`),
+  matching the Internal source select's existing "pick it, it's saved" pattern - Ryan's idea, from the same
+  Pushover-credentials conversation, that a plain dropdown (no risk of half-typed data) shouldn't need a
+  separate Save click. Deliberately NOT applied to the notification credential fields (Pushover token, email
+  password, etc.) or plain number inputs - those benefit from an explicit, deliberate Save. The "Save branch"
+  button is kept as a manual fallback (retry after a failed auto-save, or re-check without changing the
+  selection), not removed.
 - **[deferred, 2026-09-18]** iOS home-screen badge (a number on the dashboard's icon, like a native app) for
   notifications - discussed, not started. Technically possible via the Badging API (Safari 16.4+ supports it
   for a site Added to Home Screen), but a badge that updates while the app is closed needs real Web Push - a
