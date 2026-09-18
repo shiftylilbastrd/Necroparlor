@@ -577,16 +577,26 @@ that aren't obvious from reading the code cold.
   a second `init_db()` call) - not yet run against the actual Pi's real `dermestid.db`, so the DROP COLUMN
   step there specifically is still worth confirming once this branch updates it (`dermestid-web.service`'s
   restart runs `init_db()` on the very first request after startup).
-- **[partially resolved, 2026-09-17]** Notification system (`notification-system` branch, pushed to GitHub
-  and running on the Pi) - **Discord webhook confirmed working end-to-end** ("Send test" delivered a real
-  message after fixing two real bugs the first live test surfaced: Discord's Cloudflare front door blocks
+- **[resolved, 2026-09-17]** Notification system (`notification-system` branch, pushed to GitHub and running
+  on the Pi) - **all three channels confirmed working via their per-channel "Send test" buttons**: webhook
+  (Discord, after fixing two real bugs the first live test surfaced - Discord's Cloudflare front door blocks
   Python's default `User-Agent` outright (HTTP 403, error 1010) before the request reaches Discord's own
   webhook handler, and the original generic JSON payload had no `content` field, which Discord requires to
-  actually display anything - both fixed in `_send_webhook()`, see shared_state.py). **Pushover and email are
-  still unverified** - no credentials tested against those two yet. Per-channel "Send test" buttons (added
-  after the branch's first push) make this fast to check once credentials are entered - Save isn't even
-  required first for those. Still worth confirming a real triggering event (not just the test button) produces
-  a push, e.g. leaving the door open past `door_open_alert_minutes`.
+  actually display anything - both fixed in `_send_webhook()`, see shared_state.py); Pushover; and email (the
+  only snag was Google itself - a plain Gmail password is rejected by SMTP with "Application-specific password
+  required" (534, 5.7.9) once 2-Step Verification is on, which it is for most accounts now - fixed by
+  generating a Gmail App Password at myaccount.google.com/apppasswords and using that instead of the real
+  account password in the SMTP password field; not a code bug, no code change needed). Still worth confirming
+  a real triggering event (not just the test button) produces a push, e.g. leaving the door open past
+  `door_open_alert_minutes`.
+- **[2026-09-17]** Config page split into **Config** (per-mode setpoints + the Notifications card) and a new
+  **Settings** page (sensor sources/calibration, USB webcam, software-update branch/interval/apply) - same
+  underlying `/api/*` endpoints, just regrouped across two `<nav>` tabs (see base.html) so the page people
+  tune often (setpoints, notification thresholds) isn't buried under the stuff set up once and rarely touched.
+  The global update-available banner in base.html now links to `/settings` (where "Update now" now lives)
+  instead of `/config`. Not yet confirmed on the Pi as of this entry - purely a template/route reorg, no
+  backend or schema change, so low risk, but worth a quick look that both tabs render and every button on
+  each still works after the update.
 - **[2026-09-17]** Internal-sensor-outage rows now written to the readings table (see the internal-sensor
   Load-bearing decision above for the "why") - worth flagging one side effect on the Home page: the page-level
   "stale" banner (`data.stale`, >90s since the latest row) used to also catch an internal-sensor outage,

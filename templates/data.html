@@ -3,25 +3,29 @@
 {% block head_extra %}
 <style>
   .table-wrap { overflow-x: auto; border: 1px solid var(--panel-border); border-radius: 10px; }
-  table.data-table { border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
-  table.data-table th, table.data-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--panel-border); }
+  table.data-table { border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; width: 100%; }
+  table.data-table th, table.data-table td { padding: 6px 8px; text-align: center; border-bottom: 1px solid var(--panel-border); }
   table.data-table th:first-child, table.data-table td:first-child,
   table.data-table th:nth-child(2), table.data-table td:nth-child(2) { text-align: left; }
-  table.data-table th { color: var(--text-dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  table.data-table th { color: var(--text-dim); font-weight: 600; background: var(--panel); }
+  /* The whole two-row header sticks together while scrolling down the
+     page (modern browsers support position:sticky directly on <thead>,
+     so there's no need to hand-compute a per-row top offset the way a
+     sticky-per-<th> approach would). */
+  table.data-table thead { position: sticky; top: 0; z-index: 1; }
   table.data-table td.null-cell { color: var(--text-dim); }
   table.data-table tr:last-child td { border-bottom: none; }
-  /* Time and Mode keep normal horizontal headers - their data is wide
-     regardless of header orientation, so rotating those specifically
-     wouldn't narrow the column at all. Every other header rotates
-     vertical, since those columns' data (a short number, a single
-     flag) is much narrower than the label describing it - the column
-     width should follow the short data, not the long label. */
-  th.rot { height: 92px; padding: 0; position: relative; vertical-align: bottom; text-align: left; }
-  th.rot span.rot-label {
-    position: absolute; bottom: 6px; left: 50%;
-    transform: translateX(-50%) rotate(180deg);
-    writing-mode: vertical-rl; white-space: nowrap;
-  }
+  /* Time/Mode/Active source/Fan/Heat/Dehum are single columns with no
+     natural sub-grouping, so they span both header rows as one cell.
+     Internal/External/Fallback/Pi each cover two data columns (temp +
+     humidity, or temp + load) - a merged, centered label spans both in
+     row 1, with the specific unit underneath in row 2. Zero border (not
+     just invisible) between the group and sub-header rows so there's
+     nothing separating them - the sub-header row's own bottom border is
+     what separates the header block from the data rows beneath it. */
+  th.rowspan-cell { vertical-align: bottom; }
+  th.group { border-bottom-width: 0; }
+  th.sub { font-weight: 500; font-size: 0.78rem; }
   .out-flag { display: inline-block; font-size: 0.95rem; }
   .out-flag.on { color: var(--accent); }
   .out-flag.off { color: var(--text-dim); opacity: 0.4; }
@@ -46,20 +50,26 @@
   <table class="data-table">
     <thead>
       <tr>
-        <th>Time</th>
-        <th>Mode</th>
-        <th class="rot"><span class="rot-label">Internal °F</span></th>
-        <th class="rot"><span class="rot-label">Internal %RH</span></th>
-        <th class="rot"><span class="rot-label">External °F</span></th>
-        <th class="rot"><span class="rot-label">External %RH</span></th>
-        <th class="rot"><span class="rot-label">Fallback °F</span></th>
-        <th class="rot"><span class="rot-label">Fallback %RH</span></th>
-        <th class="rot"><span class="rot-label">Active source</span></th>
-        <th class="rot"><span class="rot-label">Fan</span></th>
-        <th class="rot"><span class="rot-label">Heat</span></th>
-        <th class="rot"><span class="rot-label">Dehum</span></th>
-        <th class="rot"><span class="rot-label">Pi °F</span></th>
-        <th class="rot"><span class="rot-label">Pi load</span></th>
+        <th class="rowspan-cell" rowspan="2">Time</th>
+        <th class="rowspan-cell" rowspan="2">Mode</th>
+        <th class="group" colspan="2">Internal</th>
+        <th class="group" colspan="2">External</th>
+        <th class="group" colspan="2">Fallback</th>
+        <th class="rowspan-cell" rowspan="2">Active source</th>
+        <th class="rowspan-cell" rowspan="2">Fan</th>
+        <th class="rowspan-cell" rowspan="2">Heat</th>
+        <th class="rowspan-cell" rowspan="2">Dehum</th>
+        <th class="group" colspan="2">Pi</th>
+      </tr>
+      <tr>
+        <th class="sub">°F</th>
+        <th class="sub">%RH</th>
+        <th class="sub">°F</th>
+        <th class="sub">%RH</th>
+        <th class="sub">°F</th>
+        <th class="sub">%RH</th>
+        <th class="sub">°F</th>
+        <th class="sub">load</th>
       </tr>
     </thead>
     <tbody id="dataRows"></tbody>
