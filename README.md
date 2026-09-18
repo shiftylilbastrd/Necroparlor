@@ -198,9 +198,11 @@ channel is individually enabled (with its credentials filled in and saved). A **
 glitchy reading is off by default - it's the noisiest, least actionable one) without raising the threshold
 for everything else. A **cooldown** (per event type, default 15 min) keeps a flapping condition from turning
 into a wall of identical pushes, and optional **quiet hours** can suppress everything except critical events
-overnight. A **"Send test"** button next to Save fires a real message through every enabled channel
-immediately, so a bad token or SMTP password shows up right away instead of only being discovered the next
-time something actually goes wrong.
+overnight. A **"Send test"** button next to Save fires a real message through every *saved and enabled*
+channel immediately, so a bad token or SMTP password shows up right away instead of only being discovered the
+next time something actually goes wrong. Each of the three channel cards also has its **own** "Send test"
+button, which tests only that channel, using whatever's currently typed into its fields - no need to check
+"Enabled" or hit Save first, so you can validate a token/password/URL before committing to it.
 
 **Door left open too long** is new alerting, not a new safety behavior - no relay or output responds to it,
 it only ever logs a `warning`/`door_open_timeout` event (once per open episode) if the door's been open

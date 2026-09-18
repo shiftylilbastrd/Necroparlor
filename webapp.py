@@ -492,15 +492,40 @@ def api_set_notification_settings():
 
 @app.route("/api/notification-test", methods=["POST"])
 def api_notification_test():
-    """Sends a real test message through every enabled channel right now
-    (state.send_test_notification()), using whatever's currently SAVED
-    in config.json - Save must happen before Send test, same as every
-    other card on this page. Synchronous (not queued like a real
-    log_event()-triggered notification - see _notify_worker in
-    shared_state.py) since this is a one-off, deliberately-waited-for
+    """Sends a real test message right now, synchronously (not queued
+    like a real log_event()-triggered notification - see _notify_worker
+    in shared_state.py) since this is a one-off, deliberately-waited-for
     action from a button click, not something that could stall the
-    control loop the way an automatic alert must never be allowed to."""
-    results = state.send_test_notification()
+    control loop the way an automatic alert must never be allowed to.
+
+    No body (or no "channel") - the General card's "Send test": every
+    enabled channel, using whatever's currently SAVED in config.json
+    (Save must happen before Send test there).
+
+    {"channel": "pushover"/"email"/"webhook", "config": {...}} - one of
+    the per-channel "Send test" buttons: tests THAT channel alone, using
+    whatever's currently typed into that card (`config`), whether or not
+    it's saved or "Enabled" is checked. email's smtp_password is the one
+    field that's special-cased the same way api_set_notification_settings
+    handles it - the Config page never pre-fills the real saved password
+    into that input, so a blank one here means "use whatever's already
+    saved," not "test with no password.\""""
+    body = request.get_json(force=True, silent=True) or {}
+    channel = body.get("channel")
+    channel_config = body.get("config")
+
+    if channel == "email" and isinstance(channel_config, dict) and not channel_config.get("smtp_password"):
+        saved_password = (state.load_config().get("notifications", {})
+                           .get("channels", {}).get("email", {}).get("smtp_password", ""))
+        channel_config = {**channel_config, "smtp_password": saved_password}
+
+    if channel is not None and channel_config is not None and "smtp_port" in channel_config:
+        try:
+            channel_config = {**channel_config, "smtp_port": int(channel_config["smtp_port"])}
+        except (TypeError, ValueError):
+            return jsonify({"error": "smtp_port must be a whole number"}), 400
+
+    results = state.send_test_notification(channel=channel, channel_config=channel_config)
     if not results:
         return jsonify({"error": "No channel is enabled - turn one on and save first"}), 400
     return jsonify({"results": results})

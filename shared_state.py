@@ -1455,24 +1455,56 @@ def _send_webhook(cfg, level, message):
         return False, str(e)
 
 
-def send_test_notification():
-    """Sends a one-off test message through every ENABLED channel right
-    now, for the Config page's "Send test" button - bypasses
-    notifications.enabled/min_level/category toggles/quiet hours/cooldown
-    entirely (none of those should stand between "I just typed in a
-    Pushover token" and finding out immediately whether it actually
-    works), but still only actually sends through whichever channel(s)
-    are individually enabled, using whatever's currently saved in
-    config.json (including any as-yet-unsaved... no - this reads the
-    saved config, so Save must happen before Send test, same as every
-    other Config page card in this project). Returns the per-channel
-    {ok, error} dict from _send_all_channels directly."""
+TEST_NOTIFICATION_TITLE = "Necroparlor [TEST]"
+TEST_NOTIFICATION_MESSAGE = "Test notification from Necroparlor - if you got this, it's configured correctly."
+
+
+def send_test_notification(channel=None, channel_config=None):
+    """Sends a one-off test message right now - either through every
+    SAVED+enabled channel at once (channel=None, the General card's
+    "Send test" button), or through exactly one channel in isolation
+    (channel="pushover"/"email"/"webhook", each channel card's own
+    "Send test" button next to it).
+
+    Either way this bypasses notifications.enabled/min_level/category
+    toggles/quiet hours/cooldown entirely - none of those should stand
+    between "I just typed in a Pushover token" and finding out
+    immediately whether it actually works.
+
+    The channel=None path still only sends through whichever channel(s)
+    are individually enabled, using whatever's currently SAVED in
+    config.json - Save must happen before Send test there, same as every
+    other Config page card in this project.
+
+    The single-channel path is different on purpose: `channel_config`,
+    when given, is whatever's currently TYPED into that one card -
+    unsaved, and NOT required to have "Enabled" checked - since the
+    whole point of a per-channel test button is checking a token/
+    password/URL before committing to Save. That channel is always
+    treated as enabled for this one test, regardless of what the
+    checkbox says. Falls back to the saved config for that channel if
+    `channel_config` isn't given (e.g. testing a channel that's already
+    saved without changing anything first).
+
+    Returns a {channel_id: {ok, error}} dict either way, so the Config
+    page's JS doesn't need two different response shapes to handle."""
+    if channel is not None:
+        if channel not in ("pushover", "email", "webhook"):
+            return {channel: {"ok": False, "error": f"Unknown channel '{channel}'"}}
+        if channel_config is None:
+            saved = load_config().get("notifications", DEFAULT_CONFIG["notifications"])
+            channel_config = saved.get("channels", {}).get(channel, {})
+        cfg = {**channel_config, "enabled": True}
+        if channel == "pushover":
+            ok, error = _send_pushover(cfg, "info", TEST_NOTIFICATION_TITLE, TEST_NOTIFICATION_MESSAGE)
+        elif channel == "email":
+            ok, error = _send_email(cfg, TEST_NOTIFICATION_TITLE, TEST_NOTIFICATION_MESSAGE)
+        else:
+            ok, error = _send_webhook(cfg, "info", TEST_NOTIFICATION_MESSAGE)
+        return {channel: {"ok": ok, "error": error}}
+
     config = load_config().get("notifications", DEFAULT_CONFIG["notifications"])
-    return _send_all_channels(
-        "info",
-        "Test notification from Necroparlor - if you got this, it's configured correctly.",
-        config=config,
-    )
+    return _send_all_channels("info", TEST_NOTIFICATION_MESSAGE, config=config)
 
 
 def get_last_valid_timestamps():

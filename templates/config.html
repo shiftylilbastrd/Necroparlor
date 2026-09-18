@@ -235,6 +235,8 @@
       <label>User key</label>
       <input type="text" id="pushoverUserKey" autocomplete="off">
     </div>
+    <button class="save-btn" onclick="sendChannelTest('pushover', 'pushoverTestMsg')">Send test</button>
+    <div class="save-msg" id="pushoverTestMsg"></div>
   </div>
 
   <div class="card" style="max-width:420px;">
@@ -270,6 +272,8 @@
       <label>To address</label>
       <input type="text" id="emailTo" placeholder="you@example.com">
     </div>
+    <button class="save-btn" onclick="sendChannelTest('email', 'emailTestMsg')">Send test</button>
+    <div class="save-msg" id="emailTestMsg"></div>
   </div>
 
   <div class="card" style="max-width:420px;">
@@ -282,6 +286,8 @@
       <label>URL</label>
       <input type="text" id="webhookUrl" placeholder="https://...">
     </div>
+    <button class="save-btn" onclick="sendChannelTest('webhook', 'webhookTestMsg')">Send test</button>
+    <div class="save-msg" id="webhookTestMsg"></div>
   </div>
 </div>
 
@@ -430,6 +436,37 @@ function applyNotificationSettings(n) {
   document.getElementById('webhookUrl').value = webhook.url || '';
 }
 
+// Reads whatever's currently typed into each channel card - shared by
+// saveNotificationSettings (saves all three at once) and sendChannelTest
+// (tests exactly one, without requiring it to be saved first).
+function readPushoverFields() {
+  return {
+    enabled: document.getElementById('pushoverEnabled').checked,
+    api_token: document.getElementById('pushoverToken').value.trim(),
+    user_key: document.getElementById('pushoverUserKey').value.trim(),
+  };
+}
+function readEmailFields() {
+  return {
+    enabled: document.getElementById('emailEnabled').checked,
+    smtp_host: document.getElementById('emailHost').value.trim(),
+    smtp_port: parseInt(document.getElementById('emailPort').value, 10) || 587,
+    use_tls: document.getElementById('emailUseTls').checked,
+    smtp_user: document.getElementById('emailUser').value.trim(),
+    // Left blank here means "use the saved password" - see
+    // api_set_notification_settings/api_notification_test in webapp.py.
+    smtp_password: document.getElementById('emailPassword').value,
+    from_addr: document.getElementById('emailFrom').value.trim(),
+    to_addr: document.getElementById('emailTo').value.trim(),
+  };
+}
+function readWebhookFields() {
+  return {
+    enabled: document.getElementById('webhookEnabled').checked,
+    url: document.getElementById('webhookUrl').value.trim(),
+  };
+}
+
 async function saveNotificationSettings() {
   const categories = {};
   document.querySelectorAll('.notify-category-cb').forEach(cb => { categories[cb.dataset.cat] = cb.checked; });
@@ -447,25 +484,9 @@ async function saveNotificationSettings() {
       allow_critical: document.getElementById('notifyQuietAllowCritical').checked,
     },
     channels: {
-      pushover: {
-        enabled: document.getElementById('pushoverEnabled').checked,
-        api_token: document.getElementById('pushoverToken').value.trim(),
-        user_key: document.getElementById('pushoverUserKey').value.trim(),
-      },
-      email: {
-        enabled: document.getElementById('emailEnabled').checked,
-        smtp_host: document.getElementById('emailHost').value.trim(),
-        smtp_port: parseInt(document.getElementById('emailPort').value, 10) || 587,
-        use_tls: document.getElementById('emailUseTls').checked,
-        smtp_user: document.getElementById('emailUser').value.trim(),
-        smtp_password: document.getElementById('emailPassword').value,
-        from_addr: document.getElementById('emailFrom').value.trim(),
-        to_addr: document.getElementById('emailTo').value.trim(),
-      },
-      webhook: {
-        enabled: document.getElementById('webhookEnabled').checked,
-        url: document.getElementById('webhookUrl').value.trim(),
-      },
+      pushover: readPushoverFields(),
+      email: readEmailFields(),
+      webhook: readWebhookFields(),
     },
   };
 
@@ -501,6 +522,34 @@ async function sendTestNotification() {
   const allOk = Object.values(data.results).every(r => r.ok);
   msg.textContent = lines.join(' | ');
   msg.className = allOk ? 'save-msg ok' : 'save-msg err';
+}
+
+// Per-channel "Send test" button (Pushover/Email/Webhook cards) - tests
+// ONLY that channel, using whatever's currently typed into its own
+// fields, whether or not it's been saved or "Enabled" is checked. Unlike
+// sendTestNotification() above (the General card's button, which only
+// fires through already-SAVED+enabled channels), this is meant for
+// checking a token/password/URL before committing to Save at all.
+const CHANNEL_FIELD_READERS = { pushover: readPushoverFields, email: readEmailFields, webhook: readWebhookFields };
+
+async function sendChannelTest(channel, msgId) {
+  const msg = document.getElementById(msgId);
+  msg.textContent = 'Sending test...';
+  msg.className = 'save-msg';
+  const config = CHANNEL_FIELD_READERS[channel]();
+  const res = await fetch('/api/notification-test', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ channel: channel, config: config }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    msg.textContent = data.error || 'Test failed';
+    msg.className = 'save-msg err';
+    return;
+  }
+  const result = data.results[channel];
+  msg.textContent = result.ok ? 'Sent - check for it' : `Failed - ${result.error}`;
+  msg.className = result.ok ? 'save-msg ok' : 'save-msg err';
 }
 
 async function saveCameraSettings() {
