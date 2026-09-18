@@ -185,9 +185,13 @@ combination of:
   a Pushover Application you create there) and your user key.
 - **Email** - plain SMTP with STARTTLS (port 587). A Gmail "App Password" works here if using Gmail as the
   sender.
-- **Generic webhook** - POSTs `{"source": "Necroparlor", "level": ..., "message": ..., "ts": ...}` as JSON to
-  any URL. Works as-is with a Discord or Slack incoming webhook, [ntfy.sh](https://ntfy.sh), a Home Assistant
-  webhook trigger, or your own endpoint - you own the formatting on the other end.
+- **Generic webhook** - POSTs `{"source": "Necroparlor", "level": ..., "message": ..., "ts": ..., "content":
+  ..., "text": ...}` as JSON to any URL - `content`/`text` are included specifically so it renders as an
+  actual message out of the box on a Discord or Slack incoming webhook (both require one of those keys, or
+  they silently accept the request and show nothing), while other receivers ([ntfy.sh](https://ntfy.sh), a
+  Home Assistant webhook trigger, your own endpoint) can just read whichever fields they care about and
+  ignore the rest. Sent with a real `User-Agent` header - Discord's Cloudflare front door blocks Python's
+  default one outright (HTTP 403, error 1010) before the request ever reaches Discord's own webhook handler.
 
 No new dependency is needed for any of this - Pushover/webhook use plain HTTP (`urllib`), email uses
 `smtplib`, both already in Python's standard library.

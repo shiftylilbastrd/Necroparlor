@@ -1424,24 +1424,48 @@ def _send_email(cfg, subject, message):
 
 
 def _send_webhook(cfg, level, message):
-    """POSTs a small JSON payload to an arbitrary URL - Discord/Slack
-    incoming webhooks both accept a bare {"content": ...}/{"text": ...}
-    shaped payload, but plenty of other receivers (ntfy.sh, a
-    self-rolled endpoint, Home Assistant's webhook trigger) expect their
-    own shape instead, so this sends a generic, superset-ish payload
-    (level/message/ts/source) rather than guessing which specific
-    service is on the other end - matches this project's existing
-    "generic webhook, you own the formatting on the other end" framing
-    rather than special-casing any one destination."""
+    """POSTs a small JSON payload to an arbitrary URL - a self-rolled
+    endpoint, ntfy.sh, Home Assistant's webhook trigger, etc. can all
+    read whatever fields they want out of the generic level/message/ts/
+    source shape below, so this doesn't try to guess which specific
+    service is on the other end.
+
+    Discord and Slack incoming webhooks are the two most likely targets
+    though (per the Config page's own description of this card), and
+    BOTH have a real, enforced payload requirement, not just a
+    convention: Discord rejects a body with no "content" (or "embeds"/
+    "components"), and Slack's classic incoming webhooks expect "text" -
+    an arbitrary JSON body would otherwise pass this function's own
+    success check (a 2xx from Cloudflare) while never actually showing
+    up as a message. `content`/`text` are added alongside the generic
+    fields so this works out of the box against either one without
+    special-casing which service is configured - both silently ignore
+    JSON keys they don't recognize.
+
+    A custom User-Agent is required, not just polite - Discord's
+    Cloudflare front door blocks the default `Python-urllib/3.x` UA
+    outright (HTTP 403, Cloudflare error 1010, "blocked based on your
+    browser's signature") before the request ever reaches Discord's own
+    webhook handler. Worth remembering if this ever gets ported to a
+    different HTTP client - the same default-UA block applies there
+    too, it's Cloudflare's WAF rejecting the request, not anything
+    specific to urllib."""
+    text = f"Necroparlor [{level.upper()}]: {message}"
     payload = json.dumps({
         "source": "Necroparlor",
         "level": level,
         "message": message,
         "ts": time.time(),
+        "content": text,  # Discord
+        "text": text,     # Slack (classic incoming webhooks)
     }).encode()
     req = urllib.request.Request(
         cfg.get("url", ""), data=payload,
-        headers={"Content-Type": "application/json"}, method="POST"
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Necroparlor/1.0 (+https://github.com/shiftylilbastrd/Necroparlor)",
+        },
+        method="POST"
     )
     try:
         with urllib.request.urlopen(req, timeout=NOTIFY_HTTP_TIMEOUT_SECONDS) as resp:
