@@ -163,7 +163,7 @@
 <div class="page">
 <div class="banner" id="globalDoorBanner">🚪 Enclosure door is open</div>
 <div class="update-banner" id="globalUpdateBanner">
-  🔄 An update is available<span id="globalUpdateDetail"></span> - <a href="/config">go to Config to apply it</a>.
+  <span id="globalUpdateText">🔄 An update is available</span> - <a href="/config">go to Config to apply it</a>.
 </div>
 {% block content %}{% endblock %}
 </div>
@@ -172,14 +172,31 @@
 // Runs on every page (outside the overridable scripts block) - polls
 // for an available update and shows a banner if one's found, regardless
 // of which page you're currently on.
+//
+// [2026-09-18] Checks a pending BRANCH SWITCH the same way the Config
+// page's own status tile does (see renderUpdateStatus in config.html),
+// not just is_available - a branch switch where the target's commits
+// happen to already match HEAD (e.g. right after merging a feature
+// branch into main) leaves is_available false even though the Pi is
+// still checked out on the OLD branch and hasn't actually moved yet.
+// Missing that case here (while config.html's tile already understood
+// it) is exactly what caused this banner to stay silently hidden after
+// switching the update-branch dropdown - confirmed on a real Pi.
 async function checkGlobalUpdateBanner() {
   try {
     const res = await fetch('/api/update-status');
     const data = await res.json();
+    const status = data.status;
     const banner = document.getElementById('globalUpdateBanner');
-    const detail = document.getElementById('globalUpdateDetail');
-    if (data.status && data.status.is_available) {
-      detail.textContent = data.status.remote_message ? `: "${data.status.remote_message}"` : '';
+    const text = document.getElementById('globalUpdateText');
+    const branchMismatch = status && status.current_branch && status.target_branch &&
+                            status.current_branch !== status.target_branch;
+    if (branchMismatch) {
+      text.textContent = `🔄 Branch switch pending: ${status.current_branch} → ${status.target_branch}`;
+      banner.style.display = 'block';
+    } else if (status && status.is_available) {
+      const msgPart = status.remote_message ? `: "${status.remote_message}"` : '';
+      text.textContent = `🔄 An update is available${msgPart}`;
       banner.style.display = 'block';
     } else {
       banner.style.display = 'none';
