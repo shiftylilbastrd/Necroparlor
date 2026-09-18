@@ -52,8 +52,18 @@ day-to-day retention policy. If you're hitting it regularly, lower the
 snapshot interval or camera-streamer's own resolution/quality flags
 (see docs/camera-streamer-setup.md) instead of relying on it.
 
+Two notification categories cover this (see maybe_forecast_low_disk and
+maybe_prune_for_disk_space below, and EVENT_CATEGORIES in
+shared_state.py): "disk_space_low" fires at least DISK_FORECAST_WARNING_HOURS
+BEFORE the threshold above is projected to be hit, based on the current
+snapshot capture rate - an early heads-up to go fix the real problem;
+"disk_space_pruned" fires when frames actually get auto-deleted, i.e.
+the forecast's lead time ran out (or was never accurate to begin with -
+e.g. a mode switch after the forecast raised the rate).
+
 Run under systemd (see systemd/dermestid-camera.service).
 """
+import collections
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -104,6 +114,26 @@ CAMERA_LOW_DISK_THRESHOLD_MB = 200
 CAMERA_LOW_DISK_PRUNE_COUNT = 20
 
 _low_disk_warned = False
+
+# How far ahead maybe_forecast_low_disk() below has to warn - see its
+# docstring. Also not a config.json knob, same reasoning as the disk
+# threshold above - this is a heads-up on the way to that hardcoded
+# safety net, not a separately-tunable schedule.
+DISK_FORECAST_WARNING_HOURS = 24
+
+# Rolling window of the most recently captured snapshots' actual JPEG
+# sizes (bytes) - recorded for free every time fetch_snapshot() succeeds
+# (see the main loop below), and averaged by maybe_forecast_low_disk() to
+# estimate a real bytes-per-snapshot rate. Reading real capture sizes
+# instead of guessing from resolution*quality means the forecast tracks
+# whatever camera-streamer's actually producing right now, including a
+# resolution/quality change made on the Settings page mid-session.
+# Starts empty on every service (re)start - meaning no forecast until at
+# least one snapshot has actually been captured since startup, which is
+# fine for a background best-effort estimate, not a safety-critical one.
+DISK_FORECAST_SAMPLE_SIZE = 10
+_recent_snapshot_sizes = collections.deque(maxlen=DISK_FORECAST_SAMPLE_SIZE)
+_disk_forecast_warned = False
 
 # A session shorter than this many frames doesn't get compiled - a couple
 # of frames from an accidental few-second mode toggle would just produce
@@ -306,7 +336,11 @@ def maybe_prune_for_disk_space():
     """Safety-net pruning only - see the module docstring. Logs the
     transition once, not every check, so a sustained low-disk situation
     doesn't spam the event log every cycle - same pattern climate.py
-    uses for sensor-failover logging."""
+    uses for sensor-failover logging. Its own category
+    (disk_space_pruned) rather than the generic camera_issue - this is a
+    real "data just got deleted" event, worth being individually
+    toggle-able on the Notifications card separately from routine
+    camera-streamer-unreachable noise."""
     global _low_disk_warned
     free_mb = shutil.disk_usage(state.BASE_DIR).free / (1024 * 1024)
     if free_mb < CAMERA_LOW_DISK_THRESHOLD_MB:
@@ -319,12 +353,84 @@ def maybe_prune_for_disk_space():
                 "timelapse snapshot(s) as a safety net. If this keeps "
                 "happening, lower the snapshot interval or camera-streamer's "
                 "resolution/quality (see docs/camera-streamer-setup.md).",
-                category="camera_issue"
+                category="disk_space_pruned"
             )
             _low_disk_warned = True
     elif _low_disk_warned:
+        # Recovered above the threshold (more space freed up, or the
+        # pruning above just did its job) - reset so a FUTURE dip below
+        # the threshold warns again instead of staying silently
+        # "already warned" forever.
         state.log_event("info", f"Camera: free disk space recovered ({free_mb:.0f}MB) - pruning stopped")
         _low_disk_warned = False
+
+
+def maybe_forecast_low_disk():
+    """Warns AT LEAST DISK_FORECAST_WARNING_HOURS before
+    maybe_prune_for_disk_space() above would actually start deleting
+    frames - that function only fires once free space has ALREADY
+    dropped below the threshold, which (depending on the snapshot
+    interval) can be anywhere from days to mere minutes of advance
+    notice, not really a "heads up, go fix this" warning. This projects
+    a simple linear rate - the rolling average of actually-captured
+    snapshot sizes (_recent_snapshot_sizes) divided by the CURRENTLY
+    ACTIVE mode's own snapshot_interval_minutes - forward from the
+    current free space to estimate when it'll cross the threshold.
+
+    Deliberately an estimate, not a guarantee: it only knows about the
+    mode that's active RIGHT NOW (a future mode switch to a
+    faster/slower interval isn't predicted), and it only accounts for
+    timelapse growth specifically, not other things that might also be
+    filling the SD card (logs, a big auto_update.sh pull, etc). That's
+    fine for what this is - an early nudge to go investigate (lower the
+    snapshot interval, lower camera-streamer's resolution/quality, or
+    free up space) before anything gets auto-deleted, not a second
+    safety-critical mechanism - maybe_prune_for_disk_space() is still
+    what actually protects the Pi if this estimate turns out wrong.
+
+    A snapshot interval of 0 (current mode never times lapses) means
+    nothing's accumulating from this source right now, so there's
+    nothing to forecast."""
+    global _disk_forecast_warned
+    config = state.load_config()
+    current_mode = config.get("current_mode")
+    interval_minutes = config.get("modes", {}).get(current_mode, {}).get("snapshot_interval_minutes", 0)
+    if not interval_minutes:
+        _disk_forecast_warned = False  # not accumulating right now - a later mode switch can warn again
+        return
+
+    free_mb = shutil.disk_usage(state.BASE_DIR).free / (1024 * 1024)
+    if free_mb < CAMERA_LOW_DISK_THRESHOLD_MB:
+        return  # already past the forecast stage - maybe_prune_for_disk_space owns this now
+
+    if not _recent_snapshot_sizes:
+        return  # nothing captured yet this run to estimate a rate from
+    avg_bytes = sum(_recent_snapshot_sizes) / len(_recent_snapshot_sizes)
+
+    bytes_per_hour = avg_bytes * (60.0 / interval_minutes)
+    if bytes_per_hour <= 0:
+        return
+    headroom_mb = free_mb - CAMERA_LOW_DISK_THRESHOLD_MB
+    hours_until_threshold = (headroom_mb * 1024 * 1024) / bytes_per_hour
+
+    if hours_until_threshold <= DISK_FORECAST_WARNING_HOURS:
+        if not _disk_forecast_warned:
+            state.log_event(
+                "warning",
+                f"Camera: at the current snapshot rate (~{avg_bytes / 1024:.0f}KB every "
+                f"{interval_minutes}min in {current_mode} mode), free disk space "
+                f"({free_mb:.0f}MB) is projected to hit the {CAMERA_LOW_DISK_THRESHOLD_MB}MB "
+                f"auto-delete threshold in about {hours_until_threshold:.1f}h. Lower the "
+                "snapshot interval or camera-streamer's resolution/quality (see "
+                "docs/camera-streamer-setup.md), or free up space on the SD card, before "
+                "oldest timelapse frames start getting auto-deleted.",
+                category="disk_space_low"
+            )
+            _disk_forecast_warned = True
+    else:
+        # Enough headroom again (freed-up space, a longer interval was
+        # set, etc.) - reset so a future dip under 24h warns again.
+        _disk_forecast_warned = False
 
 
 def main():
@@ -376,6 +482,12 @@ def main():
             last_mode = current_mode
             session_start_ts = transition_time
 
+        # Checked every poll cycle (not just when a snapshot's actually
+        # due) - free space itself can drop at any time, and
+        # snapshot_interval_minutes can be as long as 24h, which would
+        # otherwise be far too infrequent a check for a 24h-ahead warning.
+        maybe_forecast_low_disk()
+
         if snapshot_interval_minutes > 0:
             due = (time.time() - last_snapshot_time) >= snapshot_interval_minutes * 60
             if due:
@@ -386,6 +498,7 @@ def main():
                         state.log_event("info", "camera-streamer reachable again - "
                                                  "timelapse snapshots resuming")
                         streamer_was_reachable = True
+                    _recent_snapshot_sizes.append(len(jpeg_bytes))
                     maybe_prune_for_disk_space()
                     state.save_camera_snapshot(current_mode, jpeg_bytes)
                     last_snapshot_time = time.time()

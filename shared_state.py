@@ -212,6 +212,8 @@ DEFAULT_CONFIG = {
             "fan_safety_cutoff": True,
             "ble_battery_low": True,
             "camera_issue": True,
+            "disk_space_low": True,
+            "disk_space_pruned": True,
             "control_loop_error": True,
         },
         # Per-category cooldown - the same category won't notify again
@@ -1184,21 +1186,38 @@ EVENT_LEVELS = ["info", "warning", "error", "critical"]
 # every log_event() call needs one - most "info" logging (mode changes,
 # relay on/off, etc.) never will - this only covers the call sites that
 # were already warning/error/critical before notifications existed, plus
-# door_open_timeout (new - see light_loop() in climate.py). The label is
-# what the Config page displays; kept here rather than duplicated in
-# config.html so the two can't drift, same reasoning as EVENT_LEVELS
-# above and BLE_SENSOR_LIBRARIES elsewhere in this file.
+# door_open_timeout (new - see light_loop() in climate.py). `label` is
+# what the Config page displays, and `level` is the log_event() level
+# that category's call site(s) actually pass - kept here rather than
+# duplicated in config.html so the two can't drift, same reasoning as
+# EVENT_LEVELS above and BLE_SENSOR_LIBRARIES elsewhere in this file.
+#
+# `level` is what config.html's category checklist groups/filters by
+# against the "Minimum severity" dropdown right above it - a category
+# below the selected minimum can never actually notify (min_level is
+# checked BEFORE the per-category toggle in _maybe_notify() below), so
+# the checklist hides it entirely rather than showing a checkbox that
+# can't do anything. One category, camera_issue, actually spans two
+# levels in practice (a `warning` for camera-streamer being briefly
+# unreachable, an `error` for ffmpeg failing to compile a timelapse
+# video) - it's listed here under its LOWEST level (warning), which
+# means raising the minimum to "Error and above" hides its checkbox
+# even though the ffmpeg-failure case, specifically, could still fire -
+# a known, deliberate simplification (see PROJECT_STATUS.md) rather
+# than splitting one camera problem into two separate categories.
 EVENT_CATEGORIES = {
-    "emergency_shutdown": "Emergency shutdown (no valid internal reading)",
-    "internal_sensor_failsafe": "Internal sensor failsafe countdown started",
-    "sensor_reading_rejected": "A sensor reading rejected as an implausible glitch",
-    "external_sensor_failover": "External sensor failed over to the wired probe",
-    "door_open_timeout": "Door left open too long",
-    "heater_safety_cutoff": "Heater safety cutoff (max runtime exceeded)",
-    "fan_safety_cutoff": "Fan safety cutoff (max runtime exceeded)",
-    "ble_battery_low": "BLE sensor battery low",
-    "camera_issue": "Camera / timelapse problem",
-    "control_loop_error": "Unexpected error in the control loop",
+    "emergency_shutdown": {"label": "Emergency shutdown (no valid internal reading)", "level": "critical"},
+    "internal_sensor_failsafe": {"label": "Internal sensor failsafe countdown started", "level": "warning"},
+    "sensor_reading_rejected": {"label": "A sensor reading rejected as an implausible glitch", "level": "warning"},
+    "external_sensor_failover": {"label": "External sensor failed over to the wired probe", "level": "warning"},
+    "door_open_timeout": {"label": "Door left open too long", "level": "warning"},
+    "heater_safety_cutoff": {"label": "Heater safety cutoff (max runtime exceeded)", "level": "warning"},
+    "fan_safety_cutoff": {"label": "Fan safety cutoff (max runtime exceeded)", "level": "warning"},
+    "ble_battery_low": {"label": "BLE sensor battery low", "level": "warning"},
+    "camera_issue": {"label": "Camera / timelapse problem", "level": "warning"},
+    "disk_space_low": {"label": "Disk space projected to run low within 24h", "level": "warning"},
+    "disk_space_pruned": {"label": "Old timelapse snapshots auto-deleted for disk space", "level": "warning"},
+    "control_loop_error": {"label": "Unexpected error in the control loop", "level": "error"},
 }
 
 

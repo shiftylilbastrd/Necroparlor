@@ -565,6 +565,49 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-09-18]** Config page's notification category checklist now filters/groups by the "Minimum severity"
+  dropdown right above it, per Ryan's request - "the dropdown should filter the list below it... listed in
+  severity order... in identifiable blocks." `EVENT_CATEGORIES` in shared_state.py changed shape from
+  `id -> label string` to `id -> {label, level}` (level is whatever `log_event()` level that category's call
+  site(s) actually pass); `/api/notification-categories` (webapp.py) needed no code change, the new shape just
+  flows through. config.html's `renderNotificationCategories()` groups categories into a labeled block per
+  severity (Warning/Error/Critical, low-to-high, same order as the dropdown's own options) and hides any
+  block below the currently-selected minimum entirely - a category that can never notify at the selected
+  minimum (min_level is checked BEFORE the per-category toggle in `_maybe_notify()`) doesn't get a checkbox
+  that can't do anything. Real implementation wrinkle worth remembering: since the list can now hide
+  checkboxes, `saveNotificationSettings()` had to stop reading `.notify-category-cb` DOM elements directly
+  (a hidden category's checkbox isn't there to read, which would have silently dropped it from the save
+  payload and had it default back to enabled server-side) - it now reads from a persistent `notifyCategoryState`
+  JS object (id -> bool) that survives being filtered out of view, updated via `onCategoryToggle()` instead of
+  inline `.checked` reads. Known, deliberate simplification: `camera_issue` actually spans two levels
+  (`warning` for camera-streamer unreachable, `error` for an ffmpeg compile failure) but is listed under its
+  lower level for grouping purposes - raising the minimum to "Error and above" hides its checkbox even though
+  the ffmpeg-failure case specifically could still fire; not worth splitting into two categories over. Smoke-
+  tested the filtering logic standalone in Python against the real `EVENT_CATEGORIES` data (warning/error/
+  critical minimums each show the expected category set) and `node --check` on the extracted script block -
+  not yet clicked through in a real browser.
+- **[2026-09-18]** New camera_service.py disk-space notifications, added on Ryan's observation that low disk
+  space had no notification at all - two new EVENT_CATEGORIES entries in shared_state.py, both on by default:
+  `disk_space_low` (a FORECAST, at least `DISK_FORECAST_WARNING_HOURS`=24h before free space is projected to
+  hit `CAMERA_LOW_DISK_THRESHOLD_MB`, based on the rolling average of actually-captured snapshot sizes -
+  `_recent_snapshot_sizes`, a `collections.deque(maxlen=10)` filled for free from each successful
+  `fetch_snapshot()` - divided by the CURRENTLY ACTIVE mode's own `snapshot_interval_minutes`) and
+  `disk_space_pruned` (fires when the existing safety-net pruning in `maybe_prune_for_disk_space()` actually
+  deletes frames - previously logged under the generic `camera_issue` category, now its own dedicated one so
+  it's independently toggleable from routine camera-streamer-unreachable noise). `maybe_forecast_low_disk()`
+  runs every `POLL_INTERVAL_SECONDS` (15s) regardless of whether a snapshot is actually due - deliberately NOT
+  gated behind `snapshot_interval_minutes`, since that can be as long as 24h, far too infrequent a check for a
+  24h-ahead warning to ever have real lead time. The forecast is explicitly an ESTIMATE, not a second
+  safety-critical mechanism: it only knows the ACTIVE mode's interval (a future mode switch isn't predicted)
+  and only accounts for timelapse growth, not other things that might fill the SD card - `maybe_prune_for_disk_space()`
+  is still what actually protects the Pi if the estimate is wrong. Also fixed a real latent bug found while
+  touching this code: `_low_disk_warned` previously never reset once pruning started, so after the first
+  actual disk-space event, `disk_space_pruned` (then `camera_issue`) would silently never fire again for the
+  rest of that service's uptime even if the condition recurred later after recovering - now resets (and logs
+  an `info` "recovered" event) once free space climbs back above the threshold. Verified with a standalone
+  math check of the forecast formula (boundary case at exactly 24h, just-under warns, just-over doesn't) - not
+  yet verified against a real Pi's actual disk-filling behavior, since that's slow to reproduce for real
+  (would need a short snapshot interval and genuinely low free space to watch it happen end to end).
 - **[2026-09-17]** `readings.camera_actual_fps`/`camera_target_fps` (unused since the 2026-09-14
   camera-streamer switch, previously left in the schema unwritten - see the two dated `PROJECT_STATUS.md`
   entries further down from when they were added) are now actually DROPPED, not just unpopulated: gone from

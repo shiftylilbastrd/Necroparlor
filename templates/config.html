@@ -26,7 +26,7 @@
     </div>
     <div class="field">
       <label>Minimum severity</label>
-      <select id="notifyMinLevel" onchange="saveNotificationSettings('notifySettingsMsg')">
+      <select id="notifyMinLevel" onchange="onMinLevelChange()">
         <option value="warning">Warning and above</option>
         <option value="error">Error and above</option>
         <option value="critical">Critical only</option>
@@ -142,25 +142,87 @@ async function loadConfig() {
   const res = await fetch('/api/status');
   const data = await res.json();
   renderSetpointPanels(data.config);
-  await populateNotificationCategories((data.config.notifications || {}).categories || {});
+  // applyNotificationSettings() first - it sets notifyCategoryState AND
+  // the "Minimum severity" select's value, both of which
+  // populateNotificationCategories()'s render needs to already be
+  // correct, not the page's default HTML value, before it draws the
+  // (severity-filtered) checkbox list for the first time.
   applyNotificationSettings(data.config.notifications || {});
+  await populateNotificationCategories();
 }
 
 // --- Notifications ---
 
-async function populateNotificationCategories(currentCategories) {
+// id -> {label, level} - the EVENT_CATEGORIES registry (shared_state.py),
+// fetched once; level is what the checklist below groups/filters by.
+let notifyCategoryMeta = {};
+// id -> bool - the actual saved/pending state for every category, INCLUDING
+// ones currently hidden by the severity filter. This (not a DOM query) is
+// the source of truth read by saveNotificationSettings() - a category
+// that's filtered out of view still has to keep its last known value
+// rather than silently reverting to enabled just because its checkbox
+// isn't on the page to read from right now.
+let notifyCategoryState = {};
+
+const SEVERITY_ORDER = ['warning', 'error', 'critical'];
+const SEVERITY_LABELS = {warning: 'Warning', error: 'Error', critical: 'Critical'};
+
+async function populateNotificationCategories() {
   const res = await fetch('/api/notification-categories');
-  const categories = await res.json();
+  notifyCategoryMeta = await res.json();
+  renderNotificationCategories();
+}
+
+// Called on load (once notifyCategoryMeta is in) and every time
+// "Minimum severity" changes (see onMinLevelChange below) - a category
+// below the selected minimum is hidden entirely rather than shown as a
+// checkbox that can't actually do anything, since min_level is checked
+// BEFORE the per-category toggle server-side (see _maybe_notify() in
+// shared_state.py): no combination of these checkboxes can make a
+// below-minimum category notify. Grouped into one labeled block per
+// severity level, in the same low-to-high order as the dropdown's own
+// options, so it reads as a continuation of that same scale rather than
+// an unrelated flat list.
+function renderNotificationCategories() {
   const list = document.getElementById('notifyCategoryList');
-  list.innerHTML = Object.entries(categories).map(([id, label]) => `
-    <label style="display:block; font-weight:normal; margin-top:4px;">
-      <input type="checkbox" class="notify-category-cb" data-cat="${id}" style="width:auto; margin-right:6px;"
-             onchange="saveNotificationSettings('notifySettingsMsg')"
-             ${currentCategories[id] !== false ? 'checked' : ''}>${label}
-    </label>`).join('');
+  const minIndex = SEVERITY_ORDER.indexOf(document.getElementById('notifyMinLevel').value);
+
+  const blocks = SEVERITY_ORDER.map((level, levelIndex) => {
+    if (levelIndex < minIndex) return '';
+    const entries = Object.entries(notifyCategoryMeta).filter(([, c]) => c.level === level);
+    if (entries.length === 0) return '';
+    const rows = entries.map(([id, c]) => `
+      <label style="display:block; font-weight:normal; margin-top:4px;">
+        <input type="checkbox" class="notify-category-cb" data-cat="${id}" style="width:auto; margin-right:6px;"
+               onchange="onCategoryToggle('${id}', this.checked)"
+               ${notifyCategoryState[id] !== false ? 'checked' : ''}>${c.label}
+      </label>`).join('');
+    return `
+      <div style="margin-top:10px;">
+        <div style="font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-dim); border-bottom:1px solid var(--panel-border); padding-bottom:3px;">${SEVERITY_LABELS[level]}</div>
+        ${rows}
+      </div>`;
+  }).join('');
+
+  list.innerHTML = blocks || '<div class="stat-sub">No event types at or above the selected minimum severity.</div>';
+}
+
+function onCategoryToggle(id, checked) {
+  notifyCategoryState[id] = checked;
+  saveNotificationSettings('notifySettingsMsg');
+}
+
+// "Minimum severity" itself still auto-saves (see saveNotificationSettings
+// below) - this just ALSO re-draws the checklist underneath it first, so
+// picking a higher severity immediately hides whatever categories can no
+// longer possibly notify at that level.
+function onMinLevelChange() {
+  renderNotificationCategories();
+  saveNotificationSettings('notifySettingsMsg');
 }
 
 function applyNotificationSettings(n) {
+  notifyCategoryState = {...(n.categories || {})};
   document.getElementById('notifyEnabled').checked = !!n.enabled;
   document.getElementById('notifyMinLevel').value = n.min_level || 'warning';
   document.getElementById('notifyCooldownInput').value = n.cooldown_minutes ?? 15;
@@ -195,6 +257,18 @@ function applyNotificationSettings(n) {
   const webhook = channels.webhook || {};
   document.getElementById('webhookEnabled').checked = !!webhook.enabled;
   document.getElementById('webhookUrl').value = webhook.url || '';
+
+  // Re-draw the category checklist against whatever notifyCategoryState/
+  // min_level were just set above - a no-op harmlessly-empty render on
+  // the very first call in loadConfig() (notifyCategoryMeta isn't
+  // fetched yet at that point; populateNotificationCategories() draws
+  // the real thing right after), but necessary here too since this
+  // function also runs after every successful save (see
+  // saveNotificationSettings below), where the list needs to reflect
+  // whatever min_level/categories just came back from the server.
+  if (Object.keys(notifyCategoryMeta).length > 0) {
+    renderNotificationCategories();
+  }
 }
 
 // Reads whatever's currently typed into each channel card - shared by
@@ -240,13 +314,14 @@ function readWebhookFields() {
 // in the General card, easy to miss/skip after just editing one card.
 async function saveNotificationSettings(msgId) {
   msgId = msgId || 'notifySettingsMsg';
-  const categories = {};
-  document.querySelectorAll('.notify-category-cb').forEach(cb => { categories[cb.dataset.cat] = cb.checked; });
-
+  // notifyCategoryState, not a DOM query - a category currently hidden
+  // by the severity filter (see renderNotificationCategories above)
+  // still has to submit its last known value here, not get dropped from
+  // the request and silently default back to enabled server-side.
   const body = {
     enabled: document.getElementById('notifyEnabled').checked,
     min_level: document.getElementById('notifyMinLevel').value,
-    categories: categories,
+    categories: notifyCategoryState,
     cooldown_minutes: parseInt(document.getElementById('notifyCooldownInput').value, 10),
     door_open_alert_minutes: parseInt(document.getElementById('notifyDoorOpenInput').value, 10),
     quiet_hours: {

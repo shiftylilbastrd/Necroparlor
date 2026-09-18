@@ -202,16 +202,34 @@ channel is individually enabled (with its credentials filled in and saved). A **
 glitchy reading is off by default - it's the noisiest, least actionable one) without raising the threshold
 for everything else. A **cooldown** (per event type, default 15 min) keeps a flapping condition from turning
 into a wall of identical pushes, and optional **quiet hours** can suppress everything except critical events
-overnight. A **"Send test"** button next to Save fires a real message through every *saved and enabled*
-channel immediately, so a bad token or SMTP password shows up right away instead of only being discovered the
-next time something actually goes wrong. Each of the three channel cards also has its **own** "Send test"
-button, which tests only that channel, using whatever's currently typed into its fields - no need to check
-"Enabled" or hit Save first, so you can validate a token/password/URL before committing to it.
+overnight. The master enable checkbox, minimum severity, every per-event-type checkbox, and both quiet-hours
+checkboxes all **auto-save the moment you change them** - no separate click needed, same as the Settings
+page's branch-to-track and internal-source selects. Cooldown/door-open minutes and the quiet-hours start/end
+times still need an explicit **Save**, since those are free-typed values where saving on every keystroke
+would commit a half-typed number.
+
+A **"Send test"** button on the General card fires a real message through every *saved and enabled* channel
+immediately, so a bad token or SMTP password shows up right away instead of only being discovered the next
+time something actually goes wrong. Each of the three channel cards also has its **own Save and Send test**
+buttons - Save commits just that card's credentials (technically saving the whole notifications block
+underneath, same as the General card's Save, but shown in that card's own message line), and Send test tests
+only that channel using whatever's currently typed into its fields, no need to check "Enabled" or hit Save
+first, so you can validate a token/password/URL before committing to it.
 
 **Door left open too long** is new alerting, not a new safety behavior - no relay or output responds to it,
 it only ever logs a `warning`/`door_open_timeout` event (once per open episode) if the door's been open
 continuously for longer than the configured number of minutes (0 disables it). The existing safety behaviors
 below are unaffected either way.
+
+**Low disk space** (relevant if you're using the optional USB webcam/timelapse feature) gets two separate
+event types instead of one generic camera warning: a `disk_space_low` **forecast**, which fires at least 24
+hours before free space is projected to hit the hardcoded auto-delete threshold (based on the current
+snapshot capture rate at whatever mode is active) - an early nudge to lower the snapshot interval, lower
+camera-streamer's resolution/quality, or free up SD card space before anything actually gets deleted - and a
+`disk_space_pruned` event when the oldest timelapse frames actually do get auto-deleted as the last-resort
+safety net. Both are on by default and independently toggleable like any other event type, separate from the
+generic "Camera / timelapse problem" category (camera-streamer being unreachable, ffmpeg failing to compile a
+session, etc.).
 
 Like every other setting on this dashboard, notification settings (including channel credentials) are saved
 to `config.json` in plain text and are visible to anything on your LAN that can reach the dashboard - see the
