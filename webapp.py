@@ -348,6 +348,18 @@ def api_timelapse_videos():
     return jsonify(videos)
 
 
+@app.route("/api/timelapse/pending")
+def api_timelapse_pending():
+    """Stats for the Timelapse page's header, about the CURRENT,
+    not-yet-compiled session only (not a lifetime total) - how many
+    frames camera_service.py has pulled from camera-streamer so far,
+    how long a video would be if that session compiled right now, and
+    how much disk space they're using. See
+    shared_state.get_pending_timelapse_stats for why a plain directory
+    scan is both correct and cheap here."""
+    return jsonify(state.get_pending_timelapse_stats())
+
+
 @app.route("/api/timelapse/video/<int:video_id>.mp4")
 def api_timelapse_video_file(video_id):
     row = state.get_timelapse_video(video_id)
@@ -617,9 +629,16 @@ def api_update_branches():
 @app.route("/api/update-branch", methods=["POST"])
 def api_set_update_branch():
     """Sets which branch auto_update.sh and the background checker
-    track. Doesn't switch anything itself - that happens the next time
-    an update is actually applied (button or timer), same as any other
-    pending update."""
+    track, and immediately runs the same read-only check
+    check-for-update-now uses (git fetch + compare against the new
+    target) before responding - so the Config page can show whether
+    that branch actually differs from HEAD right away, instead of
+    showing the PREVIOUS branch's stale status until the background
+    checker's next tick (up to update_check_interval_minutes later).
+    Doesn't switch anything itself - that happens the next time an
+    update is actually applied (button or timer), same as any other
+    pending update. Response shape matches /api/check-for-update-now's
+    for the same reason: the frontend renders both the same way."""
     body = request.get_json(force=True, silent=True) or {}
     branch, error = state.validate_update_branch(body.get("branch"))
     if error:
@@ -628,7 +647,14 @@ def api_set_update_branch():
     config["update_branch"] = branch
     state.save_config(config)
     state.log_event("info", f"Update branch changed to '{branch}'")
-    return jsonify(config)
+    _git_check_for_update()
+    status = state.get_update_status()
+    config = state.load_config()
+    return jsonify({
+        "status": status,
+        "check_interval_minutes": config.get("update_check_interval_minutes", 15),
+        "update_branch": config.get("update_branch", "main"),
+    })
 
 
 @app.route("/api/update-check-interval", methods=["POST"])

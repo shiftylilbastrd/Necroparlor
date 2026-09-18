@@ -55,6 +55,24 @@
 <h1>Timelapse</h1>
 <div class="subtitle">Compiled videos, one per mode session - live view moved to the Home page</div>
 
+<div class="grid">
+  <div class="card">
+    <h2>Pending frames</h2>
+    <div class="stat-value" id="pendingCount">--</div>
+    <div class="stat-sub">Captured for the current session, not compiled into a video yet</div>
+  </div>
+  <div class="card">
+    <h2>Est. video length</h2>
+    <div class="stat-value" id="pendingDuration">--</div>
+    <div class="stat-sub">If this session compiled right now</div>
+  </div>
+  <div class="card">
+    <h2>Disk used</h2>
+    <div class="stat-value" id="pendingDiskUsage">--</div>
+    <div class="stat-sub">By the current, uncompiled frames</div>
+  </div>
+</div>
+
 <div class="bulk-bar" id="bulkBar">
   <span id="bulkCount"></span>
   <button onclick="downloadSelected()">Download selected</button>
@@ -248,6 +266,22 @@ function closeLightbox() {
   document.getElementById('videoLightbox').classList.remove('visible');
 }
 
+async function refreshPendingStats() {
+  try {
+    const res = await fetch('/api/timelapse/pending');
+    const data = await res.json();
+    document.getElementById('pendingCount').textContent = data.count;
+    document.getElementById('pendingDuration').textContent =
+      data.count ? fmtDuration(data.estimated_video_seconds) : '--';
+    document.getElementById('pendingDiskUsage').textContent = fmtSize(data.disk_bytes);
+  } catch (e) {
+    // A stale header stat isn't worth an error state - just leave
+    // whatever was last shown and try again on the next tick.
+  }
+}
+
 loadVideos();
+refreshPendingStats();
+setInterval(refreshPendingStats, 15000);
 </script>
 {% endblock %}

@@ -618,11 +618,18 @@ function onBranchSelectChange() {
 
 async function saveUpdateBranch() {
   const branch = document.getElementById('updateBranchSelect').value;
+  const msg = document.getElementById('updateBranchMsg');
+  msg.textContent = 'Saving and checking...';
+  msg.className = 'save-msg';
+  // The backend now runs a real git fetch+compare against the new
+  // branch before responding (same check "Check now" does), so the
+  // update-status text below reflects the branch you just picked
+  // immediately, not whatever the background checker last found for
+  // the PREVIOUS branch up to update_check_interval_minutes ago.
   const res = await fetch('/api/update-branch', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({branch})
   });
   const data = await res.json();
-  const msg = document.getElementById('updateBranchMsg');
   if (!res.ok) {
     msg.textContent = data.error || 'Save failed';
     msg.className = 'save-msg err';
@@ -630,7 +637,8 @@ async function saveUpdateBranch() {
     msg.textContent = 'Saved';
     msg.className = 'save-msg ok';
     setTimeout(() => { msg.textContent = ''; }, 2500);
-    loadUpdateStatus();
+    document.getElementById('updateIntervalInput').value = data.check_interval_minutes;
+    renderUpdateStatus(data.status);
   }
 }
 

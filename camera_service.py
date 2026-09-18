@@ -114,14 +114,11 @@ _low_disk_warned = False
 # invariant (see shared_state.py). No data is lost either way.
 MINIMUM_FRAMES_FOR_VIDEO = 3
 
-# Playback speed of a compiled session video, in frames per second of
-# OUTPUT video - unrelated to the capture cadence (snapshot_interval_
-# minutes), which is minutes between frames, not fps. 12fps keeps even a
-# several-day session down to a short, actually-watchable clip (e.g. a
-# 3-day Cleaning session on a 5-minute interval is ~864 frames -> 72s of
-# video) without needing to be a dashboard setting; edit this constant
-# directly if you want a different pace.
-TIMELAPSE_VIDEO_FPS = 12
+# Playback speed (fps) of a compiled session video - moved to
+# shared_state.py (state.TIMELAPSE_VIDEO_FPS) so webapp.py's
+# /api/timelapse/pending can estimate a pending session's video length
+# using this exact same number instead of a second, driftable copy of
+# it. Edit it there if you want a different pace.
 
 # Safety cap on the ffmpeg subprocess itself, same watchdog philosophy as
 # the rest of this file - compiling runs in a background thread (see
@@ -199,7 +196,7 @@ def compile_session_video(mode, start_ts, end_ts, frames):
     poster_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, poster_filename)
     list_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{int(time.time())}.txt")
 
-    frame_duration = 1.0 / TIMELAPSE_VIDEO_FPS
+    frame_duration = 1.0 / state.TIMELAPSE_VIDEO_FPS
     with open(list_path, "w") as f:
         for frame in frames:
             frame_path = os.path.join(state.CAMERA_TIMELAPSE_DIR, frame["filename"])
@@ -224,10 +221,10 @@ def compile_session_video(mode, start_ts, end_ts, frames):
         # ("One of -r/-fpsmax was specified together a non-CFR -vsync").
         # Letting ffmpeg resample each held-frame's duration to a fixed
         # CFR output is exactly what's wanted here anyway, since
-        # TIMELAPSE_VIDEO_FPS is the real knob for playback speed.
+        # state.TIMELAPSE_VIDEO_FPS is the real knob for playback speed.
         result = subprocess.run(
             ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-             "-pix_fmt", "yuv420p", "-r", str(TIMELAPSE_VIDEO_FPS), video_path],
+             "-pix_fmt", "yuv420p", "-r", str(state.TIMELAPSE_VIDEO_FPS), video_path],
             capture_output=True, text=True, timeout=COMPILE_TIMEOUT_SECONDS
         )
     except subprocess.TimeoutExpired:
@@ -259,7 +256,7 @@ def compile_session_video(mode, start_ts, end_ts, frames):
     except FileNotFoundError:
         poster_filename = None
 
-    duration_seconds = len(frames) / TIMELAPSE_VIDEO_FPS
+    duration_seconds = len(frames) / state.TIMELAPSE_VIDEO_FPS
     file_size_bytes = os.path.getsize(video_path)
     state.save_timelapse_video(mode, start_ts, end_ts, len(frames), video_filename,
                                 poster_filename, duration_seconds, file_size_bytes)
