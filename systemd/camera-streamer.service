@@ -11,27 +11,27 @@ User=pi
 # shared_state.py's CAMERA_STREAMER_ENV_PATH. Not git-tracked, same as
 # config.json - see .gitignore.
 EnvironmentFile=/home/pi/dermestid/camera-streamer.env
-# NEEDS CONFIRMING ON THE REAL PI - see docs/camera-streamer-setup.md's
-# "before you enable this" section:
-#   - ExecStart's path assumes `sudo make install` (camera-streamer's
-#     own build instructions) puts the binary at /usr/local/bin/camera-streamer,
-#     which was NOT directly confirmed from its docs - check with
-#     `which camera-streamer` after installing and fix this line if it's
-#     somewhere else.
-#   - --http-port is this project's BEST GUESS at the flag name for
-#     changing camera-streamer's HTTP port away from its default 8080
-#     (which would collide with webapp.py's own port - see
-#     shared_state.py's CAMERA_STREAMER_FORBIDDEN_PORT). This flag name
-#     was NOT found documented anywhere in camera-streamer's own docs as
-#     of 2026-09-14 - run `camera-streamer --help` on the Pi once it's
-#     built and confirm/correct it before relying on this unit as-is.
-#   - --camera-type=libcamera --camera-format=MJPEG is camera-streamer's
-#     own documented recommendation for USB (not CSI) cameras - see
-#     docs/v4l2-usb-mode.md in their repo and this project's own
-#     docs/camera-streamer-setup.md.
+# [2026-09-17] CONFIRMED against a real Pi + USB webcam (v0.4.2), not
+# just documentation - see PROJECT_STATUS.md. All three things this
+# comment used to flag as unverified guesses are now settled:
+#   - Binary path /usr/local/bin/camera-streamer - confirmed via
+#     `which camera-streamer` after `sudo make install`.
+#   - --http-port is the real flag name (confirmed via `camera-streamer
+#     --help`) - moves the HTTP port off its 8080 default, which would
+#     collide with webapp.py's own port (see shared_state.py's
+#     CAMERA_STREAMER_FORBIDDEN_PORT).
+#   - --camera-type=v4l2, NOT libcamera as this project's docs first
+#     guessed from an indirect summary of camera-streamer's own docs -
+#     v4l2 is what `camera-streamer --help`'s own example command line
+#     defaults to, and it's what was actually run and confirmed working
+#     (real /stream + /snapshot requests, "100% live view with no
+#     jitter" - see PROJECT_STATUS.md) against this project's plain USB
+#     UVC webcam. libcamera is built around the Pi's CSI camera + ISP
+#     pipeline, not a generic USB device - this project's earlier
+#     recommendation was simply wrong.
 ExecStart=/usr/local/bin/camera-streamer \
     --camera-path=${CAMERA_PATH} \
-    --camera-type=libcamera --camera-format=MJPEG \
+    --camera-type=v4l2 --camera-format=MJPEG \
     --camera-width=${CAMERA_WIDTH} --camera-height=${CAMERA_HEIGHT} \
     --http-listen=0.0.0.0 --http-port=${CAMERA_STREAMER_PORT}
 Restart=on-failure
