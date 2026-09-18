@@ -19,11 +19,14 @@
   <div class="card" style="max-width:460px;">
     <h2>General</h2>
     <div class="field">
-      <label><input type="checkbox" id="notifyEnabled" style="width:auto; margin-right:6px;">Enable notifications</label>
+      <!-- Auto-saves on change - a plain on/off toggle with no
+           half-set risk, same reasoning as the category checkboxes
+           below and the Settings page's branch select. -->
+      <label><input type="checkbox" id="notifyEnabled" style="width:auto; margin-right:6px;" onchange="saveNotificationSettings('notifySettingsMsg')">Enable notifications</label>
     </div>
     <div class="field">
       <label>Minimum severity</label>
-      <select id="notifyMinLevel">
+      <select id="notifyMinLevel" onchange="saveNotificationSettings('notifySettingsMsg')">
         <option value="warning">Warning and above</option>
         <option value="error">Error and above</option>
         <option value="critical">Critical only</option>
@@ -32,7 +35,7 @@
     <div class="field">
       <label>Which events notify</label>
       <div id="notifyCategoryList" class="stat-sub">Loading...</div>
-      <div class="stat-sub" style="margin-top:4px;">Only applies to events at or above the minimum severity above - unchecking one here mutes just that event type, without raising the minimum for everything else.</div>
+      <div class="stat-sub" style="margin-top:4px;">Only applies to events at or above the minimum severity above - unchecking one here mutes just that event type, without raising the minimum for everything else. Each one auto-saves the moment you check/uncheck it.</div>
     </div>
     <div class="field" style="margin-top:10px;">
       <label>Cooldown between repeats of the same event type (minutes, 0 = none)</label>
@@ -43,13 +46,17 @@
       <input type="number" min="0" max="1440" id="notifyDoorOpenInput">
     </div>
     <div class="field" style="margin-top:14px;">
-      <label><input type="checkbox" id="notifyQuietEnabled" style="width:auto; margin-right:6px;">Quiet hours</label>
+      <label><input type="checkbox" id="notifyQuietEnabled" style="width:auto; margin-right:6px;" onchange="saveNotificationSettings('notifySettingsMsg')">Quiet hours</label>
       <div style="display:flex; gap:8px; margin-top:6px;">
         <input type="time" id="notifyQuietStart" style="width:50%;">
         <input type="time" id="notifyQuietEnd" style="width:50%;">
       </div>
-      <label style="margin-top:8px;"><input type="checkbox" id="notifyQuietAllowCritical" style="width:auto; margin-right:6px;">Still notify for critical events during quiet hours</label>
+      <label style="margin-top:8px;"><input type="checkbox" id="notifyQuietAllowCritical" style="width:auto; margin-right:6px;" onchange="saveNotificationSettings('notifySettingsMsg')">Still notify for critical events during quiet hours</label>
     </div>
+    <!-- Cooldown/door-open-alert (numbers) and the quiet-hours start/end
+         times still need an explicit Save - those benefit from a
+         deliberate commit the way a toggle or dropdown doesn't (typing
+         "9" on the way to "90" shouldn't fire a save of "9"). -->
     <button class="save-btn" style="margin-top:10px;" onclick="saveNotificationSettings('notifySettingsMsg')">Save</button>
     <button class="save-btn" onclick="sendTestNotification()" style="margin-left:6px;">Send test</button>
     <div class="save-msg" id="notifySettingsMsg"></div>
@@ -148,6 +155,7 @@ async function populateNotificationCategories(currentCategories) {
   list.innerHTML = Object.entries(categories).map(([id, label]) => `
     <label style="display:block; font-weight:normal; margin-top:4px;">
       <input type="checkbox" class="notify-category-cb" data-cat="${id}" style="width:auto; margin-right:6px;"
+             onchange="saveNotificationSettings('notifySettingsMsg')"
              ${currentCategories[id] !== false ? 'checked' : ''}>${label}
     </label>`).join('');
 }

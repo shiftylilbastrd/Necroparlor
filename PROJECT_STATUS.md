@@ -617,6 +617,19 @@ that aren't obvious from reading the code cold.
   password, etc.) or plain number inputs - those benefit from an explicit, deliberate Save. The "Save branch"
   button is kept as a manual fallback (retry after a failed auto-save, or re-check without changing the
   selection), not removed.
+- **[2026-09-18]** Extended the same auto-save treatment to the Config page's Notifications General card -
+  Ryan asked for it specifically for "enabling/disabling specific alerts." Now auto-save on change: the
+  master "Enable notifications" checkbox, the "Minimum severity" select, every per-category checkbox (the
+  actual "specific alerts" he meant), "Quiet hours" enabled, and "Still notify for critical events during
+  quiet hours." Still requires the explicit Save button: cooldown minutes, door-open-alert minutes, and the
+  quiet-hours start/end times - all free-typed values where a save-on-every-keystroke would commit a
+  half-typed number (e.g. saving "9" on the way to typing "90"). Implementation note: since the backend only
+  ever accepts the WHOLE notifications block in one request (same as the per-channel Save buttons above),
+  every auto-save from a checkbox/select also re-saves whatever's currently sitting in those manual number/time
+  fields at that moment - harmless if they're untouched (they already match what's saved), but worth knowing:
+  toggling a category checkbox while you have a half-typed cooldown value WOULD commit that half-typed value
+  too. Not worth solving with per-field save endpoints for what's a rare edge case on a single-user LAN
+  dashboard - just documenting the actual behavior here.
 - **[deferred, 2026-09-18]** iOS home-screen badge (a number on the dashboard's icon, like a native app) for
   notifications - discussed, not started. Technically possible via the Badging API (Safari 16.4+ supports it
   for a site Added to Home Screen), but a badge that updates while the app is closed needs real Web Push - a
