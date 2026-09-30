@@ -55,14 +55,14 @@
   }
   .danger-btn:disabled { opacity: 0.4; cursor: default; }
   .danger-btn.solid { background: var(--danger); color: #fff; }
-  #purgeDialog {
+  #confirmDialog {
     background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
     border-radius: 10px; padding: 20px; max-width: 420px; width: calc(100% - 32px);
   }
-  #purgeDialog::backdrop { background: rgba(0,0,0,0.6); }
-  #purgeDialog h2 { margin: 0 0 10px; font-size: 1.05rem; }
-  #purgeDialog p { margin: 0 0 10px; font-size: 0.9rem; color: var(--text-dim); line-height: 1.45; }
-  #purgeDialog p strong { color: var(--text); }
+  #confirmDialog::backdrop { background: rgba(0,0,0,0.6); }
+  #confirmDialog h2 { margin: 0 0 10px; font-size: 1.05rem; }
+  #confirmDialog p { margin: 0 0 10px; font-size: 0.9rem; color: var(--text-dim); line-height: 1.45; }
+  #confirmDialog p strong { color: var(--text); }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
   .dialog-actions button:not(.danger-btn) {
     background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
@@ -94,19 +94,19 @@
 </div>
 
 <div class="purge-row">
-  <button class="danger-btn" id="purgeBtn" onclick="openPurgeDialog()" disabled>Purge pending frames</button>
+  <button class="danger-btn" id="purgeBtn" onclick="purgePending()" disabled>Purge pending frames</button>
   <span class="stat-sub" id="purgeStatus"></span>
 </div>
 
-<dialog id="purgeDialog">
-  <h2>Purge pending frames?</h2>
-  <p>This permanently deletes <strong id="purgeDialogCount">0 frames</strong>
-     (<strong id="purgeDialogSize">0 B</strong>) that haven't been compiled into a video yet,
-     including the session that's recording right now.</p>
-  <p>Compiled videos below aren't affected. This can't be undone.</p>
+<!-- One shared confirmation dialog for every destructive action on this
+     page (purge pending frames, delete one video, delete selected) - see
+     confirmDanger() below. -->
+<dialog id="confirmDialog">
+  <h2 id="confirmTitle"></h2>
+  <div id="confirmBody"></div>
   <div class="dialog-actions">
-    <button onclick="closePurgeDialog()" autofocus>Cancel</button>
-    <button class="danger-btn solid" id="purgeConfirmBtn" onclick="confirmPurge()">Delete frames</button>
+    <button id="confirmCancelBtn" onclick="document.getElementById('confirmDialog').close('cancel')" autofocus>Cancel</button>
+    <button class="danger-btn solid" id="confirmOkBtn" onclick="document.getElementById('confirmDialog').close('ok')">Delete</button>
   </div>
 </dialog>
 
@@ -245,7 +245,41 @@ function updateBulkBar() {
   document.getElementById('bulkCount').textContent = `${selectedIds.size} selected`;
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Resolves true only if the person clicked the red confirm button -
+// Cancel, Esc, and anything else that closes the dialog all resolve
+// false. `paragraphs` are HTML strings; interpolate values through
+// escapeHtml().
+function confirmDanger(title, paragraphs, confirmLabel) {
+  const dlg = document.getElementById('confirmDialog');
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmBody').innerHTML = paragraphs.map(p => `<p>${p}</p>`).join('');
+  document.getElementById('confirmOkBtn').textContent = confirmLabel;
+  dlg.returnValue = '';
+  return new Promise(resolve => {
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'), {once: true});
+    dlg.showModal();
+  });
+}
+
+function videoLabel(v) {
+  return `${escapeHtml(MODE_LABELS[v.mode] || v.mode)} · ${escapeHtml(fmtDateTime(v.start_ts))}`;
+}
+
 async function deleteOne(id) {
+  const v = videosById[id];
+  const detail = v
+    ? `<strong>${videoLabel(v)}</strong> - ${escapeHtml(fmtDuration(v.duration_seconds))}, ` +
+      `${v.frame_count} frames, ${escapeHtml(fmtSize(v.file_size_bytes))}.`
+    : 'This video.';
+  const ok = await confirmDanger('Delete this video?', [
+    detail,
+    'The video and its thumbnail are permanently deleted from the Pi. This can\'t be undone.'
+  ], 'Delete video');
+  if (!ok) return;
   const res = await fetch(`/api/timelapse/video/${id}`, {method: 'DELETE'});
   if (res.ok) {
     document.getElementById(`video-card-${id}`).remove();
@@ -257,6 +291,14 @@ async function deleteOne(id) {
 async function deleteSelected() {
   const ids = Array.from(selectedIds);
   if (ids.length === 0) return;
+  const totalBytes = ids.reduce((sum, id) => sum + ((videosById[id] || {}).file_size_bytes || 0), 0);
+  const n = ids.length;
+  const ok = await confirmDanger(`Delete ${n} video${n === 1 ? '' : 's'}?`, [
+    `This permanently deletes <strong>${n} selected video${n === 1 ? '' : 's'}</strong> ` +
+      `(<strong>${escapeHtml(fmtSize(totalBytes))}</strong>) and their thumbnails from the Pi.`,
+    'This can\'t be undone.'
+  ], n === 1 ? 'Delete video' : `Delete ${n} videos`);
+  if (!ok) return;
   const res = await fetch('/api/timelapse/videos/delete-many', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id_list: ids})
   });
@@ -305,19 +347,16 @@ function closeLightbox() {
 
 let lastPending = {count: 0, disk_bytes: 0};
 
-function openPurgeDialog() {
-  document.getElementById('purgeDialogCount').textContent =
-    `${lastPending.count} frame${lastPending.count === 1 ? '' : 's'}`;
-  document.getElementById('purgeDialogSize').textContent = fmtSize(lastPending.disk_bytes);
-  document.getElementById('purgeDialog').showModal();
-}
-
-function closePurgeDialog() {
-  document.getElementById('purgeDialog').close();
-}
-
-async function confirmPurge() {
-  const btn = document.getElementById('purgeConfirmBtn');
+async function purgePending() {
+  const n = lastPending.count;
+  const ok = await confirmDanger('Purge pending frames?', [
+    `This permanently deletes <strong>${n} frame${n === 1 ? '' : 's'}</strong> ` +
+      `(<strong>${escapeHtml(fmtSize(lastPending.disk_bytes))}</strong>) that haven't been compiled ` +
+      'into a video yet, including the session that\'s recording right now.',
+    'Compiled videos below aren\'t affected. This can\'t be undone.'
+  ], 'Delete frames');
+  if (!ok) return;
+  const btn = document.getElementById('purgeBtn');
   const status = document.getElementById('purgeStatus');
   btn.disabled = true;
   try {
@@ -333,8 +372,6 @@ async function confirmPurge() {
   } catch (e) {
     status.textContent = 'Purge failed - dashboard unreachable.';
   }
-  btn.disabled = false;
-  closePurgeDialog();
   refreshPendingStats();
 }
 

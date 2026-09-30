@@ -2303,3 +2303,19 @@ that aren't obvious from reading the code cold.
   content, Cancel/Esc, the 409 while a lock is held (0 frames deleted),
   and a real purge (DB emptied, header updates to 0, button disables,
   fresh stray kept, old stray removed). Not yet clicked on the real Pi.
+
+- **[2026-09-29] Confirmation on timelapse video deletes (explicit
+  request - previously a single click on Delete / Delete selected
+  deleted immediately, with no way back).** The purge dialog was
+  generalized into one shared `<dialog id="confirmDialog">` +
+  `confirmDanger(title, paragraphs, confirmLabel)` promise in
+  `timelapse.html`, used by all three destructive actions: per-video
+  Delete (names the mode/date/length/frames/size), Delete selected
+  (count + total size), and Purge pending frames. Resolves true only on
+  the red button; Cancel, Esc, or any other close is false. Any
+  future destructive action on this page should go through
+  `confirmDanger()` rather than adding another dialog. Verified with a
+  real Flask server + headless Chromium against real compiled videos:
+  each dialog's text, Cancel and Esc deleting nothing, confirm deleting
+  exactly the chosen video(s), selection surviving a cancelled bulk
+  delete, 0 JS errors.
