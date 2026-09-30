@@ -545,8 +545,13 @@ def api_timelapse_preview_file(mode):
     video_path, _ = state.timelapse_preview_paths(mode)
     if not os.path.exists(video_path):
         abort(404)
-    return send_file(video_path, mimetype="video/mp4", as_attachment=False,
-                     download_name=f"{mode}-progress-preview.mp4", max_age=0)
+    # ?download=1 (the preview row's Download button) saves it instead of
+    # playing inline; the filename carries the build time so repeated
+    # downloads of a growing session don't overwrite each other.
+    built = datetime.datetime.fromtimestamp(os.path.getmtime(video_path), state.LOCAL_TZ)
+    return send_file(video_path, mimetype="video/mp4",
+                     as_attachment=request.args.get("download") == "1",
+                     download_name=f"{mode}-preview-{built.strftime('%Y%m%d-%H%M')}.mp4", max_age=0)
 
 
 @app.route("/api/timelapse/settings", methods=["POST"])

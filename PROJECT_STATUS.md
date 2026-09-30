@@ -2586,3 +2586,21 @@ that aren't obvious from reading the code cold.
   and the route serves it with range requests (206) instead. **Not on the
   Pi yet** - in particular the overlay's font path and the Pi's ffmpeg
   7.x `file_packet_metadata` behaviour.
+
+- **[2026-09-30] Overlay moved to TOP-left - it was in the file but
+  hidden on the real Pi.** Ryan saw no timestamp on a preview. Diagnosed
+  on the Pi itself (ffmpeg `7.1.5-0+deb13u1+rpt2`): drawtext present,
+  DejaVuSans-Bold present, `file_packet_metadata` labels reach the frames,
+  the label draws (raw-frame hash differs from plain), and a
+  blend=difference of the preview's corner vs its source JPEG gave
+  YAVG 53.8 - i.e. the text WAS encoded. Cause: bottom-left is exactly
+  where the browser's native `<video controls>` bar sits, and it stays up
+  once a clip ends - a 5-frame preview ends in 0.4s, so the label sat
+  permanently behind the play button/timeline. Now `x=16:y=16`. The
+  preview row also says "with timestamps" / "no timestamps" (from the
+  preview's own `overlay` flag) so this is checkable at a glance.
+  Previews/videos built before this keep the label at the bottom -
+  Rebuild preview to get the new position. Same day, explicit request: a
+  **Download** button on the preview row (`/api/timelapse/preview/<mode>.mp4
+  ?download=1` -> attachment named `<mode>-preview-YYYYMMDD-HHMM.mp4`, so
+  successive downloads of a growing session don't overwrite each other).

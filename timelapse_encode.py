@@ -96,10 +96,15 @@ def _write_list(path, mode, frames, overlay):
 
 def _drawtext_filter():
     font = f"fontfile={OVERLAY_FONT}:" if os.path.exists(OVERLAY_FONT) else ""
-    # Bottom-left, font scaled to the video height so it reads the same at
+    # TOP-left, font scaled to the video height so it reads the same at
     # 720p and 1080p, on a translucent box so it stays legible over both a
-    # bright lid-open frame and a grey infrared one.
-    return (f"drawtext={font}text='%{{metadata\\:overlay}}':x=16:y=h-th-16:"
+    # bright lid-open frame and a grey infrared one. [2026-09-30] Was
+    # bottom-left, which is exactly where a browser's native video
+    # controls sit - and they stay up once a clip ends (a short preview
+    # ends almost immediately), so the label was in the file but hidden
+    # behind the play button/timeline on the real Pi. Don't move it back
+    # to the bottom.
+    return (f"drawtext={font}text='%{{metadata\\:overlay}}':x=16:y=16:"
             "fontsize=h/28:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=8")
 
 

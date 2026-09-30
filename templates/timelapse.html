@@ -65,6 +65,8 @@
   .ghost-btn {
     background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
     border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600;
+    /* explicit so the Download <a> matches the <button>s beside it */
+    font-family: system-ui, sans-serif; font-size: 13.3333px; line-height: normal; display: inline-block;
   }
   .ghost-btn:disabled, .session-actions .save-btn:disabled { opacity: 0.4; cursor: default; }
   .progress-bar { height: 4px; background: var(--panel-border); border-radius: 2px; margin-top: 6px; overflow: hidden; }
@@ -343,8 +345,10 @@ function sessionRowHtml(s, busy) {
   if (s.preview) {
     const newer = s.count - s.preview.frame_count;
     info += `<br>Preview built ${escapeHtml(fmtWhen(s.preview.built_ts))} from ${s.preview.frame_count.toLocaleString()} frames` +
+      (s.preview.overlay ? ' · with timestamps' : ' · no timestamps') +
       (newer > 0 ? ` · ${newer.toLocaleString()} newer frame${newer === 1 ? '' : 's'} since` : ' · up to date');
-    actions += `<button class="ghost-btn" onclick="openLightboxUrl('${s.preview.url}')">&#9654; Watch</button>`;
+    actions += `<button class="ghost-btn" onclick="openLightboxUrl('${s.preview.url}')">&#9654; Watch</button>` +
+      `<a class="ghost-btn" style="text-decoration:none;" href="${s.preview.url}&download=1">Download</a>`;
   }
   const label = s.preview ? 'Rebuild preview' : 'Build preview';
   const disabled = busy || s.count < 3 ? 'disabled' : '';
