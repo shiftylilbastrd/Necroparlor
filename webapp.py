@@ -271,6 +271,58 @@ def api_set_internal_source():
     return jsonify(config)
 
 
+@app.route("/api/history/stats")
+def api_history_stats():
+    config = state.load_config()
+    stats = state.get_history_stats()
+    stats["retention_days"] = config.get("history_retention_days", 365)
+    return jsonify(stats)
+
+
+@app.route("/api/history/retention", methods=["POST"])
+def api_history_retention():
+    body = request.get_json(force=True, silent=True) or {}
+    days, error = state.validate_history_retention_days(body.get("days"))
+    if error:
+        return jsonify({"error": error}), 400
+    config = state.load_config()
+    config["history_retention_days"] = days
+    state.save_config(config)
+    state.log_event("info", "History retention set to " +
+                     ("keep forever" if days == 0 else f"{days} days"))
+    return jsonify({"retention_days": days})
+
+
+@app.route("/api/history/clear", methods=["POST"])
+def api_history_clear():
+    """Settings page "Clear history" - deletes ALL rows of the chosen
+    history tables (sensor readings and/or the event log). Only ever
+    readings/events; see shared_state.HISTORY_TABLES for why nothing
+    else is touchable from here. The confirmation lives in the page's
+    dialog."""
+    body = request.get_json(force=True, silent=True) or {}
+    tables = [t for t in ("readings", "events") if body.get(t)]
+    if not tables:
+        return jsonify({"error": "choose readings and/or events"}), 400
+    deleted = state.prune_history(tables)
+    parts = []
+    if "readings" in deleted:
+        parts.append(f"{deleted['readings']} sensor readings")
+    if "events" in deleted:
+        parts.append(f"{deleted['events']} log events")
+    # Logged AFTER the delete, so when the event log itself was cleared
+    # this becomes its first entry - a record of why it starts here.
+    state.log_event("info", "History cleared via dashboard: " + " and ".join(parts))
+    return jsonify({"deleted": deleted})
+
+
+@app.route("/api/readings/download")
+def api_readings_download():
+    filename = f"necroparlor-readings-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+    return Response(state.iter_readings_csv(), mimetype="text/csv",
+                     headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
 @app.route("/api/external-fallback-source", methods=["POST"])
 def api_set_external_fallback_source():
     body = request.get_json(force=True, silent=True) or {}
@@ -933,9 +985,43 @@ def update_checker_loop():
         time.sleep(30)
 
 
+HISTORY_TRIM_INTERVAL_SECONDS = 3600
+
+
+def history_retention_loop():
+    """Background thread: once an hour, deletes readings/events older
+    than history_retention_days (0 = keep forever). Lives here rather
+    than in climate.py on purpose - a slow delete must never be able to
+    delay the safety-critical control loop, and prune_history batches
+    its deletes so climate.py's own writes never wait long either.
+    First run is a minute after startup, not immediately, so a restart
+    (every applied update restarts this service) doesn't pile a big
+    catch-up delete on top of startup."""
+    time.sleep(60)
+    while True:
+        try:
+            days = state.load_config().get("history_retention_days", 365)
+            if days:
+                cutoff = time.time() - days * 86400
+                deleted = state.prune_history(state.HISTORY_TABLES, older_than_ts=cutoff)
+                total = sum(deleted.values())
+                if total:
+                    logging.info(f"History trim: removed {deleted} (older than {days} days)")
+                # Routine hourly trims remove ~240 rows and stay out of the
+                # event log; a big catch-up (retention just shortened) is
+                # worth a visible record.
+                if total >= 10000:
+                    state.log_event("info", f"History trim removed {deleted.get('readings', 0)} readings and "
+                                             f"{deleted.get('events', 0)} events older than {days} days")
+        except Exception:
+            logging.exception("Unexpected error in history_retention_loop - will retry next hour")
+        time.sleep(HISTORY_TRIM_INTERVAL_SECONDS)
+
+
 if __name__ == "__main__":
     state.init_db()
     threading.Thread(target=update_checker_loop, daemon=True).start()
+    threading.Thread(target=history_retention_loop, daemon=True).start()
     # threaded=True is required, not optional, now that /api/camera/
     # stream.mjpg holds its connection open indefinitely - Werkzeug's
     # dev server otherwise handles one request at a time, so a single

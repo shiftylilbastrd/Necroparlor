@@ -49,25 +49,6 @@
     background: none; border: none; cursor: pointer;
   }
   .purge-row { display: flex; align-items: center; gap: 12px; margin: 10px 0 4px; }
-  .danger-btn {
-    background: var(--panel); border: 1px solid var(--danger); color: var(--danger);
-    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.85rem;
-  }
-  .danger-btn:disabled { opacity: 0.4; cursor: default; }
-  .danger-btn.solid { background: var(--danger); color: #fff; }
-  #confirmDialog {
-    background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
-    border-radius: 10px; padding: 20px; max-width: 420px; width: calc(100% - 32px);
-  }
-  #confirmDialog::backdrop { background: rgba(0,0,0,0.6); }
-  #confirmDialog h2 { margin: 0 0 10px; font-size: 1.05rem; }
-  #confirmDialog p { margin: 0 0 10px; font-size: 0.9rem; color: var(--text-dim); line-height: 1.45; }
-  #confirmDialog p strong { color: var(--text); }
-  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-  .dialog-actions button:not(.danger-btn) {
-    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
-    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.85rem;
-  }
 </style>
 {% endblock %}
 {% block content %}
@@ -98,17 +79,6 @@
   <span class="stat-sub" id="purgeStatus"></span>
 </div>
 
-<!-- One shared confirmation dialog for every destructive action on this
-     page (purge pending frames, delete one video, delete selected) - see
-     confirmDanger() below. -->
-<dialog id="confirmDialog">
-  <h2 id="confirmTitle"></h2>
-  <div id="confirmBody"></div>
-  <div class="dialog-actions">
-    <button id="confirmCancelBtn" onclick="document.getElementById('confirmDialog').close('cancel')" autofocus>Cancel</button>
-    <button class="danger-btn solid" id="confirmOkBtn" onclick="document.getElementById('confirmDialog').close('ok')">Delete</button>
-  </div>
-</dialog>
 
 <div class="bulk-bar" id="bulkBar">
   <span id="bulkCount"></span>
@@ -243,26 +213,6 @@ function updateBulkBar() {
   const bar = document.getElementById('bulkBar');
   bar.classList.toggle('visible', selectedIds.size > 0);
   document.getElementById('bulkCount').textContent = `${selectedIds.size} selected`;
-}
-
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-// Resolves true only if the person clicked the red confirm button -
-// Cancel, Esc, and anything else that closes the dialog all resolve
-// false. `paragraphs` are HTML strings; interpolate values through
-// escapeHtml().
-function confirmDanger(title, paragraphs, confirmLabel) {
-  const dlg = document.getElementById('confirmDialog');
-  document.getElementById('confirmTitle').textContent = title;
-  document.getElementById('confirmBody').innerHTML = paragraphs.map(p => `<p>${p}</p>`).join('');
-  document.getElementById('confirmOkBtn').textContent = confirmLabel;
-  dlg.returnValue = '';
-  return new Promise(resolve => {
-    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'), {once: true});
-    dlg.showModal();
-  });
 }
 
 function videoLabel(v) {

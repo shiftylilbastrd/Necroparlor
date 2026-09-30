@@ -2342,10 +2342,23 @@ that aren't obvious from reading the code cold.
   - [ ] **Video delete confirmations**: single Delete and Delete selected
         both open the dialog first; Cancel/Esc keep the video(s); the
         red button deletes exactly the chosen one(s).
-  - [ ] **Fallback SHT31** (entry below): `/dev/i2c-5` exists after the
+  - [x] **Fallback SHT31** (entry below): `/dev/i2c-5` exists after the
         overlay, `i2cdetect -y 5` shows 44, readings appear on the
-        dashboard with Probe type = SHT31, and pulling BLE makes the
-        failover use them.
+        dashboard with Probe type = SHT31 - **confirmed 2026-09-29** on
+        the benchtop Pi, along with the internal SHT31 on bus 1; a
+        hand-warming test moved only the matching tile for each probe,
+        so neither is mislabeled. (Benchtop only - see standing
+        context.)
+  - [ ] **Failover to the fallback SHT31**: with BLE stale/removed, the
+        external reading switches to the wired SHT31 and the failover is
+        logged. Not yet exercised.
+  - [ ] **Light relay (GPIO24, pin 18) / reed switch (GPIO26, pin 37)
+        after the pin swap**: lid open/close toggles the light relay and
+        the dashboard's door state.
+  - [ ] **Data history**: Settings -> Data history shows sensible counts;
+        clearing benchtop history works on the real Pi (download a copy
+        first if wanted); the hourly trim leaves nothing older than the
+        retention setting.
 
 - **[2026-09-29] External fallback probe can now be an SHT31 (explicit
   request).** Ryan has two prewired SHT31 probes (~5 ft leads): one
@@ -2473,3 +2486,39 @@ that aren't obvious from reading the code cold.
   `control_loop_error` with the install command. Verified with the real
   climate.py + stubbed GPIO: 3 failing cycles -> exactly 1 dashboard
   event, recovery logged, I/O errors log-only.
+
+- **[2026-09-29] Data history retention + "Clear history" (explicit
+  request).** Before this, nothing ever deleted sensor history:
+  climate.py writes a `readings` row every 15s cycle (~5,800/day, ~2M/yr)
+  and `events` also grew forever. New Settings section **Data history**:
+  - `history_retention_days` (default 365; 7-3650, 0 = keep forever).
+    `webapp.py`'s new `history_retention_loop` thread trims older
+    readings/events hourly (first pass 60s after startup, so the restart
+    every applied update does isn't also a big delete); logs a dashboard
+    event only for catch-up trims of 10k+ rows.
+  - "Clear selected history" (readings and/or events, all rows) behind the
+    shared confirm dialog showing exact counts; logs a "History cleared"
+    event afterwards, so a cleared event log starts with the reason it's
+    empty. Download links next to it: new `/api/readings/download` (CSV,
+    streamed row-by-row) and the existing `/api/events/download`.
+
+  **Load-bearing details:** `shared_state.HISTORY_TABLES = ("readings",
+  "events")` is a closed allow-list - `prune_history()` raises for
+  anything else. Never add `camera_snapshots` (its "only uncompiled
+  frames" invariant is what timelapse session recovery relies on),
+  `timelapse_videos` (video files are addressed by those rows),
+  `ble_readings`/`door_state`/`update_state` (live state, not history).
+  Deletes run in 2,000-row batches with 50ms pauses because SQLite
+  allows one writer and climate.py's writes wait on a 10s lock timeout;
+  measured with a separate writer process inserting every 20ms while
+  200k rows were deleted: **worst writer wait 5ms**. No VACUUM on
+  purpose (exclusive lock for the whole rewrite) - the file doesn't
+  shrink, freed pages are reused.
+
+  The Timelapse page's confirm dialog (`confirmDanger()`, markup, CSS)
+  moved into `base.html` so Settings can share it - any page's
+  destructive action should use it. Regression-tested: the Timelapse
+  single/bulk delete + purge browser test passes unchanged, all six
+  pages load with 0 JS errors. README's "Dashboard pages" list was also
+  stale (no Settings page; credited Config with sections that moved) -
+  fixed. **Verified in sandbox only**, not on the Pi.

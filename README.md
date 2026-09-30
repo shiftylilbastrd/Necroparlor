@@ -342,7 +342,17 @@ Local `config.json` changes are stashed before pulling and restored after (a war
 - **Logs** (`/logs`) — event log with level filter and pagination.
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
-- **Config** (`/config`) — per-mode setpoints, sensor source/calibration, BLE and camera settings, software updates, notifications.
+- **Config** (`/config`) — per-mode setpoints (including each mode's timelapse interval) and notifications.
+- **Settings** (`/settings`) — sensor sources and calibration, BLE sensor, camera, software updates, and data history.
+
+### Data history
+
+`climate.py` logs a readings row every 15-second cycle (~5,800 rows/day), so history grows by roughly 2 million rows a year. **Settings → Data history** controls it:
+
+- **Retention** — sensor readings and the event log older than this many days are trimmed automatically once an hour (default 365; 7–3650, or 0 to keep everything). Runs in the web service, in small batches, so it never stalls `climate.py`'s own writes.
+- **Clear history** — wipes sensor readings and/or the event log right now (e.g. benchtop test data before the Pi moves into the enclosure), behind a confirmation. Download links for both sit next to it.
+
+Neither touches settings, timelapse videos or pending timelapse frames. Freed space is reused inside the database file rather than shrinking it on the SD card.
 
 ## Activity modes
 

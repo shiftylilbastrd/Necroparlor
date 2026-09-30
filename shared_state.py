@@ -92,6 +92,11 @@ DEFAULT_CONFIG = {
     # just updates the "update available" status, doesn't pull or
     # restart anything by itself). Minutes.
     "update_check_interval_minutes": 15,
+    # How long sensor-reading history and the event log are kept before
+    # webapp.py's hourly trim deletes older rows (see prune_history). 0 =
+    # keep forever. climate.py logs a readings row every cycle (~5,800/day,
+    # ~2M/year), and before this existed nothing ever deleted any of it.
+    "history_retention_days": 365,
     # Which git branch auto_update.sh and the background checker track.
     # Defaults to main - switching this to anything else means running
     # code that hasn't gone through the same scrutiny as what actually
@@ -328,6 +333,7 @@ VENT_DURATION_BOUNDS = (1, 60)    # minutes
 # is validated separately from this range, same pattern as the update-
 # branch/interval validators below.
 SNAPSHOT_INTERVAL_BOUNDS = (1, 1440)  # minutes, when not 0/never
+HISTORY_RETENTION_BOUNDS = (7, 3650)  # days, when not 0/forever
 
 CAMERA_WIDTH_BOUNDS = (160, 1920)
 CAMERA_HEIGHT_BOUNDS = (120, 1080)
@@ -1823,6 +1829,109 @@ def get_readings_table(limit=50, before_ts=None):
             "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
             "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
     return [dict(zip(keys, r)) for r in rows]
+
+
+# Tables that are HISTORY (safe to trim/clear) - deliberately a closed
+# list. Everything else in the database is live state (ble_readings'
+# latest-per-sensor row, door_state, update_state) or is load-bearing for
+# the timelapse pipeline (camera_snapshots' "only uncompiled frames"
+# invariant that session-boundary recovery relies on; timelapse_videos
+# rows that the video files on disk are addressed by) - never touch those
+# from here.
+HISTORY_TABLES = ("readings", "events")
+
+# Rows deleted per transaction. SQLite (even in WAL mode) allows one
+# writer at a time, and climate.py writes a readings row every cycle with
+# a 10s lock timeout (see get_db) - one giant DELETE of a year of rows
+# could hold the write lock long enough to stall it. Small batches with
+# a pause between them keep each lock hold to milliseconds.
+HISTORY_DELETE_BATCH = 2000
+HISTORY_DELETE_PAUSE_SECONDS = 0.05
+
+
+def get_history_stats():
+    """Row counts and oldest timestamp per history table, plus the
+    database's size on disk (main file + WAL) - for the Settings page's
+    Data history card and its clear-confirmation dialog."""
+    conn = get_db()
+    stats = {}
+    for table in HISTORY_TABLES:
+        count, oldest = conn.execute(f"SELECT COUNT(*), MIN(ts) FROM {table}").fetchone()
+        stats[table] = {"count": count, "oldest_ts": oldest}
+    conn.close()
+    size = 0
+    for path in (DB_PATH, DB_PATH + "-wal"):
+        try:
+            size += os.path.getsize(path)
+        except OSError:
+            pass
+    stats["db_bytes"] = size
+    return stats
+
+
+def prune_history(tables, older_than_ts=None):
+    """Deletes rows from the named HISTORY_TABLES older than
+    older_than_ts (or ALL rows when it's None), in small batches - see
+    HISTORY_DELETE_BATCH for why. Returns {table: rows_deleted}.
+
+    Freed space stays inside the database file (SQLite reuses it for new
+    rows) rather than shrinking the file - a VACUUM would shrink it, but
+    it takes an exclusive lock for the whole rewrite, which is exactly
+    the kind of long lock climate.py's writes shouldn't have to wait out."""
+    deleted = {}
+    for table in tables:
+        if table not in HISTORY_TABLES:
+            raise ValueError(f"{table} is not a history table")
+        total = 0
+        while True:
+            conn = get_db()
+            if older_than_ts is None:
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} LIMIT ?)",
+                    (HISTORY_DELETE_BATCH,))
+            else:
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN "
+                    f"(SELECT rowid FROM {table} WHERE ts < ? LIMIT ?)",
+                    (older_than_ts, HISTORY_DELETE_BATCH))
+            conn.commit()
+            n = cur.rowcount
+            conn.close()
+            total += n
+            if n < HISTORY_DELETE_BATCH:
+                break
+            time.sleep(HISTORY_DELETE_PAUSE_SECONDS)
+        deleted[table] = total
+    return deleted
+
+
+def validate_history_retention_days(value):
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return None, "history_retention_days must be a whole number"
+    if days != 0 and not (HISTORY_RETENTION_BOUNDS[0] <= days <= HISTORY_RETENTION_BOUNDS[1]):
+        return None, (f"history_retention_days must be 0 (keep forever) or between "
+                      f"{HISTORY_RETENTION_BOUNDS[0]} and {HISTORY_RETENTION_BOUNDS[1]}")
+    return days, None
+
+
+def iter_readings_csv():
+    """Every readings row, oldest first, as CSV lines - streamed (one
+    row at a time off the cursor) rather than built in memory, since a
+    year of history is ~2M rows. For the Settings page's "download
+    readings" link, so history can be saved before clearing it."""
+    columns = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
+               "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
+               "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
+    yield "time," + ",".join(columns) + "\n"
+    conn = get_db()
+    try:
+        for row in conn.execute(f"SELECT {', '.join(columns)} FROM readings ORDER BY ts ASC"):
+            stamp = datetime.fromtimestamp(row[0]).strftime("%Y-%m-%d %H:%M:%S")
+            yield stamp + "," + ",".join("" if v is None else str(v) for v in row) + "\n"
+    finally:
+        conn.close()
 
 
 def get_recent_events(limit=50, level=None, before_ts=None):

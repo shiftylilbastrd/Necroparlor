@@ -134,6 +134,28 @@
   .filter-row { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
   .filter-row select { width: auto; }
 
+  /* Shared destructive-action styling + confirmation dialog - see
+     confirmDanger() at the bottom of this file. */
+  .danger-btn {
+    background: var(--panel); border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.85rem;
+  }
+  .danger-btn:disabled { opacity: 0.4; cursor: default; }
+  .danger-btn.solid { background: var(--danger); color: #fff; }
+  #confirmDialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 20px; max-width: 420px; width: calc(100% - 32px);
+  }
+  #confirmDialog::backdrop { background: rgba(0,0,0,0.6); }
+  #confirmDialog h2 { margin: 0 0 10px; font-size: 1.05rem; }
+  #confirmDialog p { margin: 0 0 10px; font-size: 0.9rem; color: var(--text-dim); line-height: 1.45; }
+  #confirmDialog p strong { color: var(--text); }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .dialog-actions button:not(.danger-btn) {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.85rem;
+  }
+
   /* --- Mobile (phones, narrow viewports) --- */
   @media (max-width: 640px) {
     .page { padding: 12px; }
@@ -168,6 +190,40 @@
 </div>
 {% block content %}{% endblock %}
 </div>
+<!-- One shared confirmation dialog for every destructive action on the
+     dashboard (Timelapse: purge frames / delete videos; Settings: clear
+     history) - see confirmDanger() below. -->
+<dialog id="confirmDialog">
+  <h2 id="confirmTitle"></h2>
+  <div id="confirmBody"></div>
+  <div class="dialog-actions">
+    <button id="confirmCancelBtn" onclick="document.getElementById('confirmDialog').close('cancel')" autofocus>Cancel</button>
+    <button class="danger-btn solid" id="confirmOkBtn" onclick="document.getElementById('confirmDialog').close('ok')">Delete</button>
+  </div>
+</dialog>
+<script>
+// Shared by every page's destructive actions - defined before each page's
+// own scripts block so any page can call it.
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Resolves true only if the person clicked the red confirm button -
+// Cancel, Esc, and anything else that closes the dialog all resolve
+// false. `paragraphs` are HTML strings; interpolate values through
+// escapeHtml().
+function confirmDanger(title, paragraphs, confirmLabel) {
+  const dlg = document.getElementById('confirmDialog');
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmBody').innerHTML = paragraphs.map(p => `<p>${p}</p>`).join('');
+  document.getElementById('confirmOkBtn').textContent = confirmLabel;
+  dlg.returnValue = '';
+  return new Promise(resolve => {
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'), {once: true});
+    dlg.showModal();
+  });
+}
+</script>
 {% block scripts %}{% endblock %}
 <script>
 // Runs on every page (outside the overridable scripts block) - polls
