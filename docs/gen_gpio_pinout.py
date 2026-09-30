@@ -31,20 +31,21 @@ import os
 #   lightrelay  green   - light relay
 #   fanrelay    blue    - fan relay
 #   dehumidrelay purple - dehumidifier relay
-#   i2c         muted blue - optional SHT31 SDA/SCL, not currently wired
+#   i2c         muted blue - optional SHT31s: internal on the primary bus
+#               (GPIO2/3), external fallback on its own i2c5 bus (GPIO12/13)
 #   reserved    (light gray) - EEPROM ID pins
 #   unused      (dark) - unused GPIO, no wire present
 #   deadpin     dark red - dead on this specific board
 ROWS = [
     (1, "3.3V", "power_3v3", "Internal DHT22 - VCC (3.3V)"),
     (2, "5V", "power_5v", "5V (relay board power)"),
-    (3, "GPIO2 (SDA)", "i2c", "SHT31 SDA (optional, not installed)"),
+    (3, "GPIO2 (SDA)", "i2c", "Internal SHT31 - SDA (optional)"),
     (4, "5V", "power_5v", "5V (relay board power)"),
-    (5, "GPIO3 (SCL)", "i2c", "SHT31 SCL (optional, not installed)"),
+    (5, "GPIO3 (SCL)", "i2c", "Internal SHT31 - SCL (optional)"),
     (6, "GND", "ground_3v3", "Internal DHT22 - GND"),
     (7, "GPIO4", "deadpin", "unused - dead on this board, see README"),
     (8, "GPIO14 (TXD)", "unused", "unused"),
-    (9, "GND", "ground_3v3", "External DHT22 fallback - GND"),
+    (9, "GND", "ground_3v3", "External fallback - GND (DHT22 or SHT31)"),
     (10, "GPIO15 (RXD)", "unused", "unused (was Light - moved, shares UART)"),
     (11, "GPIO17", "fanrelay", "Fan relay"),
     (12, "GPIO18 (PWM)", "doorservo", "Door servo"),
@@ -52,7 +53,7 @@ ROWS = [
     (14, "GND", "ground", "GND"),
     (15, "GPIO22", "heaterrelay", "Heater relay"),
     (16, "GPIO23", "dehumidrelay", "Dehumidifier relay"),
-    (17, "3.3V", "power_3v3", "External DHT22 fallback - VCC (3.3V)"),
+    (17, "3.3V", "power_3v3", "External fallback - VCC 3.3V (DHT22 or SHT31)"),
     (18, "GPIO24", "doorswitch", "Door reed switch"),
     (19, "GPIO10 (MOSI)", "unused", "unused"),
     (20, "GND", "ground", "GND"),
@@ -64,11 +65,11 @@ ROWS = [
     (26, "GPIO7 (CE1)", "unused", "unused"),
     (27, "ID_SD", "reserved", "EEPROM ID - reserved"),
     (28, "ID_SC", "reserved", "EEPROM ID - reserved"),
-    (29, "GPIO5", "sensordata", "External DHT22 fallback - DATA"),
+    (29, "GPIO5", "sensordata", "External fallback DHT22 - DATA (if DHT22)"),
     (30, "GND", "ground", "GND"),
     (31, "GPIO6", "unused", "unused"),
-    (32, "GPIO12", "unused", "unused"),
-    (33, "GPIO13", "unused", "unused"),
+    (32, "GPIO12 (SDA5)", "i2c", "External fallback SHT31 - SDA (i2c5)"),
+    (33, "GPIO13 (SCL5)", "i2c", "External fallback SHT31 - SCL (i2c5)"),
     (34, "GND", "ground", "GND"),
     (35, "GPIO19", "unused", "unused"),
     (36, "GPIO16", "unused", "unused"),
@@ -110,7 +111,7 @@ LEGEND_ITEMS = [
     ("lightrelay", "Light relay"),
     ("fanrelay", "Fan relay"),
     ("dehumidrelay", "Dehumidifier relay"),
-    ("i2c", "I²C — optional SHT31"),
+    ("i2c", "I²C — optional SHT31s"),
     ("reserved", "Reserved (EEPROM ID)"),
     ("unused", "Unused GPIO"),
     ("deadpin", "Dead pin — see README"),

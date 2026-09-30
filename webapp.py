@@ -271,6 +271,19 @@ def api_set_internal_source():
     return jsonify(config)
 
 
+@app.route("/api/external-fallback-source", methods=["POST"])
+def api_set_external_fallback_source():
+    body = request.get_json(force=True, silent=True) or {}
+    source = body.get("source")
+    if source not in ("dht22", "sht31"):
+        return jsonify({"error": "source must be 'dht22' or 'sht31'"}), 400
+    config = state.load_config()
+    config["external_fallback_source"] = source
+    state.save_config(config)
+    state.log_event("info", f"External fallback probe type changed to '{source}'")
+    return jsonify(config)
+
+
 @app.route("/api/camera/status")
 def api_camera_status():
     """[2026-09-14] `available` used to be a staleness check on

@@ -89,7 +89,17 @@ PIN_HEATER = 22
 PIN_HUMIDITY = 23
 PIN_SERVO = 18            # PWM-capable pin
 PIN_INTERNAL_TEMP = 27    # wired DHT22/AM2302 (internal_source: "dht22", default)
-PIN_EXTERNAL_TEMP = 5     # wired external probe fallback (local_gpio mode)
+PIN_EXTERNAL_TEMP = 5     # wired external probe fallback, DHT22 (external_fallback_source: "dht22", default)
+# External fallback probe as an SHT31 instead (external_fallback_source:
+# "sht31") - on its OWN I2C bus, deliberately not sharing the internal
+# SHT31's bus (GPIO2/3). One bad sensor or chafed lead can hold SDA low
+# and hang every device on a bus; sharing would let a single fault take
+# out the internal reading AND its independent backup at once. The Pi 4's
+# extra hardware controller i2c5 on GPIO12 (SDA, pin 32) / GPIO13 (SCL,
+# pin 33) - enabled with `dtoverlay=i2c5,baudrate=50000` in
+# /boot/firmware/config.txt (see README). If `ls /dev/i2c-*` on the Pi
+# shows it under a different number, change this to match.
+EXTERNAL_SHT31_I2C_BUS = 5
                           # NOT GPIO4 (physical pin 7) - confirmed dead on this
                           # Pi 4 board 2026-09-13: `pinctrl get 4` reads "lo"
                           # even configured as input with its internal pull-up
@@ -130,6 +140,8 @@ servo.start(0)
 # using a DHT22 instead), so nothing I2C-related runs unless requested.
 _i2c_bus = None
 _sht31_sensor = None
+_fallback_i2c_bus = None
+_fallback_sht31_sensor = None
 
 
 def _get_sht31_sensor():
@@ -140,6 +152,38 @@ def _get_sht31_sensor():
         _i2c_bus = busio.I2C(board.SCL, board.SDA)
         _sht31_sensor = adafruit_sht31d.SHT31D(_i2c_bus)
     return _sht31_sensor
+
+
+def _open_i2c_bus_by_number(bus_id):
+    """A busio.I2C-compatible object for /dev/i2c-<bus_id>. Blinka's own
+    busio.I2C(board.SCL, board.SDA) only knows the Pi's primary bus, so
+    this is how any second bus gets opened. It's the same ~10 lines as
+    Adafruit's `adafruit-extended-bus` package (ExtendedI2C), inlined on
+    purpose: that package is an old setup.py-only release that fails to
+    build under current setuptools, and an unbuildable pip dependency
+    would be a bad thing to discover mid-install on the Pi."""
+    import threading                                             # noqa: PLC0415
+    import busio                                                 # noqa: PLC0415
+    from adafruit_blinka.microcontroller.generic_linux.i2c import I2C as _LinuxI2C  # noqa: PLC0415
+
+    if not os.path.exists(f"/dev/i2c-{bus_id}"):
+        raise OSError(f"/dev/i2c-{bus_id} not found - is the i2c5 overlay enabled? (see README)")
+
+    class _BusByNumber(busio.I2C):
+        def __init__(self, number):  # pylint: disable=super-init-not-called
+            self._i2c = _LinuxI2C(number, mode=_LinuxI2C.MASTER)
+            self._lock = threading.RLock()
+
+    return _BusByNumber(bus_id)
+
+
+def _get_fallback_sht31_sensor():
+    global _fallback_i2c_bus, _fallback_sht31_sensor
+    if _fallback_sht31_sensor is None:
+        import adafruit_sht31d   # noqa: PLC0415 - deferred, same reasoning as the internal one
+        _fallback_i2c_bus = _open_i2c_bus_by_number(EXTERNAL_SHT31_I2C_BUS)
+        _fallback_sht31_sensor = adafruit_sht31d.SHT31D(_fallback_i2c_bus)
+    return _fallback_sht31_sensor
 
 # === MUTABLE STATE ===
 current_servo_angle = SERVO_CLOSED_ANGLE
@@ -292,14 +336,14 @@ def read_temp_and_humidity_f(pin):
     return None, None
 
 
-def read_internal_sht31_f():
-    """Internal SHT31 over I2C. Returns (None, None) on any I2C/CRC failure,
-    or if no SHT31 is actually wired up (internal_source: "sht31" selected
-    without the hardware present) - either way it flows into the same
-    validation/failsafe pipeline as a failed wired read, rather than
-    crashing the script."""
+def _read_sht31_f(get_sensor):
+    """Any SHT31 over I2C. Returns (None, None) on any I2C/CRC failure,
+    or if no SHT31 is actually wired up (an "sht31" source selected
+    without the hardware present, or its bus not enabled) - either way
+    it flows into the same validation pipeline as a failed wired read,
+    rather than crashing the script."""
     try:
-        sensor = _get_sht31_sensor()
+        sensor = get_sensor()
         temp_c = sensor.temperature
         humidity = sensor.relative_humidity
     except (OSError, RuntimeError, ValueError, ImportError):
@@ -307,6 +351,14 @@ def read_internal_sht31_f():
     if temp_c is None or humidity is None:
         return None, None
     return temp_c * 9.0 / 5.0 + 32.0, humidity
+
+
+def read_internal_sht31_f():
+    return _read_sht31_f(_get_sht31_sensor)
+
+
+def read_fallback_sht31_f():
+    return _read_sht31_f(_get_fallback_sht31_sensor)
 
 
 def _plausible(value, low, high):
@@ -528,6 +580,7 @@ def run_cycle():
     HUMIDITY_SETPOINT = setpoints["humidity_setpoint"]
 
     internal_source = config.get("internal_source", "dht22")
+    external_fallback_source = config.get("external_fallback_source", "dht22")
     calib = config.get("calibration", {})
     if internal_source == "sht31":
         raw_internal_temp, raw_internal_humidity = read_internal_sht31_f()
@@ -537,10 +590,11 @@ def run_cycle():
         # external/fallback probe) - two of these timing-sensitive
         # single-wire sensors read back-to-back, with no gap at all, is a
         # plausible source of interference between the two reads. Only
-        # needed when the internal sensor is ALSO a DHT22 - the SHT31
-        # path above uses I2C, a completely different bus, so there's
-        # nothing to interfere with there.
-        time.sleep(DHT_READ_GAP_SECONDS)
+        # needed when BOTH are DHT22s - an SHT31 on either side is I2C,
+        # a completely different bus, so there's nothing to interfere
+        # with.
+        if external_fallback_source == "dht22":
+            time.sleep(DHT_READ_GAP_SECONDS)
     raw_internal_temp = apply_offset(raw_internal_temp, calib.get("internal_temp_offset", 0.0))
     raw_internal_humidity = apply_offset(raw_internal_humidity, calib.get("internal_humidity_offset", 0.0))
 
@@ -564,7 +618,17 @@ def run_cycle():
     # failsafe) on their own - only basic plausibility bounds apply,
     # since a single bad reading from either isn't dangerous the way a
     # bad ACTIVE reading would be, just cosmetically wrong for one cycle.
-    raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
+    # (No condensation-heater recovery for the fallback SHT31, unlike the
+    # internal one: that mechanism exists because a pegged-100% internal
+    # reading gets rejected by the delta filter until it trips the
+    # emergency-shutdown failsafe. The fallback never feeds the failsafe,
+    # and it sits in the dry external hardware space, not the humid
+    # enclosure - worst case is a wrong external humidity tile while BLE
+    # is also down.)
+    if external_fallback_source == "sht31":
+        raw_wired_temp, raw_wired_humidity = read_fallback_sht31_f()
+    else:
+        raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
     raw_wired_temp = apply_offset(raw_wired_temp, calib.get("wired_temp_offset", 0.0))
     raw_wired_humidity = apply_offset(raw_wired_humidity, calib.get("wired_humidity_offset", 0.0))
 

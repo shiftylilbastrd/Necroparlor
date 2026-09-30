@@ -37,10 +37,12 @@ GPIO pin assignments (BCM numbering, set in `climate.py`):
 | Heater relay | GPIO22 | 15 |
 | Dehumidifier relay | GPIO23 | 16 |
 | Door reed switch | GPIO24 | 18 |
-| External DHT22 fallback — DATA | GPIO5 | 29 |
+| External DHT22 fallback — DATA (if DHT22) | GPIO5 | 29 |
 | Light relay | GPIO26 | 37 |
-| SHT31 SDA (optional) | GPIO2 | 3 |
-| SHT31 SCL (optional) | GPIO3 | 5 |
+| Internal SHT31 SDA (optional) | GPIO2 | 3 |
+| Internal SHT31 SCL (optional) | GPIO3 | 5 |
+| External fallback SHT31 SDA (optional, i2c5) | GPIO12 | 32 |
+| External fallback SHT31 SCL (optional, i2c5) | GPIO13 | 33 |
 
 **GPIO4 (physical pin 7)** is dead on this specific board (confirmed via `pinctrl` — see `PROJECT_STATUS.md`) and is not used; the external fallback probe was moved to GPIO5 instead. **GPIO15/RXD** is avoided for the same reason it's marked unused above — it doubles as UART0 RXD and misbehaves if the serial console is enabled.
 
@@ -56,7 +58,7 @@ If `PIN_*` in `climate.py` ever changes again, regenerate the diagram with `pyth
 
 Wired to 3.3V rather than 5V because both 5V pins are already committed to relay board power — the DHT22 tolerates 3.3–5.5V, so this is just a wiring choice, not a workaround. Add a 4.7–10kΩ pull-up between DATA and VCC if using a bare chip (most breakout modules already have one).
 
-To use an SHT31 instead (drop-in swap, no code changes — flip "Internal sensor source" on the Config page):
+To use an SHT31 instead (drop-in swap, no code changes — flip "Internal sensor source" on the Settings page):
 
 ```bash
 sudo raspi-config   # Interface Options -> I2C -> Enable, then reboot
@@ -73,13 +75,38 @@ The SHT31 also has an onboard heater `climate.py` uses to recover from condensat
 
 ### External sensor: BLE primary + wired fallback
 
-The external reading comes from a BLE sensor (primary) and a wired DHT22 on GPIO5 (always-on fallback). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the wired probe) — no manual switching, and every failover is logged.
+The external reading comes from a BLE sensor (primary) and a wired probe (always-on fallback) — a DHT22 on GPIO5 by default, or an SHT31. `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the wired probe) — no manual switching, and every failover is logged. Pick the probe type under Settings → Fallback → Probe type.
 
 | DHT22/AM2302 pin | Pi pin |
 |---|---|
 | VCC | 3.3V (pin 17) |
 | GND | GND (pin 9 or similar) |
 | DATA | GPIO5 (pin 29) |
+
+**SHT31 as the fallback probe.** It goes on its **own** I2C bus — the Pi 4's extra `i2c5` controller — never on the internal SHT31's bus. One faulty sensor or chafed lead can hold a bus's data line low and hang everything on it; sharing would let a single fault take out the internal reading *and* its independent backup together. Enable the bus in `/boot/firmware/config.txt` (then reboot):
+
+```
+dtoverlay=i2c5,baudrate=50000
+```
+
+Then check it exists and the sensor answers at `0x44`:
+
+```bash
+ls /dev/i2c-*            # expect /dev/i2c-5 (if it's a different number, set EXTERNAL_SHT31_I2C_BUS in climate.py to match)
+sudo apt install i2c-tools
+i2cdetect -y 5           # expect 44
+```
+
+| SHT31 wire | Pi pin |
+|---|---|
+| VIN | 3.3V (pin 17) |
+| GND | GND (pin 9, or pin 34 right next to 33) |
+| SDA | GPIO12 (pin 32) |
+| SCL | GPIO13 (pin 33) |
+
+**Pull-ups:** GPIO2/3 (the internal SHT31) have strong 1.8kΩ pull-ups on the Pi board itself; GPIO12/13 only get the chip's weak internal ones (~50kΩ), which aren't enough for a 5-foot lead. Unless the probe has its own pull-ups built in, add a **4.7kΩ resistor from SDA (pin 32) to 3.3V and another from SCL (pin 33) to 3.3V**, at the Pi end. `baudrate=50000` (half the 100kHz default) also buys margin for the long lead's capacitance; if the *internal* SHT31 (also on a long lead) ever shows read errors, `dtparam=i2c_arm_baudrate=50000` does the same for the primary bus.
+
+Switching the probe type back to DHT22 needs no config.txt change — the i2c5 overlay only claims GPIO12/13, not GPIO5.
 
 ## Install
 

@@ -23,7 +23,7 @@
 <rect x="840" y="127" width="16" height="16" rx="3" fill="#8a63c9" stroke="#5a6570"/>
 <text x="862" y="139" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Dehumidifier relay</text>
 <rect x="40" y="155" width="16" height="16" rx="3" fill="#3d5a78" stroke="#5a6570"/>
-<text x="62" y="167" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">I²C — optional SHT31</text>
+<text x="62" y="167" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">I²C — optional SHT31s</text>
 <rect x="440" y="155" width="16" height="16" rx="3" fill="#93a0ab" stroke="#5a6570"/>
 <text x="462" y="167" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" fill="#e7ecef">Reserved (EEPROM ID)</text>
 <rect x="840" y="155" width="16" height="16" rx="3" fill="#2e353c" stroke="#5a6570"/>
@@ -41,14 +41,14 @@
 <circle cx="540" cy="245" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="249" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">2</text>
 <text x="562" y="242" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">5V (relay board power)</text>
 <text x="562" y="256" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">5V</text>
-<text x="398" y="276" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">SHT31 SDA (optional, not installed)</text>
+<text x="398" y="276" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Internal SHT31 - SDA (optional)</text>
 <text x="398" y="290" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO2 (SDA)</text>
 <circle cx="420" cy="279" r="13" fill="#3d5a78" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="283" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#c9d8e6">3</text>
 <line x1="433" y1="279" x2="527" y2="279" stroke="#2a323a" stroke-width="3"/>
 <circle cx="540" cy="279" r="13" fill="#d9534f" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="283" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">4</text>
 <text x="562" y="276" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">5V (relay board power)</text>
 <text x="562" y="290" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">5V</text>
-<text x="398" y="310" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">SHT31 SCL (optional, not installed)</text>
+<text x="398" y="310" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Internal SHT31 - SCL (optional)</text>
 <text x="398" y="324" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO3 (SCL)</text>
 <circle cx="420" cy="313" r="13" fill="#3d5a78" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="317" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#c9d8e6">5</text>
 <line x1="433" y1="313" x2="527" y2="313" stroke="#2a323a" stroke-width="3"/>
@@ -62,7 +62,7 @@
 <circle cx="540" cy="347" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="351" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">8</text>
 <text x="562" y="344" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
 <text x="562" y="358" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO14 (TXD)</text>
-<text x="398" y="378" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External DHT22 fallback - GND</text>
+<text x="398" y="378" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External fallback - GND (DHT22 or SHT31)</text>
 <text x="398" y="392" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GND</text>
 <circle cx="420" cy="381" r="13" fill="#6b4423" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="385" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#f5e6d3">9</text>
 <line x1="433" y1="381" x2="527" y2="381" stroke="#2a323a" stroke-width="3"/>
@@ -90,7 +90,7 @@
 <circle cx="540" cy="483" r="13" fill="#8a63c9" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="487" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#ffffff">16</text>
 <text x="562" y="480" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">Dehumidifier relay</text>
 <text x="562" y="494" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO23</text>
-<text x="398" y="514" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External DHT22 fallback - VCC (3.3V)</text>
+<text x="398" y="514" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External fallback - VCC 3.3V (DHT22 or SHT31)</text>
 <text x="398" y="528" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">3.3V</text>
 <circle cx="420" cy="517" r="13" fill="#e08a3c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="521" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#2b1400">17</text>
 <line x1="433" y1="517" x2="527" y2="517" stroke="#2a323a" stroke-width="3"/>
@@ -132,7 +132,7 @@
 <circle cx="540" cy="687" r="13" fill="#93a0ab" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="691" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#14181c">28</text>
 <text x="562" y="684" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">EEPROM ID - reserved</text>
 <text x="562" y="698" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">ID_SC</text>
-<text x="398" y="718" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External DHT22 fallback - DATA</text>
+<text x="398" y="718" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External fallback DHT22 - DATA (if DHT22)</text>
 <text x="398" y="732" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO5</text>
 <circle cx="420" cy="721" r="13" fill="#d9c74f" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="725" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#241f00">29</text>
 <line x1="433" y1="721" x2="527" y2="721" stroke="#2a323a" stroke-width="3"/>
@@ -143,12 +143,12 @@
 <text x="398" y="766" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO6</text>
 <circle cx="420" cy="755" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="759" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">31</text>
 <line x1="433" y1="755" x2="527" y2="755" stroke="#2a323a" stroke-width="3"/>
-<circle cx="540" cy="755" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="759" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">32</text>
-<text x="562" y="752" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="562" y="766" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO12</text>
-<text x="398" y="786" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">unused</text>
-<text x="398" y="800" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO13</text>
-<circle cx="420" cy="789" r="13" fill="#2e353c" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="793" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#8a97a2">33</text>
+<circle cx="540" cy="755" r="13" fill="#3d5a78" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="759" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#c9d8e6">32</text>
+<text x="562" y="752" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External fallback SHT31 - SDA (i2c5)</text>
+<text x="562" y="766" text-anchor="start" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO12 (SDA5)</text>
+<text x="398" y="786" text-anchor="end" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">External fallback SHT31 - SCL (i2c5)</text>
+<text x="398" y="800" text-anchor="end" font-size="10.5" font-family="monospace" fill="#93a0ab">GPIO13 (SCL5)</text>
+<circle cx="420" cy="789" r="13" fill="#3d5a78" stroke="#5a6570" stroke-width="1.5"/><text x="420" y="793" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#c9d8e6">33</text>
 <line x1="433" y1="789" x2="527" y2="789" stroke="#2a323a" stroke-width="3"/>
 <circle cx="540" cy="789" r="13" fill="#3d4750" stroke="#5a6570" stroke-width="1.5"/><text x="540" y="793" text-anchor="middle" font-size="10.5" font-family="monospace" font-weight="700" fill="#e7ecef">34</text>
 <text x="562" y="786" text-anchor="start" font-size="12.5" font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-weight="600" fill="#e7ecef">GND</text>

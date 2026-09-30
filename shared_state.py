@@ -103,6 +103,12 @@ DEFAULT_CONFIG = {
     #              what's actually on hand)
     #   "sht31"  - I2C sensor with condensation-recovery heater support
     "internal_source": "dht22",
+    # What the WIRED external fallback probe (the automatic backup behind
+    # the BLE sensor - see below) is:
+    #   "dht22"  - DHT22/AM2302 on climate.py's PIN_EXTERNAL_TEMP (GPIO5, default)
+    #   "sht31"  - SHT31 on its own I2C bus (EXTERNAL_SHT31_I2C_BUS, the
+    #              Pi 4's i2c5 on GPIO12/13) - never the internal sensor's bus
+    "external_fallback_source": "dht22",
     # External (outside-air) reading: automatic failover, not a manual
     # choice. climate.py always reads both the wired probe and a BLE
     # sensor every cycle and uses whichever is fresher - the BLE sensor

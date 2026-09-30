@@ -849,6 +849,10 @@ that aren't obvious from reading the code cold.
   consideration, motivated by real DHT22 reliability issues even after
   the retry-logic fix. Probe form factor (PTFE vs. ceramic vs. metal
   mesh filter cap) was researched but no purchase decision made yet.
+  **[update, 2026-09-29]** Ryan now has two SHT31s on hand (prewired
+  probes, ~5 ft leads) - one for the internal sensor, one to replace the
+  wired external fallback DHT22. See the dated 2026-09-29 fallback-SHT31
+  entry at the end of this file.
 - **[open]** `xiaomi`/`ruuvitag` entries in `BLE_SENSOR_LIBRARIES`
   have unverified exact class names (follow the established
   convention but weren't checked against real source) - confirm before
@@ -2338,3 +2342,68 @@ that aren't obvious from reading the code cold.
   - [ ] **Video delete confirmations**: single Delete and Delete selected
         both open the dialog first; Cancel/Esc keep the video(s); the
         red button deletes exactly the chosen one(s).
+  - [ ] **Fallback SHT31** (entry below): `/dev/i2c-5` exists after the
+        overlay, `i2cdetect -y 5` shows 44, readings appear on the
+        dashboard with Probe type = SHT31, and pulling BLE makes the
+        failover use them.
+
+- **[2026-09-29] External fallback probe can now be an SHT31 (explicit
+  request).** Ryan has two prewired SHT31 probes (~5 ft leads): one
+  replaces the internal DHT22 (already supported via `internal_source`),
+  one replaces the wired external fallback DHT22. **BLE stays the primary
+  external sensor** - only the wired backup changes. The external probe
+  sits in the external hardware space, not the ductwork.
+
+  **Load-bearing decision - the fallback SHT31 is on its OWN I2C bus,
+  never the internal SHT31's.** Two SHT31s would normally share one bus
+  (0x44 + 0x45 via ADDR), but one faulty sensor or chafed lead can hold
+  SDA low and hang every device on that bus - which would take out the
+  internal reading (-> failsafe) AND its independent wired backup in the
+  same moment, exactly the coupling the two separate DHT22 pins never
+  had. Uses the Pi 4's extra hardware controller `i2c5` on GPIO12 (SDA,
+  pin 32) / GPIO13 (SCL, pin 33), enabled by `dtoverlay=i2c5,baudrate=50000`.
+  Pin mapping and params checked against the raspberrypi/linux overlays
+  README + i2c5-overlay.dts + bcm2711.dtsi, not from memory (which had
+  i2c4's default pins wrong). Both sensors stay at the default 0x44.
+  Don't "simplify" this onto one bus.
+
+  **Pull-ups**: GPIO2/3 have 1.8k pull-ups on the Pi board; GPIO12/13
+  only get the SoC's weak internal bias (~50k), not enough for a 5 ft
+  lead - README says to add 4.7k from each of SDA/SCL to 3.3V at the Pi
+  end unless the probe has its own. Whether Ryan's probes include
+  pull-ups is **unknown** (not yet checked).
+
+  **Code**: new config key `external_fallback_source` ("dht22" default |
+  "sht31"), Settings page Fallback card "Probe type" select, `POST
+  /api/external-fallback-source` (same shape as `/api/internal-source`).
+  `climate.py`: `EXTERNAL_SHT31_I2C_BUS = 5`, `_open_i2c_bus_by_number()`
+  - an inlined copy of Adafruit's `adafruit-extended-bus` ExtendedI2C,
+  **deliberately not the pip package**: it's an old setup.py-only
+  release that failed to build under current setuptools in the sandbox,
+  and an unbuildable dependency is a bad thing to discover mid-install on
+  the Pi. `_read_sht31_f()` now shared by internal + fallback. The
+  1s DHT read gap only runs when BOTH sensors are DHT22s. **No
+  condensation-heater recovery for the fallback** - that mechanism exists
+  because a pegged internal reading gets delta-rejected until it trips
+  the emergency failsafe; the fallback never feeds the failsafe and sits
+  in the dry hardware space.
+
+  Also fixed while here: Settings page said the wired probe was on
+  **GPIO4** (the dead pin) in two places - it's been GPIO5 since the
+  move; README said the internal-source switch was on the Config page
+  (it's on Settings). Pinout diagram regenerated via
+  `docs/gen_gpio_pinout.py` (pins 32/33 now I2C, fallback power/ground
+  labels cover either probe type).
+
+  **Verified in sandbox**: the real fallback read path through real
+  Blinka + real `adafruit_sht31d` against a fake SMBus speaking the SHT31
+  protocol with correct CRCs (opens bus 5, 77.0F/40.0% converted right,
+  missing bus / unplugged sensor -> (None, None) with no crash, recovers
+  on replug); the real `climate.run_cycle()` with stubbed GPIO for all
+  four internal/fallback combinations (right sensor read each way, GPIO5
+  untouched when fallback is SHT31, DHT gap only for DHT22+DHT22);
+  Settings select saves/persists across reload/rejects bad values with a
+  400/logs an event, 0 JS errors. **Not verified**: anything on the real
+  Pi - that `i2c5` really appears as `/dev/i2c-5` on this kernel (README
+  says to check with `ls /dev/i2c-*` and adjust the constant), real
+  sensor reads over 5 ft leads, and whether pull-ups are needed.
