@@ -2407,3 +2407,43 @@ that aren't obvious from reading the code cold.
   Pi - that `i2c5` really appears as `/dev/i2c-5` on this kernel (README
   says to check with `ls /dev/i2c-*` and adjust the constant), real
   sensor reads over 5 ft leads, and whether pull-ups are needed.
+
+- **[2026-09-29] Pinout diagram reworked for the two SHT31 probes
+  (explicit request).** Sensor power/ground pins are now labeled simply
+  "Internal power/ground" (pins 1/6) and "External power/ground" (pins
+  17/9); sensor pins use the probes' own lead colors - red power, black
+  ground, yellow SCL, green SDA. **Yellow=SCL/green=SDA is an assumption**
+  (the common convention for 4-wire SHT31 probes; some vendors swap them)
+  - not yet confirmed against Ryan's probe listing; swapping is a
+  COLORS-only change in `docs/gen_gpio_pinout.py`. The diagram now shows
+  the target build, so the DHT22 DATA pins (13, 29) show as "unused (…if
+  used instead)" even though `dht22` is still the code default for both
+  sources until the Settings page is switched. Sensor 3.3V power is drawn
+  **orange**, not the probes' red lead color (Ryan's call), so it can't be
+  confused with the red 5V pins - a sensor lead moved onto 5V would put
+  5V on the Pi's SDA/SCL via the probe's pull-ups. README's SHT31 wiring
+  tables gained a lead-color column to match. Also corrected: the two
+  5V pins aren't both relay-board power - one feeds the relay board, the
+  other the door servo (Ryan, 2026-09-29). **Which pin is which wasn't
+  stated**; the diagram assumes pin 2 = relay board, pin 4 = servo.
+  Ground pins (Ryan, same day): **relay board GND = pin 6, internal
+  sensor GND = pin 9, external sensor GND = pin 34** - earlier versions of
+  the diagram never showed the relay board's ground at all (every spare
+  GND was just "GND"). Relay ground drawn black (assumed jumper color).
+  Still not on the diagram: the servo's and reed switch's ground returns
+  - pins not yet stated.
+
+- **[2026-09-29] Light relay and door reed switch swapped pins (explicit
+  request - consolidating wiring by component).** `PIN_LIGHT` 26 -> 24
+  (physical 37 -> 18), `PIN_SWITCH` 24 -> 26 (18 -> 37). All four relay
+  inputs are now grouped on physical 11/15/16/18, and the reed switch's
+  two leads can sit on adjacent pins 37 + 39 (GND). **Deploy order
+  matters**: relays are active-low, so climate.py drives `PIN_LIGHT` HIGH
+  at startup (relay off); with the OLD wiring still in place that would
+  drive GPIO24 into the reed switch, a dead short to ground whenever the
+  switch is closed. Rewire first (Pi powered off), then let the update
+  deploy. Both GPIO24 and GPIO26 default to pull-down at power-on, so the
+  relay's pre-script boot behaviour is unchanged. Verified with stubbed
+  GPIO: pin 24 set up as output and first driven HIGH, pin 26 as input
+  with pull-up and never written. Reed switch ground pin not yet stated
+  (39 suggested).

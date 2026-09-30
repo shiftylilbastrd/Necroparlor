@@ -113,8 +113,16 @@ EXTERNAL_SHT31_I2C_BUS = 5
                           # Moved to GPIO5 (physical pin 29) instead - rewire
                           # the probe's DATA line from physical pin 7 to
                           # physical pin 29; GND/VCC are unchanged.
-PIN_LIGHT = 26            # moved off GPIO15 (was sharing UART0 RXD - see README)
-PIN_SWITCH = 24
+# [2026-09-29] Light relay and door reed switch swapped pins so wiring
+# groups by component: all four relay inputs now sit together (physical
+# 11/15/16/18) and the reed switch's two leads land on adjacent physical
+# pins 37 (GPIO26) + 39 (GND). REWIRE BEFORE THIS CODE RUNS: with the old
+# wiring, PIN_LIGHT's output (driven HIGH at startup = relay off, see
+# turn_off) would be shorted to ground through the reed switch whenever
+# the switch is closed. Both pins default to pull-down at power-on, so the
+# relay's behaviour during boot (before this script starts) is unchanged.
+PIN_LIGHT = 24            # was 26 (and GPIO15 before that - shared UART0 RXD, see README)
+PIN_SWITCH = 26           # was 24
 
 # === GPIO SETUP ===
 GPIO.setwarnings(False)
