@@ -7,7 +7,7 @@ always encoded exactly the way the final video will be.
 
 Overlay: each frame can have its capture time and the time elapsed since
 the session's first frame burned in, e.g.
-    Cleaning · Sep 29, 2:05 PM · +2d 04h 12m
+    Sep 29, 2:05 PM · +2d 04h 12m
 Done without touching the JPEGs: every entry in ffmpeg's concat list gets
 a `file_packet_metadata 'overlay=<label>'` line, and a single drawtext
 filter prints `%{metadata:overlay}` - i.e. whatever label was attached to
@@ -63,14 +63,17 @@ def frame_label(mode, ts, session_start_ts):
     """The burned-in text for one frame. Local time from state.LOCAL_TZ
     (the same zone the rest of the dashboard uses), and elapsed time
     counted from the first frame being encoded - for a preview that's the
-    session start, so the numbers carry straight over to the final video."""
+    session start, so the numbers carry straight over to the final video.
+    [2026-09-30] No mode name (Ryan's call) - the gallery card and the
+    preview row already say which mode a video is from. `mode` is still
+    passed in so it could come back without touching the callers."""
     when = datetime.fromtimestamp(ts, state.LOCAL_TZ)
     clock = when.strftime("%b %d, %I:%M %p").replace(" 0", " ")
     elapsed = max(0, int(ts - session_start_ts))
     days, rem = divmod(elapsed, 86400)
     hours, rem = divmod(rem, 3600)
     minutes = rem // 60
-    return f"{MODE_LABELS.get(mode, mode.capitalize())} · {clock} · +{days}d {hours:02d}h {minutes:02d}m"
+    return f"{clock} · +{days}d {hours:02d}h {minutes:02d}m"
 
 
 def _quote(value):

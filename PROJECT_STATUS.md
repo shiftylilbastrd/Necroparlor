@@ -2604,3 +2604,8 @@ that aren't obvious from reading the code cold.
   **Download** button on the preview row (`/api/timelapse/preview/<mode>.mp4
   ?download=1` -> attachment named `<mode>-preview-YYYYMMDD-HHMM.mp4`, so
   successive downloads of a growing session don't overwrite each other).
+
+- **[2026-09-30] Overlay label no longer includes the mode name** (Ryan's
+  request) - now just `Sep 29, 2:05 PM · +2d 04h 12m`. The mode is
+  already shown on the gallery card / preview row. Earlier entries' label
+  examples predate this.

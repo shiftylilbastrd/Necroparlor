@@ -208,7 +208,7 @@ mode change. One preview builds at a time (it's a full-CPU job, run at the
 lowest priority), each mode keeps only its latest preview, and a preview is
 removed once its frames are compiled or purged. New videos and previews
 get the capture time and time elapsed since the session started burned
-into each frame (e.g. `Cleaning · Sep 29, 2:05 PM · +2d 04h 12m`); the
+into each frame (e.g. `Sep 29, 2:05 PM · +2d 04h 12m`, top-left); the
 checkbox in the same card turns that off.
 
 1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
