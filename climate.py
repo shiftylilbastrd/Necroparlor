@@ -344,29 +344,64 @@ def read_temp_and_humidity_f(pin):
     return None, None
 
 
-def _read_sht31_f(get_sensor):
+# Last failure reason logged per SHT31 ("internal"/"fallback"), so a
+# failure is reported once when it starts (or its reason changes), not
+# every cycle - same once-per-outage logging pattern as the failsafe.
+_sht31_last_error = {}
+
+
+def _read_sht31_f(get_sensor, label):
     """Any SHT31 over I2C. Returns (None, None) on any I2C/CRC failure,
     or if no SHT31 is actually wired up (an "sht31" source selected
     without the hardware present, or its bus not enabled) - either way
     it flows into the same validation pipeline as a failed wired read,
-    rather than crashing the script."""
+    rather than crashing the script.
+
+    [2026-09-29] Failures are no longer silent: the first time was a
+    missing adafruit-circuitpython-sht31d package on the real Pi, which
+    this swallowed exactly like "no sensor wired", leaving both tiles
+    blank with nothing in any log to say why. The reason is now logged
+    once per failure streak, and a missing library goes on the dashboard
+    as an error with the install command - it's a setup mistake no
+    amount of rewiring fixes."""
     try:
         sensor = get_sensor()
         temp_c = sensor.temperature
         humidity = sensor.relative_humidity
-    except (OSError, RuntimeError, ValueError, ImportError):
+    except ImportError as e:
+        _note_sht31_failure(label, f"library missing ({e})", dashboard=True)
+        return None, None
+    except (OSError, RuntimeError, ValueError) as e:
+        _note_sht31_failure(label, f"{type(e).__name__}: {e}", dashboard=False)
         return None, None
     if temp_c is None or humidity is None:
+        _note_sht31_failure(label, "sensor returned no value", dashboard=False)
         return None, None
+    if _sht31_last_error.pop(label, None) is not None:
+        logging.info(f"{label.capitalize()} SHT31 reading again")
     return temp_c * 9.0 / 5.0 + 32.0, humidity
 
 
+def _note_sht31_failure(label, reason, dashboard):
+    if _sht31_last_error.get(label) == reason:
+        return
+    _sht31_last_error[label] = reason
+    logging.warning(f"{label.capitalize()} SHT31 read failed: {reason}")
+    if dashboard:
+        state.log_event(
+            "error",
+            f"{label.capitalize()} SHT31 selected but its Python library isn't installed - "
+            "run: pip3 install adafruit-circuitpython-sht31d --break-system-packages "
+            "(as pi, no sudo)",
+            category="control_loop_error")
+
+
 def read_internal_sht31_f():
-    return _read_sht31_f(_get_sht31_sensor)
+    return _read_sht31_f(_get_sht31_sensor, "internal")
 
 
 def read_fallback_sht31_f():
-    return _read_sht31_f(_get_fallback_sht31_sensor)
+    return _read_sht31_f(_get_fallback_sht31_sensor, "fallback")
 
 
 def _plausible(value, low, high):

@@ -2447,3 +2447,29 @@ that aren't obvious from reading the code cold.
   GPIO: pin 24 set up as output and first driven HIGH, pin 26 as input
   with pull-up and never written. Reed switch ground pin not yet stated
   (39 suggested).
+
+- **[2026-09-29] SHT31 bring-up on the real Pi (benchtop).** Confirmed
+  on hardware: `dtoverlay=i2c5` gives `/dev/i2c-5` (so
+  `EXTERNAL_SHT31_I2C_BUS = 5` is right; `/dev/i2c-20`/`-21` are the Pi
+  4's HDMI DDC buses, ignore); `i2cdetect` sees an SHT31 at 0x44 on both
+  bus 1 and bus 5, which also **confirms the probes' lead colors -
+  yellow = SCL, green = SDA** (the diagram's assumption) and that `pi`
+  can open both buses without sudo. **Bus 1 also shows 0x1a - that's
+  the Argon ONE case's fan/power-button controller**, which lives on I2C
+  bus 1 at 0x1a (still present with the probe unplugged). Not a fault;
+  don't go hunting it. Consequence: the internal SHT31 shares bus 1 with
+  the case fan controller, so a fault on the internal probe's lead that
+  hangs bus 1 would also freeze case fan control (the internal reading
+  dropping out already starts the failsafe, so it's visible).
+
+  **Both tiles were blank after switching to SHT31**: the
+  `adafruit-circuitpython-sht31d` package had never been installed on
+  the Pi (README's install line lists it, but the Pi's setup predates
+  anyone needing it). Fix: `pip3 install adafruit-circuitpython-sht31d
+  --break-system-packages` as pi. Root problem was `_read_sht31_f()`
+  swallowing ImportError silently, identical to "no sensor wired" -
+  **now logs the failure reason once per failure streak** (and recovery),
+  and a missing library also goes on the dashboard as a
+  `control_loop_error` with the install command. Verified with the real
+  climate.py + stubbed GPIO: 3 failing cycles -> exactly 1 dashboard
+  event, recovery logged, I/O errors log-only.
