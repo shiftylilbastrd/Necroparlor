@@ -152,6 +152,18 @@ running:
 sudo apt install ffmpeg   # needed to compile timelapse sessions into .mp4
 ```
 
+If a session's automatic compile ever fails or times out (the log says
+"raw frames kept"), nothing is lost — compile it by hand over SSH, as the
+`pi` user (not sudo), from the project directory:
+
+```bash
+python3 compile_timelapse.py            # lists modes with kept frames
+python3 compile_timelapse.py cleaning   # compiles them, no time limit, shows progress
+```
+
+It's safe to run while the camera service is up. Leftover frames are
+also rolled into that mode's next automatic compile if you don't.
+
 1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
 2. Set device/resolution/port on the Config page, or in `config.json`:
    ```json

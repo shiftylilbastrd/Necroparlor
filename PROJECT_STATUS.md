@@ -2208,3 +2208,68 @@ that aren't obvious from reading the code cold.
   documentation alone - next step is following `docs/camera-streamer-
   setup.md` on the actual Pi, start to finish, and correcting whatever
   in this entry turns out wrong once it's real.
+
+- **[2026-09-29] Timelapse compile timed out on a real session: "ffmpeg
+  timed out compiling cleaning session (8048 frames) after 300s".**
+  Root cause: `COMPILE_TIMEOUT_SECONDS` was a flat 300s no matter how
+  many frames, but encode time scales linearly with frame count - and
+  the command didn't name an encoder, so ffmpeg used libx264's default
+  `medium` preset, its slowest reasonable one. 8048 frames (~5.6 days
+  at a 1-minute interval) in 300s needs ~27 frames/s sustained, which a
+  Pi can't do at 720p on `medium`; the cap was effectively only ever
+  going to work for sessions of a few hundred frames. Nothing was lost -
+  the frames were kept exactly as designed.
+
+  **Second bug found while tracing it**: after a failed/skipped compile,
+  the leftover frames were NOT picked up by the next session's compile,
+  despite the `MINIMUM_FRAMES_FOR_VIDEO` comment saying they would be -
+  `maybe_compile_session()` only queried `[session_start_ts, now]`, and
+  `session_start_ts` resets to the transition time on every mode change.
+  They only resurfaced after a service restart (via
+  `get_earliest_camera_snapshot_ts()` in `main()`), at which point they'd
+  merge into an even bigger session and hit the same timeout again.
+  Also: a timeout left a truncated, unplayable `.mp4` behind, and the
+  concat list filename (`.compile_<int ts>.txt`) could collide between
+  two modes compiling in the same second.
+
+  **Fixes (`camera_service.py`)**: explicit `-c:v libx264 -preset
+  veryfast` (measured ~2.5x faster than `medium` on identical 1280x720
+  frames on the dev sandbox, with no size penalty - static scene);
+  ffmpeg runs under `nice -n 19` so a long encode can't compete with
+  climate.py; timeout now `max(300, frames x 1.0s)` via
+  `compile_timeout_for()` - still a hang watchdog, just not one a
+  legitimate big job can hit; `-movflags +faststart`; partial `.mp4`
+  deleted on timeout; mode added to the list filename;
+  `maybe_compile_session()` extends its start to the mode's earliest
+  uncompiled frame; a per-mode `fcntl` lock file
+  (`timelapse_videos/.compile_<mode>.lock`) so a manual compile and the
+  service can't double-compile the same frames; encode time now logged
+  on success so the per-frame budget can be checked against the real Pi.
+
+  **New: `compile_timelapse.py`** - manual recovery CLI. No args lists
+  modes with kept frames; `python3 compile_timelapse.py <mode>` compiles
+  them through the same `compile_session_video()` with no time limit and
+  ffmpeg progress shown. Refuses to run as root (root-owned output files
+  would block the pi-user service from cleaning up later) and refuses
+  the active mode unless `--include-current`.
+
+  **Verified** (sandbox, real ffmpeg 6.1.1 + real SQLite, not on the
+  Pi): forced timeout removes the partial mp4 + list file and keeps all
+  frames; leftover rollover compiles 300 orphaned + 50 new frames into
+  one 350-frame video and clears the table; held lock makes the compile
+  skip with frames untouched; CLI list / active-mode guard / unknown
+  mode / root refusal / successful compile all behave as intended.
+  **Not verified**: actual encode speed on the Pi 4 (sandbox is x86, so
+  the 1.0s/frame budget is an estimate with deliberate headroom - check
+  the new "in Ns" figure in the compile log line after the first real
+  run), and the recovery of the real 8048-frame cleaning backlog itself.
+
+- **[2026-09-29] Status-file staleness noted**: the 2026-09-17
+  `camera-streamer` entry above still describes that rewrite as living on
+  the `camera-streamer` branch, but `main`'s `camera_service.py` already
+  has it (no OpenCV, pulls `/snapshot` over HTTP) and the branch no
+  longer exists on the remote. It was evidently merged/pushed to `main`
+  around 2026-09-17 without an entry recording it. Whether
+  camera-streamer's setup has since been verified on the Pi is not
+  recorded here either - the timelapse error itself implies snapshots
+  are being captured, so at least `/snapshot` works.

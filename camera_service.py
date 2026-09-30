@@ -64,6 +64,7 @@ e.g. a mode switch after the forecast raised the rate).
 Run under systemd (see systemd/dermestid-camera.service).
 """
 import collections
+import fcntl
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -155,7 +156,31 @@ MINIMUM_FRAMES_FOR_VIDEO = 3
 # maybe_compile_session), so a hang here can't block the (much lighter,
 # now HTTP-only) capture loop, but it should still never be allowed to
 # run forever.
-COMPILE_TIMEOUT_SECONDS = 300
+#
+# [2026-09-29] This used to be a flat 300s regardless of session size,
+# which made any long session impossible to compile: encode time scales
+# linearly with frame count, and a multi-day cleaning session at a
+# 1-minute interval (8048 frames, the real failure that prompted this)
+# needs far longer than 5 minutes on a Pi no matter how the encoder is
+# tuned. The cap now scales with the frame count - a generous per-frame
+# budget (roughly 10x what a Pi 4 should actually need at the preset
+# below) with a floor for tiny sessions - so it still catches a genuine
+# hang, just not a legitimately big job.
+COMPILE_TIMEOUT_FLOOR_SECONDS = 300
+COMPILE_TIMEOUT_PER_FRAME_SECONDS = 1.0
+
+
+def compile_timeout_for(frame_count):
+    return max(COMPILE_TIMEOUT_FLOOR_SECONDS, frame_count * COMPILE_TIMEOUT_PER_FRAME_SECONDS)
+
+
+# x264 preset for the compile. ffmpeg's implicit default is "medium";
+# "veryfast" measured ~2.5x faster on identical 1280x720 frames with an
+# essentially identical (slightly smaller, even) output file - a static
+# timelapse scene gives the slower presets' extra motion search nothing
+# to find. The encode also runs under `nice -n 19` so it can never
+# compete with climate.py (the actually safety-critical process) for CPU.
+COMPILE_X264_PRESET = "veryfast"
 
 # Which modes currently have a compile running in a background thread -
 # guards against a rapidly-flapping mode triggering two overlapping
@@ -176,6 +201,18 @@ def maybe_compile_session(mode, start_ts, end_ts):
     multi-second CPU task - fine as a rare, one-off event per mode
     change, not fine if it delayed the next snapshot's due-check for
     that whole time)."""
+    # Pull in any of this mode's frames left over from an EARLIER session
+    # that didn't compile (too few frames, a failed/timed-out ffmpeg run,
+    # or skipped because a compile was already running). Without this,
+    # those leftovers were only ever picked up after a service restart
+    # (via get_earliest_camera_snapshot_ts in main()), despite the
+    # MINIMUM_FRAMES_FOR_VIDEO comment above saying they'd roll into the
+    # next session - in practice they sat orphaned in camera_snapshots.
+    # Safe because we're leaving `mode` right now, so every uncompiled
+    # frame of it is by definition finished footage.
+    earliest = state.get_earliest_camera_snapshot_ts(mode)
+    if earliest is not None and earliest < start_ts:
+        start_ts = earliest
     frames = state.get_camera_snapshots_in_range(mode, start_ts, end_ts)
     if len(frames) < MINIMUM_FRAMES_FOR_VIDEO:
         return
@@ -196,7 +233,8 @@ def maybe_compile_session(mode, start_ts, end_ts):
     threading.Thread(target=run, daemon=True).start()
 
 
-def compile_session_video(mode, start_ts, end_ts, frames):
+def compile_session_video(mode, start_ts, end_ts, frames, timeout_seconds="auto",
+                          show_progress=False):
     """Stitches one mode-session's already-captured JPEG frames into a
     single .mp4 via ffmpeg's concat demuxer (the standard way to turn an
     arbitrary sequence of same-size still images into a video - the
@@ -207,7 +245,17 @@ def compile_session_video(mode, start_ts, end_ts, frames):
     that went into it - the video is the lasting record from here on,
     not a second, redundant copy of every frame sitting alongside it on
     a Pi's small SD card. If anything goes wrong, the raw frames are left
-    untouched so nothing is ever lost to a failed compile."""
+    untouched so nothing is ever lost to a failed compile.
+
+    timeout_seconds: "auto" (the default, used by the capture loop)
+    scales with frame count via compile_timeout_for(); None means no
+    limit at all - that's what compile_timelapse.py uses for a manual
+    recovery run, where a person is deliberately waiting on it.
+    show_progress: stream ffmpeg's own progress line to the terminal
+    instead of capturing it (manual runs only - the service has no
+    terminal to show it on).
+
+    Returns True if a video was produced, False otherwise."""
     if not shutil.which("ffmpeg"):
         state.log_event(
             "warning",
@@ -218,14 +266,47 @@ def compile_session_video(mode, start_ts, end_ts, frames):
             "ffmpeg before too many more sessions pass if you want this feature.",
             category="camera_issue"
         )
-        return
+        return False
 
     os.makedirs(state.CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
+
+    # Cross-PROCESS guard (the _compiling_modes set above only covers
+    # threads inside this one service). compile_timelapse.py can now run
+    # a manual compile from an SSH session while this service is also
+    # running - without this, a mode change mid-way through a manual run
+    # would start a second compile over the same frames, and whichever
+    # finished second would try to delete frames the first already
+    # consumed. Non-blocking: if it's held, skip and leave the frames for
+    # a later compile, same "no data lost" outcome as every other skip.
+    lock_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{mode}.lock")
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        logging.warning(f"Timelapse: another process is already compiling {mode} - "
+                         "leaving these frames for the next compile")
+        return False
+    try:
+        return _compile_locked(mode, start_ts, end_ts, frames, timeout_seconds, show_progress)
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
+
+
+def _compile_locked(mode, start_ts, end_ts, frames, timeout_seconds, show_progress):
+    if timeout_seconds == "auto":
+        timeout_seconds = compile_timeout_for(len(frames))
+
     video_filename = f"{mode}_{int(start_ts)}_{int(end_ts)}.mp4"
     poster_filename = f"{mode}_{int(start_ts)}_{int(end_ts)}.jpg"
     video_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, video_filename)
     poster_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, poster_filename)
-    list_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{int(time.time())}.txt")
+    # Mode is in the name so two different modes' compiles starting in the
+    # same wall-clock second can't overwrite each other's list file - the
+    # same collision class the timelapse_videos id-vs-ts fix was about.
+    list_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR,
+                             f".compile_{mode}_{int(time.time())}.txt")
 
     frame_duration = 1.0 / state.TIMELAPSE_VIDEO_FPS
     with open(list_path, "w") as f:
@@ -244,40 +325,64 @@ def compile_session_video(mode, start_ts, end_ts, frames):
         last_escaped = os.path.join(state.CAMERA_TIMELAPSE_DIR, frames[-1]["filename"]).replace("'", "'\\''")
         f.write(f"file '{last_escaped}'\n")
 
+    # -r here is an OUTPUT constant frame rate, not a passthrough of
+    # the concat list's per-frame `duration` timing - deliberately
+    # NOT combined with -vsync/-fps_mode vfr, which newer ffmpeg
+    # rejects outright as contradictory with an explicit -r
+    # ("One of -r/-fpsmax was specified together a non-CFR -vsync").
+    # Letting ffmpeg resample each held-frame's duration to a fixed
+    # CFR output is exactly what's wanted here anyway, since
+    # state.TIMELAPSE_VIDEO_FPS is the real knob for playback speed.
+    cmd = ["nice", "-n", "19",
+           "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+           "-f", "concat", "-safe", "0", "-i", list_path,
+           "-c:v", "libx264", "-preset", COMPILE_X264_PRESET,
+           "-pix_fmt", "yuv420p", "-r", str(state.TIMELAPSE_VIDEO_FPS),
+           # moov atom up front so the dashboard can start playing a big
+           # video before the whole file has downloaded
+           "-movflags", "+faststart"]
+    if show_progress:
+        cmd.append("-stats")
+    cmd.append(video_path)
+
+    started = time.time()
     try:
-        # -r here is an OUTPUT constant frame rate, not a passthrough of
-        # the concat list's per-frame `duration` timing - deliberately
-        # NOT combined with -vsync/-fps_mode vfr, which newer ffmpeg
-        # rejects outright as contradictory with an explicit -r
-        # ("One of -r/-fpsmax was specified together a non-CFR -vsync").
-        # Letting ffmpeg resample each held-frame's duration to a fixed
-        # CFR output is exactly what's wanted here anyway, since
-        # state.TIMELAPSE_VIDEO_FPS is the real knob for playback speed.
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-             "-pix_fmt", "yuv420p", "-r", str(state.TIMELAPSE_VIDEO_FPS), video_path],
-            capture_output=True, text=True, timeout=COMPILE_TIMEOUT_SECONDS
-        )
+        if show_progress:
+            result = subprocess.run(cmd, stderr=None, stdout=subprocess.DEVNULL,
+                                    text=True, timeout=timeout_seconds)
+        else:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
+        # subprocess.run() has already killed ffmpeg by this point, which
+        # leaves a truncated .mp4 with no moov atom - unplayable, and
+        # previously just left sitting in timelapse_videos/ taking up
+        # space. Remove it; the raw frames are the real record until a
+        # compile succeeds.
+        if os.path.exists(video_path):
+            os.remove(video_path)
         state.log_event("error", f"Timelapse: ffmpeg timed out compiling {mode} session "
-                                  f"({len(frames)} frames) after {COMPILE_TIMEOUT_SECONDS}s - raw frames kept.",
+                                  f"({len(frames)} frames) after {timeout_seconds:.0f}s - raw frames kept. "
+                                  f"Run compile_timelapse.py {mode} on the Pi to compile them "
+                                  "with no time limit.",
                          category="camera_issue")
-        os.remove(list_path)
-        return
+        return False
     finally:
         if os.path.exists(list_path):
             os.remove(list_path)
+    elapsed = time.time() - started
 
     if result.returncode != 0 or not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+        stderr_tail = (result.stderr or "")[-500:]
         state.log_event(
             "error",
             f"Timelapse: ffmpeg failed compiling {mode} session ({len(frames)} frames) - "
-            f"raw frames kept. {result.stderr[-500:] if result.stderr else ''}",
+            f"raw frames kept. {stderr_tail}",
             category="camera_issue"
         )
         if os.path.exists(video_path):
             os.remove(video_path)
-        return
+        return False
 
     # Reuse an already-captured frame as the poster thumbnail (the middle
     # one reads as more representative of the session than the first)
@@ -296,11 +401,14 @@ def compile_session_video(mode, start_ts, end_ts, frames):
     # The video now IS the record of this session - the raw frames that
     # went into it would just be redundant disk usage from here on.
     state.delete_camera_snapshots([f["ts"] for f in frames])
+    # Encode time is logged so the per-frame timeout budget above can be
+    # sanity-checked against what this Pi actually takes.
     state.log_event(
         "info",
         f"Timelapse: compiled a {duration_seconds:.0f}s video from {len(frames)} {mode} "
-        f"frames ({file_size_bytes / (1024 * 1024):.1f}MB)"
+        f"frames ({file_size_bytes / (1024 * 1024):.1f}MB) in {elapsed:.0f}s"
     )
+    return True
 
 
 def fetch_snapshot(streamer_port):
