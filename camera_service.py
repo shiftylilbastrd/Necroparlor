@@ -278,7 +278,9 @@ def compile_session_video(mode, start_ts, end_ts, frames, timeout_seconds="auto"
     # finished second would try to delete frames the first already
     # consumed. Non-blocking: if it's held, skip and leave the frames for
     # a later compile, same "no data lost" outcome as every other skip.
-    lock_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{mode}.lock")
+    # The dashboard's purge button (shared_state.purge_camera_snapshots)
+    # takes this same lock, so it can't delete frames mid-encode either.
+    lock_path = state.compile_lock_path(mode)
     lock_file = open(lock_path, "w")
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)

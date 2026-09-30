@@ -412,6 +412,24 @@ def api_timelapse_videos_delete_many():
     return jsonify({"deleted": deleted, "not_found": [vid for vid in id_list if vid not in deleted]})
 
 
+@app.route("/api/timelapse/pending/purge", methods=["POST"])
+def api_timelapse_pending_purge():
+    """Timelapse page's "Purge pending frames" button - deletes every
+    kept, not-yet-compiled frame (compiled videos untouched). The
+    confirmation lives in the page's dialog; this just refuses with 409
+    while a compile is running rather than pulling frames out from
+    under ffmpeg (see shared_state.purge_camera_snapshots)."""
+    result = state.purge_camera_snapshots()
+    if "busy_mode" in result:
+        return jsonify({"error": f"A {result['busy_mode']} timelapse is compiling right now - "
+                                  "try again once it finishes."}), 409
+    total = result["removed"] + result["strays_removed"]
+    if total:
+        state.log_event("info", f"Timelapse: purged {total} pending frame(s) "
+                                 f"({result['freed_bytes'] / (1024 * 1024):.1f}MB) via dashboard")
+    return jsonify(result)
+
+
 @app.route("/api/camera-settings", methods=["POST"])
 def api_set_camera_settings():
     """[2026-09-14] device/width/height are camera-streamer's OWN capture

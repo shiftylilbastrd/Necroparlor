@@ -164,6 +164,10 @@ python3 compile_timelapse.py cleaning   # compiles them, no time limit, shows pr
 It's safe to run while the camera service is up. Leftover frames are
 also rolled into that mode's next automatic compile if you don't.
 
+To throw kept frames away instead, use **Purge pending frames** on the
+Timelapse page (asks for confirmation first; compiled videos aren't
+touched, and it refuses while a compile is running).
+
 1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
 2. Set device/resolution/port on the Config page, or in `config.json`:
    ```json

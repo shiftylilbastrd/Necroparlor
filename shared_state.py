@@ -2045,6 +2045,86 @@ def delete_camera_snapshots(ts_list):
     return removed
 
 
+def compile_lock_path(mode):
+    """Per-mode lock file camera_service.compile_session_video() holds
+    (fcntl.flock) for the whole of a compile - shared here so anything
+    else that touches a mode's raw frames (purge_camera_snapshots below,
+    compile_timelapse.py) can respect the same lock instead of deleting
+    frames out from under a running ffmpeg."""
+    return os.path.join(CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{mode}.lock")
+
+
+def purge_camera_snapshots(orphan_min_age_seconds=60):
+    """Deletes EVERY kept (uncompiled) timelapse frame - DB rows and
+    files - for the Timelapse page's "Purge pending frames" button.
+    Compiled videos and their posters are untouched.
+
+    Refuses (returns {"busy_mode": mode}) if any mode with frames has a
+    compile running, rather than deleting the JPEGs ffmpeg is reading
+    mid-encode; all involved modes' compile locks are held for the whole
+    purge so a compile can't start part-way through it either.
+
+    Also removes stray .jpg files in CAMERA_TIMELAPSE_DIR with no DB row
+    (e.g. left by a crash between writing a file and inserting its row),
+    but only ones older than orphan_min_age_seconds: save_camera_snapshot()
+    writes the file BEFORE inserting the row, so a brand-new frame is
+    briefly a "stray" - deleting it in that window would leave a row
+    pointing at a missing file, which would make that mode's next ffmpeg
+    compile fail."""
+    os.makedirs(CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
+    conn = get_db()
+    modes = [r[0] for r in conn.execute("SELECT DISTINCT mode FROM camera_snapshots").fetchall()]
+    conn.close()
+
+    held = []
+    try:
+        for mode in modes:
+            f = open(compile_lock_path(mode), "w")
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                f.close()
+                return {"busy_mode": mode}
+            held.append(f)
+
+        conn = get_db()
+        rows = conn.execute("SELECT ts, filename FROM camera_snapshots").fetchall()
+        removed, freed = 0, 0
+        known = set()
+        for ts, filename in rows:
+            known.add(filename)
+            path = os.path.join(CAMERA_TIMELAPSE_DIR, filename)
+            try:
+                freed += os.path.getsize(path)
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
+            removed += 1
+        conn.commit()
+        conn.close()
+
+        strays = 0
+        cutoff = time.time() - orphan_min_age_seconds
+        try:
+            with os.scandir(CAMERA_TIMELAPSE_DIR) as it:
+                for entry in it:
+                    if (entry.is_file() and entry.name.endswith(".jpg")
+                            and entry.name not in known):
+                        st = entry.stat()
+                        if st.st_mtime < cutoff:
+                            os.remove(entry.path)
+                            freed += st.st_size
+                            strays += 1
+        except FileNotFoundError:
+            pass
+        return {"removed": removed, "strays_removed": strays, "freed_bytes": freed}
+    finally:
+        for f in held:
+            fcntl.flock(f, fcntl.LOCK_UN)
+            f.close()
+
+
 def save_timelapse_video(mode, start_ts, end_ts, frame_count, filename, poster_filename,
                           duration_seconds, file_size_bytes):
     """Records a compiled session video - one row per completed

@@ -2259,10 +2259,18 @@ that aren't obvious from reading the code cold.
   one 350-frame video and clears the table; held lock makes the compile
   skip with frames untouched; CLI list / active-mode guard / unknown
   mode / root refusal / successful compile all behave as intended.
-  **Not verified**: actual encode speed on the Pi 4 (sandbox is x86, so
-  the 1.0s/frame budget is an estimate with deliberate headroom - check
-  the new "in Ns" figure in the compile log line after the first real
-  run), and the recovery of the real 8048-frame cleaning backlog itself.
+  **Confirmed on the benchtop Pi 4 (same day)**: `compile_timelapse.py
+  cleaning` recovered the real 8048-frame backlog - "compiled a 671s
+  video from 8048 cleaning frames (261.5MB) in 583s", raw frames
+  removed. That's ~13.8 fps / 0.072s per frame at 1280x720 `veryfast`,
+  so the automatic path's 1.0s/frame timeout budget has ~13x headroom.
+  By the ~2.5x `medium`-vs-`veryfast` ratio measured in the sandbox, the
+  old command would have run ~5 fps here - it could only ever have
+  compiled ~1500 frames (~25h at a 1-minute interval) inside the old
+  300s cap. During the encode: CPU ~40C (105F), load average ~9-10 on 4
+  cores (expected - x264 is heavily threaded, and it's niced). ~3.1
+  Mbps output (261.5MB for 11 min); if SD-card space for videos ever
+  matters, an explicit higher `-crf` is the knob, not a slower preset.
 
 - **[2026-09-29] Status-file staleness noted**: the 2026-09-17
   `camera-streamer` entry above still describes that rewrite as living on
@@ -2273,3 +2281,25 @@ that aren't obvious from reading the code cold.
   camera-streamer's setup has since been verified on the Pi is not
   recorded here either - the timelapse error itself implies snapshots
   are being captured, so at least `/snapshot` works.
+
+- **[2026-09-29] "Purge pending frames" button on the Timelapse page
+  (explicit request).** Deletes every kept, not-yet-compiled frame (DB
+  rows + JPEGs) behind a native `<dialog>` confirmation that states the
+  frame count and size, says the in-progress session is included, and
+  that compiled videos are untouched. Cancel and Esc both back out;
+  the button is disabled at 0 pending frames. Backend:
+  `POST /api/timelapse/pending/purge` ->
+  `shared_state.purge_camera_snapshots()`, logged as an info event.
+  **Deliberately takes the same per-mode compile lock** as
+  `camera_service.compile_session_video()` (path now shared as
+  `state.compile_lock_path()`), and refuses with a 409 ("a <mode>
+  timelapse is compiling right now") rather than deleting JPEGs ffmpeg
+  is mid-way through reading. Also sweeps stray `.jpg` files with no DB
+  row, but **only ones older than 60s** - `save_camera_snapshot()`
+  writes the file before inserting its row, so a brand-new frame is
+  briefly "stray"; deleting it in that window would leave a row pointing
+  at a missing file and make that mode's next compile fail. Verified in
+  the sandbox with a real Flask server + headless Chromium: dialog
+  content, Cancel/Esc, the 409 while a lock is held (0 frames deleted),
+  and a real purge (DB emptied, header updates to 0, button disables,
+  fresh stray kept, old stray removed). Not yet clicked on the real Pi.

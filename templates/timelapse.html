@@ -48,6 +48,26 @@
     position: absolute; top: 16px; right: 20px; font-size: 1.6rem; color: #fff;
     background: none; border: none; cursor: pointer;
   }
+  .purge-row { display: flex; align-items: center; gap: 12px; margin: 10px 0 4px; }
+  .danger-btn {
+    background: var(--panel); border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.85rem;
+  }
+  .danger-btn:disabled { opacity: 0.4; cursor: default; }
+  .danger-btn.solid { background: var(--danger); color: #fff; }
+  #purgeDialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 20px; max-width: 420px; width: calc(100% - 32px);
+  }
+  #purgeDialog::backdrop { background: rgba(0,0,0,0.6); }
+  #purgeDialog h2 { margin: 0 0 10px; font-size: 1.05rem; }
+  #purgeDialog p { margin: 0 0 10px; font-size: 0.9rem; color: var(--text-dim); line-height: 1.45; }
+  #purgeDialog p strong { color: var(--text); }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .dialog-actions button:not(.danger-btn) {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.85rem;
+  }
 </style>
 {% endblock %}
 {% block content %}
@@ -72,6 +92,23 @@
     <div class="stat-sub">By the current, uncompiled frames</div>
   </div>
 </div>
+
+<div class="purge-row">
+  <button class="danger-btn" id="purgeBtn" onclick="openPurgeDialog()" disabled>Purge pending frames</button>
+  <span class="stat-sub" id="purgeStatus"></span>
+</div>
+
+<dialog id="purgeDialog">
+  <h2>Purge pending frames?</h2>
+  <p>This permanently deletes <strong id="purgeDialogCount">0 frames</strong>
+     (<strong id="purgeDialogSize">0 B</strong>) that haven't been compiled into a video yet,
+     including the session that's recording right now.</p>
+  <p>Compiled videos below aren't affected. This can't be undone.</p>
+  <div class="dialog-actions">
+    <button onclick="closePurgeDialog()" autofocus>Cancel</button>
+    <button class="danger-btn solid" id="purgeConfirmBtn" onclick="confirmPurge()">Delete frames</button>
+  </div>
+</dialog>
 
 <div class="bulk-bar" id="bulkBar">
   <span id="bulkCount"></span>
@@ -266,10 +303,47 @@ function closeLightbox() {
   document.getElementById('videoLightbox').classList.remove('visible');
 }
 
+let lastPending = {count: 0, disk_bytes: 0};
+
+function openPurgeDialog() {
+  document.getElementById('purgeDialogCount').textContent =
+    `${lastPending.count} frame${lastPending.count === 1 ? '' : 's'}`;
+  document.getElementById('purgeDialogSize').textContent = fmtSize(lastPending.disk_bytes);
+  document.getElementById('purgeDialog').showModal();
+}
+
+function closePurgeDialog() {
+  document.getElementById('purgeDialog').close();
+}
+
+async function confirmPurge() {
+  const btn = document.getElementById('purgeConfirmBtn');
+  const status = document.getElementById('purgeStatus');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/timelapse/pending/purge', {method: 'POST'});
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'Purge failed.';
+    } else {
+      const n = data.removed;
+      const strays = data.strays_removed ? ` plus ${data.strays_removed} orphaned file${data.strays_removed === 1 ? '' : 's'}` : '';
+      status.textContent = `Purged ${n} frame${n === 1 ? '' : 's'}${strays} (${fmtSize(data.freed_bytes)} freed).`;
+    }
+  } catch (e) {
+    status.textContent = 'Purge failed - dashboard unreachable.';
+  }
+  btn.disabled = false;
+  closePurgeDialog();
+  refreshPendingStats();
+}
+
 async function refreshPendingStats() {
   try {
     const res = await fetch('/api/timelapse/pending');
     const data = await res.json();
+    lastPending = data;
+    document.getElementById('purgeBtn').disabled = !data.count;
     document.getElementById('pendingCount').textContent = data.count;
     document.getElementById('pendingDuration').textContent =
       data.count ? fmtDuration(data.estimated_video_seconds) : '--';
