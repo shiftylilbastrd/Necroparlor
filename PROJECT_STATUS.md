@@ -2319,3 +2319,22 @@ that aren't obvious from reading the code cold.
   each dialog's text, Cancel and Esc deleting nothing, confirm deleting
   exactly the chosen video(s), selection surviving a cancelled bulk
   delete, 0 JS errors.
+
+- **[2026-09-29] Pending on-Pi verification (Ryan: "verify function of
+  all that later")** - checklist for the three 2026-09-29 timelapse
+  entries above. Tick these off (or record what broke) here:
+  - [ ] **Automatic compile on a mode change** completes without timing
+        out, and its log line's "in Ns" is in line with ~0.07s/frame.
+        The manual `compile_timelapse.py` recovery path is already
+        confirmed (8048 frames, 583s); the automatic path after a real
+        mode switch is not.
+  - [ ] **Leftover-frame rollover**: frames left behind by a skipped or
+        failed compile get included in that mode's next automatic
+        compile (without needing a service restart).
+  - [ ] **Purge pending frames** button: enables once Pending frames > 0,
+        dialog shows the right count/size, Cancel/Esc delete nothing,
+        confirm empties the pending count; ideally also see it refuse
+        with the "compiling right now" message during a compile.
+  - [ ] **Video delete confirmations**: single Delete and Delete selected
+        both open the dialog first; Cancel/Esc keep the video(s); the
+        red button deletes exactly the chosen one(s).
