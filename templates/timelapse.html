@@ -49,6 +49,27 @@
     background: none; border: none; cursor: pointer;
   }
   .purge-row { display: flex; align-items: center; gap: 12px; margin: 10px 0 4px; }
+  .session-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 0; border-top: 1px solid var(--panel-border);
+  }
+  .session-row:first-of-type { border-top: none; padding-top: 4px; }
+  .session-info { flex: 1; min-width: 220px; font-size: 0.85rem; color: var(--text-dim); line-height: 1.45; }
+  .session-info strong { color: var(--text); }
+  .session-info .current-tag {
+    font-size: 0.7rem; color: var(--accent); border: 1px solid var(--accent);
+    border-radius: 999px; padding: 0 6px; margin-left: 6px;
+  }
+  .session-actions { display: flex; gap: 8px; align-items: center; }
+  .session-actions .save-btn { margin-top: 0; }
+  .ghost-btn {
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text);
+    border-radius: 6px; padding: 8px 14px; cursor: pointer; font-weight: 600;
+  }
+  .ghost-btn:disabled, .session-actions .save-btn:disabled { opacity: 0.4; cursor: default; }
+  .progress-bar { height: 4px; background: var(--panel-border); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .progress-bar > div { height: 100%; background: var(--accent); width: 0; transition: width 0.4s; }
+  .overlay-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-dim); margin-top: 12px; }
 </style>
 {% endblock %}
 {% block content %}
@@ -77,6 +98,20 @@
 <div class="purge-row">
   <button class="danger-btn" id="purgeBtn" onclick="purgePending()" disabled>Purge pending frames</button>
   <span class="stat-sub" id="purgeStatus"></span>
+</div>
+
+<div class="card" style="margin:14px 0;">
+  <h2>Progress preview</h2>
+  <div class="stat-sub" style="margin-bottom:8px;">
+    Builds a video of the frames captured so far without deleting them - the full video is still made from every
+    frame when the mode changes. Previews aren't added to the gallery below.
+  </div>
+  <div id="sessionRows"><div class="stat-sub">Loading...</div></div>
+  <label class="overlay-toggle">
+    <input type="checkbox" id="overlayToggle" onchange="saveOverlay()">
+    Burn date/time and elapsed time into new videos and previews
+    <span class="save-msg" id="overlayMsg" style="margin:0;"></span>
+  </label>
 </div>
 
 
@@ -281,6 +316,88 @@ function downloadSelected() {
   });
 }
 
+function openLightboxUrl(url) {
+  document.getElementById('lightboxVideo').src = url;
+  document.getElementById('videoLightbox').classList.add('visible');
+}
+
+function fmtWhen(ts) {
+  return new Date(ts * 1000).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
+}
+
+let sessionPollTimer = null;
+let overlayToggleLoaded = false;
+
+function sessionRowHtml(s, busy) {
+  const current = s.is_current ? '<span class="current-tag">current</span>' : '';
+  let info = `<strong>${escapeHtml(s.label)}</strong>${current}<br>` +
+    `${s.count.toLocaleString()} frame${s.count === 1 ? '' : 's'} · ${escapeHtml(fmtWhen(s.first_ts))} → ${escapeHtml(fmtWhen(s.last_ts))}`;
+  let actions = '';
+  if (s.building) {
+    const pct = s.building.total ? Math.floor(100 * s.building.done / s.building.total) : 0;
+    info += `<br>Building preview… ${pct}% (${s.building.done.toLocaleString()} of ${s.building.total.toLocaleString()} frames)` +
+      `<div class="progress-bar"><div style="width:${pct}%"></div></div>`;
+  } else if (s.last_error) {
+    info += `<br><span style="color:var(--danger);">Preview failed: ${escapeHtml(s.last_error)}</span>`;
+  }
+  if (s.preview) {
+    const newer = s.count - s.preview.frame_count;
+    info += `<br>Preview built ${escapeHtml(fmtWhen(s.preview.built_ts))} from ${s.preview.frame_count.toLocaleString()} frames` +
+      (newer > 0 ? ` · ${newer.toLocaleString()} newer frame${newer === 1 ? '' : 's'} since` : ' · up to date');
+    actions += `<button class="ghost-btn" onclick="openLightboxUrl('${s.preview.url}')">&#9654; Watch</button>`;
+  }
+  const label = s.preview ? 'Rebuild preview' : 'Build preview';
+  const disabled = busy || s.count < 3 ? 'disabled' : '';
+  const title = s.count < 3 ? 'title="Needs at least 3 frames"' : (busy ? 'title="Another preview is building"' : '');
+  actions += `<button class="save-btn" ${disabled} ${title} onclick="buildPreview('${s.mode}')">${label}</button>`;
+  return `<div class="session-row"><div class="session-info">${info}</div><div class="session-actions">${actions}</div></div>`;
+}
+
+async function refreshSessions() {
+  clearTimeout(sessionPollTimer);
+  let busy = false;
+  try {
+    const res = await fetch('/api/timelapse/sessions');
+    const data = await res.json();
+    busy = data.busy;
+    const rows = document.getElementById('sessionRows');
+    rows.innerHTML = data.sessions.length
+      ? data.sessions.map(s => sessionRowHtml(s, data.busy)).join('')
+      : '<div class="stat-sub">No pending frames right now - nothing to preview.</div>';
+    if (!overlayToggleLoaded) {
+      document.getElementById('overlayToggle').checked = data.overlay;
+      overlayToggleLoaded = true;
+    }
+  } catch (e) { /* try again next tick */ }
+  // Poll fast only while a build is running.
+  sessionPollTimer = setTimeout(refreshSessions, busy ? 2000 : 15000);
+}
+
+async function buildPreview(mode) {
+  const res = await fetch(`/api/timelapse/preview/${mode}`, {method: 'POST'});
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alertInline(data.error || 'Could not start the preview.');
+  }
+  refreshSessions();
+}
+
+function alertInline(text) {
+  const rows = document.getElementById('sessionRows');
+  rows.insertAdjacentHTML('afterbegin', `<div class="save-msg err">${escapeHtml(text)}</div>`);
+}
+
+async function saveOverlay() {
+  const overlay = document.getElementById('overlayToggle').checked;
+  const msg = document.getElementById('overlayMsg');
+  const res = await fetch('/api/timelapse/settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({overlay})
+  });
+  msg.textContent = res.ok ? 'Saved' : 'Save failed';
+  msg.className = 'save-msg ' + (res.ok ? 'ok' : 'err');
+  setTimeout(() => { msg.textContent = ''; }, 2000);
+}
+
 function openLightbox(id) {
   const v = videosById[id];
   if (!v) return;
@@ -323,6 +440,7 @@ async function purgePending() {
     status.textContent = 'Purge failed - dashboard unreachable.';
   }
   refreshPendingStats();
+  refreshSessions();
 }
 
 async function refreshPendingStats() {
@@ -344,5 +462,6 @@ async function refreshPendingStats() {
 loadVideos();
 refreshPendingStats();
 setInterval(refreshPendingStats, 15000);
+refreshSessions();
 </script>
 {% endblock %}

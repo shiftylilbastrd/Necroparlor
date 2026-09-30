@@ -2359,6 +2359,10 @@ that aren't obvious from reading the code cold.
         clearing benchtop history works on the real Pi (download a copy
         first if wanted); the hourly trim leaves nothing older than the
         retention setting.
+  - [ ] **Timelapse overlay + previews**: a preview of the current session
+        builds and plays in a real browser with the timestamp overlay
+        visible; the next real compile also has it (Pi's ffmpeg is 7.x vs
+        the sandbox's 6.1.1).
 
 - **[2026-09-29] External fallback probe can now be an SHT31 (explicit
   request).** Ryan has two prewired SHT31 probes (~5 ft leads): one
@@ -2522,3 +2526,63 @@ that aren't obvious from reading the code cold.
   pages load with 0 JS errors. README's "Dashboard pages" list was also
   stale (no Settings page; credited Config with sections that moved) -
   fixed. **Verified in sandbox only**, not on the Pi.
+
+- **[2026-09-30] Timestamp overlay + progress previews on the Timelapse
+  page (explicit requests), and a real frame-loss bug found while
+  testing them.**
+
+  **Shared encoder, `timelapse_encode.py` (new).** The ffmpeg command,
+  x264 preset, and timeout budget moved out of `camera_service.py` so the
+  real compile, `compile_timelapse.py` (via camera_service) and previews
+  all encode identically. `camera_service.COMPILE_*` /
+  `compile_timeout_for` remain as aliases.
+
+  **Overlay**: `Cleaning · Sep 29, 2:05 PM · +2d 04h 12m` bottom-left on
+  every frame (capture time in `state.LOCAL_TZ`, elapsed since the first
+  frame being encoded). Done without rewriting JPEGs: each concat-list
+  entry gets `file_packet_metadata 'overlay=<label>'` (the value MUST be
+  quoted - unquoted it's cut at the first space) and one drawtext prints
+  `%{metadata:overlay}`. No measurable encode cost (400 frames: 5.0s vs
+  5.5s plain). Config `timelapse_overlay` (default true), checkbox on the
+  Timelapse page. If an overlay encode fails for a non-timeout reason it
+  retries once without the overlay (logged warning) - a font/filter
+  problem costs the timestamps, never the video. Uses DejaVuSans-Bold,
+  falls back to fontconfig's default.
+
+  **Previews**: "Build preview" per mode with pending frames ->
+  `POST /api/timelapse/preview/<mode>`; runs in a webapp.py thread,
+  one at a time, niced; builds to `.building_<mode>.mp4` and swaps in on
+  success; stored in the new `camera/timelapse_previews/` (NOT the
+  gallery dir, no `timelapse_videos` row, never deletes frames). Live
+  progress via ffmpeg `-progress pipe:1`. **Deliberately does not take
+  the per-mode compile lock** - a preview must never delay or skip a real
+  compile; if the frames get compiled/purged mid-build the preview just
+  fails and says so. Previews are deleted when their frames are compiled
+  (camera_service) or purged (purge_camera_snapshots), and
+  `/api/timelapse/sessions` self-heals any preview whose mode has no
+  pending frames left.
+
+  **Bug fixed (pre-existing, affected the real compile):** when a frame's
+  JPEG is missing, ffmpeg's concat demuxer logs "Impossible to open",
+  **stops reading the list, and still exits 0** - a truncated video that
+  looked like success. `camera_service` then deleted ALL the session's
+  frames, silently losing everything after the gap (e.g. if the
+  low-disk safety net pruned frames mid-encode, or a DB row existed
+  without its file). `encode()` now skips frames whose file is already
+  missing (logged; their dangling rows are cleaned up with the rest) and
+  verifies the finished video's duration via ffprobe - short = failure,
+  frames kept. Verified: 300 of 800 files deleted mid-compile -> "video
+  came out truncated (500 of 800 frames)", 0 rows deleted; 2 files
+  missing beforehand -> 48-frame video + warning + rows cleaned.
+
+  **Verified in sandbox** (real ffmpeg 6.1.1, Flask, headless Chromium):
+  overlay text on real frames of both preview and final video; preview
+  build with climbing progress, second build -> 409, frames and gallery
+  untouched, "N newer frames since" after new captures, overlay toggle
+  persists, purge removes previews; preview failing cleanly when frames
+  vanish; `compile_timelapse.py` end to end; Timelapse delete/bulk/purge
+  regression, 0 JS errors. Couldn't play the MP4 in the test browser
+  (Playwright's Chromium has no H.264) - checked the file with ffprobe
+  and the route serves it with range requests (206) instead. **Not on the
+  Pi yet** - in particular the overlay's font path and the Pi's ffmpeg
+  7.x `file_packet_metadata` behaviour.

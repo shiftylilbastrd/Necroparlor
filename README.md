@@ -11,12 +11,14 @@ Raspberry Pi climate control for a dermestid beetle colony living in a converted
 | `climate.py` | Main control loop — heater, fan/vent servo, dehumidifier, door light. Always running. |
 | `webapp.py` | Flask dashboard — live readings/history, mode switching, setpoints. |
 | `shared_state.py` | Shared config + SQLite helpers used by every other script. Must live in the same folder. |
-| `templates/` | Dashboard pages: `base.html` (nav/layout), `home.html`, `logs.html`, `data.html`, `config.html`, `timelapse.html`. |
+| `templates/` | Dashboard pages: `base.html` (nav/layout, shared confirm dialog), `home.html`, `logs.html`, `data.html`, `timelapse.html`, `config.html`, `settings.html`. |
 | `config.json` | Current mode, setpoints, sensor/camera settings. Auto-created if missing. |
 | `ble_listener.py` | Optional — listens for a BLE temp/humidity sensor (SensorPush, Govee, INKBIRD, Xiaomi, RuuviTag) as the external reading. |
 | `ble_battery.py` | Optional — periodic battery check (SensorPush HT1 only; other brands broadcast battery for free). |
 | `discover_ble_sensor.py` | One-time helper to find a BLE sensor's address. |
 | `camera_service.py` | Optional — per-mode timelapse capture only (pulls snapshots from camera-streamer's HTTP API). Live view itself is served by camera-streamer, a separate daemon — see `docs/camera-streamer-setup.md`. |
+| `timelapse_encode.py` | The one ffmpeg encode used for every timelapse video and progress preview (timestamp overlay, timeout, truncation check). |
+| `compile_timelapse.py` | Manual recovery — compiles a mode's kept frames over SSH with no time limit. |
 | `discover_camera.py` | One-time helper to find the webcam's `/dev/videoN` index. |
 | `auto_update.sh` | Pulls from git and restarts the affected services. |
 | `systemd/` | Unit/timer files so everything runs on boot and restarts on crash. |
@@ -196,6 +198,18 @@ also rolled into that mode's next automatic compile if you don't.
 To throw kept frames away instead, use **Purge pending frames** on the
 Timelapse page (asks for confirmation first; compiled videos aren't
 touched, and it refuses while a compile is running).
+
+**Progress previews and timestamps.** The Timelapse page's **Progress
+preview** card has a **Build preview** button per mode with pending
+frames: it encodes the frames captured so far into a separate preview
+video (watch it right there) *without* deleting them or adding anything to
+the gallery — the full video is still made from every frame at the next
+mode change. One preview builds at a time (it's a full-CPU job, run at the
+lowest priority), each mode keeps only its latest preview, and a preview is
+removed once its frames are compiled or purged. New videos and previews
+get the capture time and time elapsed since the session started burned
+into each frame (e.g. `Cleaning · Sep 29, 2:05 PM · +2d 04h 12m`); the
+checkbox in the same card turns that off.
 
 1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
 2. Set device/resolution/port on the Config page, or in `config.json`:

@@ -51,6 +51,11 @@ DB_PATH = os.path.join(BASE_DIR, "dermestid.db")
 CAMERA_DIR = os.path.join(BASE_DIR, "camera")
 CAMERA_TIMELAPSE_DIR = os.path.join(CAMERA_DIR, "timelapse")
 CAMERA_TIMELAPSE_VIDEOS_DIR = os.path.join(CAMERA_DIR, "timelapse_videos")
+# Progress previews (Timelapse page "Build preview") - one .mp4 + .json per
+# mode, rebuilt on demand from that mode's still-pending frames and never
+# added to the timelapse_videos gallery. Kept out of the videos dir so
+# nothing that walks the gallery ever mistakes one for a real video.
+CAMERA_TIMELAPSE_PREVIEWS_DIR = os.path.join(CAMERA_DIR, "timelapse_previews")
 
 # Playback speed of a compiled session video, in frames per second of
 # OUTPUT video - unrelated to the capture cadence (snapshot_interval_
@@ -97,6 +102,10 @@ DEFAULT_CONFIG = {
     # keep forever. climate.py logs a readings row every cycle (~5,800/day,
     # ~2M/year), and before this existed nothing ever deleted any of it.
     "history_retention_days": 365,
+    # Burn each frame's capture time + time elapsed since the session
+    # started into compiled timelapse videos and previews (see
+    # timelapse_encode.py). Toggle on the Timelapse page.
+    "timelapse_overlay": True,
     # Which git branch auto_update.sh and the background checker track.
     # Defaults to main - switching this to anything else means running
     # code that hasn't gone through the same scrutiny as what actually
@@ -1849,6 +1858,56 @@ HISTORY_DELETE_BATCH = 2000
 HISTORY_DELETE_PAUSE_SECONDS = 0.05
 
 
+def get_pending_sessions():
+    """One entry per mode that has pending (not-yet-compiled) frames:
+    mode, count, first_ts, last_ts - oldest mode first. What the Timelapse
+    page's per-mode preview rows are built from."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots GROUP BY mode ORDER BY MIN(ts)"
+    ).fetchall()
+    conn.close()
+    return [{"mode": m, "count": c, "first_ts": f, "last_ts": l} for m, c, f, l in rows]
+
+
+def timelapse_preview_paths(mode):
+    base = os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, f"preview_{mode}")
+    return base + ".mp4", base + ".json"
+
+
+def get_timelapse_preview(mode):
+    """The existing preview for `mode` (dict with frame_count, first_ts,
+    last_ts, built_ts, file_size_bytes, overlay) or None."""
+    video_path, meta_path = timelapse_preview_paths(mode)
+    if not os.path.exists(video_path):
+        return None
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        meta = {}
+    meta["file_size_bytes"] = os.path.getsize(video_path)
+    return meta
+
+
+def delete_timelapse_previews(mode=None):
+    """Removes the preview for one mode, or all of them (mode=None) - called
+    when the frames a preview was built from stop existing (a real compile
+    consumed them, or they were purged), so a stale preview can't be
+    mistaken for current progress."""
+    try:
+        names = os.listdir(CAMERA_TIMELAPSE_PREVIEWS_DIR)
+    except FileNotFoundError:
+        return
+    prefix = "preview_" if mode is None else f"preview_{mode}."
+    for name in names:
+        if name.startswith(prefix):
+            try:
+                os.remove(os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, name))
+            except OSError:
+                pass
+
+
 def get_history_stats():
     """Row counts and oldest timestamp per history table, plus the
     database's size on disk (main file + WAL) - for the Settings page's
@@ -2233,6 +2292,8 @@ def purge_camera_snapshots(orphan_min_age_seconds=60):
                             strays += 1
         except FileNotFoundError:
             pass
+        # Previews were built from the frames just deleted.
+        delete_timelapse_previews()
         return {"removed": removed, "strays_removed": strays, "freed_bytes": freed}
     finally:
         for f in held:

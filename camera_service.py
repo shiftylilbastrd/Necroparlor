@@ -69,13 +69,13 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 import shutil
-import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
 
 import shared_state as state
+import timelapse_encode
 
 LOG_DIR = os.path.join(state.BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -151,36 +151,14 @@ MINIMUM_FRAMES_FOR_VIDEO = 3
 # using this exact same number instead of a second, driftable copy of
 # it. Edit it there if you want a different pace.
 
-# Safety cap on the ffmpeg subprocess itself, same watchdog philosophy as
-# the rest of this file - compiling runs in a background thread (see
-# maybe_compile_session), so a hang here can't block the (much lighter,
-# now HTTP-only) capture loop, but it should still never be allowed to
-# run forever.
-#
-# [2026-09-29] This used to be a flat 300s regardless of session size,
-# which made any long session impossible to compile: encode time scales
-# linearly with frame count, and a multi-day cleaning session at a
-# 1-minute interval (8048 frames, the real failure that prompted this)
-# needs far longer than 5 minutes on a Pi no matter how the encoder is
-# tuned. The cap now scales with the frame count - a generous per-frame
-# budget (roughly 10x what a Pi 4 should actually need at the preset
-# below) with a floor for tiny sessions - so it still catches a genuine
-# hang, just not a legitimately big job.
-COMPILE_TIMEOUT_FLOOR_SECONDS = 300
-COMPILE_TIMEOUT_PER_FRAME_SECONDS = 1.0
-
-
-def compile_timeout_for(frame_count):
-    return max(COMPILE_TIMEOUT_FLOOR_SECONDS, frame_count * COMPILE_TIMEOUT_PER_FRAME_SECONDS)
-
-
-# x264 preset for the compile. ffmpeg's implicit default is "medium";
-# "veryfast" measured ~2.5x faster on identical 1280x720 frames with an
-# essentially identical (slightly smaller, even) output file - a static
-# timelapse scene gives the slower presets' extra motion search nothing
-# to find. The encode also runs under `nice -n 19` so it can never
-# compete with climate.py (the actually safety-critical process) for CPU.
-COMPILE_X264_PRESET = "veryfast"
+# Timeout budget, x264 preset and the ffmpeg command itself now live in
+# timelapse_encode.py, shared with the Timelapse page's preview builds so
+# a preview is always encoded exactly like the final video. These names
+# are kept as aliases for anything that still refers to them.
+COMPILE_TIMEOUT_FLOOR_SECONDS = timelapse_encode.TIMEOUT_FLOOR_SECONDS
+COMPILE_TIMEOUT_PER_FRAME_SECONDS = timelapse_encode.TIMEOUT_PER_FRAME_SECONDS
+COMPILE_X264_PRESET = timelapse_encode.X264_PRESET
+compile_timeout_for = timelapse_encode.timeout_for
 
 # Which modes currently have a compile running in a background thread -
 # guards against a rapidly-flapping mode triggering two overlapping
@@ -297,93 +275,28 @@ def compile_session_video(mode, start_ts, end_ts, frames, timeout_seconds="auto"
 
 
 def _compile_locked(mode, start_ts, end_ts, frames, timeout_seconds, show_progress):
-    if timeout_seconds == "auto":
-        timeout_seconds = compile_timeout_for(len(frames))
-
     video_filename = f"{mode}_{int(start_ts)}_{int(end_ts)}.mp4"
     poster_filename = f"{mode}_{int(start_ts)}_{int(end_ts)}.jpg"
     video_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, video_filename)
     poster_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, poster_filename)
-    # Mode is in the name so two different modes' compiles starting in the
-    # same wall-clock second can't overwrite each other's list file - the
-    # same collision class the timelapse_videos id-vs-ts fix was about.
-    list_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR,
-                             f".compile_{mode}_{int(time.time())}.txt")
 
-    frame_duration = 1.0 / state.TIMELAPSE_VIDEO_FPS
-    with open(list_path, "w") as f:
-        for frame in frames:
-            frame_path = os.path.join(state.CAMERA_TIMELAPSE_DIR, frame["filename"])
-            # ffmpeg's concat demuxer has its own tiny quoting format for
-            # this list file - single quotes around the path, with a
-            # literal single quote escaped as '\''. Irrelevant for our
-            # own epoch-integer.jpg filenames in practice, but cheap
-            # insurance against ever choking on a stray character.
-            escaped = frame_path.replace("'", "'\\''")
-            f.write(f"file '{escaped}'\nduration {frame_duration}\n")
-        # concat demuxer quirk: `duration` on the LAST entry is ignored
-        # unless that same file is also listed once more after it, with
-        # no duration of its own.
-        last_escaped = os.path.join(state.CAMERA_TIMELAPSE_DIR, frames[-1]["filename"]).replace("'", "'\\''")
-        f.write(f"file '{last_escaped}'\n")
-
-    # -r here is an OUTPUT constant frame rate, not a passthrough of
-    # the concat list's per-frame `duration` timing - deliberately
-    # NOT combined with -vsync/-fps_mode vfr, which newer ffmpeg
-    # rejects outright as contradictory with an explicit -r
-    # ("One of -r/-fpsmax was specified together a non-CFR -vsync").
-    # Letting ffmpeg resample each held-frame's duration to a fixed
-    # CFR output is exactly what's wanted here anyway, since
-    # state.TIMELAPSE_VIDEO_FPS is the real knob for playback speed.
-    cmd = ["nice", "-n", "19",
-           "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-           "-f", "concat", "-safe", "0", "-i", list_path,
-           "-c:v", "libx264", "-preset", COMPILE_X264_PRESET,
-           "-pix_fmt", "yuv420p", "-r", str(state.TIMELAPSE_VIDEO_FPS),
-           # moov atom up front so the dashboard can start playing a big
-           # video before the whole file has downloaded
-           "-movflags", "+faststart"]
-    if show_progress:
-        cmd.append("-stats")
-    cmd.append(video_path)
-
-    started = time.time()
-    try:
-        if show_progress:
-            result = subprocess.run(cmd, stderr=None, stdout=subprocess.DEVNULL,
-                                    text=True, timeout=timeout_seconds)
-        else:
-            result = subprocess.run(cmd, capture_output=True, text=True,
-                                    timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        # subprocess.run() has already killed ffmpeg by this point, which
-        # leaves a truncated .mp4 with no moov atom - unplayable, and
-        # previously just left sitting in timelapse_videos/ taking up
-        # space. Remove it; the raw frames are the real record until a
-        # compile succeeds.
-        if os.path.exists(video_path):
-            os.remove(video_path)
+    result = timelapse_encode.encode(mode, frames, video_path, timeout_seconds=timeout_seconds,
+                                     show_progress=show_progress)
+    if result["timed_out"]:
+        limit = timelapse_encode.timeout_for(len(frames)) if timeout_seconds == "auto" else timeout_seconds
         state.log_event("error", f"Timelapse: ffmpeg timed out compiling {mode} session "
-                                  f"({len(frames)} frames) after {timeout_seconds:.0f}s - raw frames kept. "
+                                  f"({len(frames)} frames) after {limit:.0f}s - raw frames kept. "
                                   f"Run compile_timelapse.py {mode} on the Pi to compile them "
                                   "with no time limit.",
                          category="camera_issue")
         return False
-    finally:
-        if os.path.exists(list_path):
-            os.remove(list_path)
-    elapsed = time.time() - started
-
-    if result.returncode != 0 or not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
-        stderr_tail = (result.stderr or "")[-500:]
+    if not result["ok"]:
         state.log_event(
             "error",
             f"Timelapse: ffmpeg failed compiling {mode} session ({len(frames)} frames) - "
-            f"raw frames kept. {stderr_tail}",
+            f"raw frames kept. {result['error']}",
             category="camera_issue"
         )
-        if os.path.exists(video_path):
-            os.remove(video_path)
         return False
 
     # Reuse an already-captured frame as the poster thumbnail (the middle
@@ -396,19 +309,29 @@ def _compile_locked(mode, start_ts, end_ts, frames, timeout_seconds, show_progre
     except FileNotFoundError:
         poster_filename = None
 
-    duration_seconds = len(frames) / state.TIMELAPSE_VIDEO_FPS
+    if result["skipped"]:
+        # Rows whose JPEG was already gone (e.g. a crash between writing a
+        # file and its DB row, or a manual delete). They're dropped from
+        # the video and their dangling rows cleaned up with the rest below.
+        state.log_event("warning", f"Timelapse: {result['skipped']} {mode} frame(s) had no image file "
+                                    "and were left out of the video", category="camera_issue")
+    duration_seconds = result["frames_encoded"] / state.TIMELAPSE_VIDEO_FPS
     file_size_bytes = os.path.getsize(video_path)
-    state.save_timelapse_video(mode, start_ts, end_ts, len(frames), video_filename,
+    state.save_timelapse_video(mode, start_ts, end_ts, result["frames_encoded"], video_filename,
                                 poster_filename, duration_seconds, file_size_bytes)
     # The video now IS the record of this session - the raw frames that
     # went into it would just be redundant disk usage from here on.
     state.delete_camera_snapshots([f["ts"] for f in frames])
-    # Encode time is logged so the per-frame timeout budget above can be
+    # Any progress preview of this mode was built from the frames just
+    # deleted - it's superseded by the real video.
+    state.delete_timelapse_previews(mode)
+    # Encode time is logged so the per-frame timeout budget can be
     # sanity-checked against what this Pi actually takes.
     state.log_event(
         "info",
-        f"Timelapse: compiled a {duration_seconds:.0f}s video from {len(frames)} {mode} "
-        f"frames ({file_size_bytes / (1024 * 1024):.1f}MB) in {elapsed:.0f}s"
+        f"Timelapse: compiled a {duration_seconds:.0f}s video from {result['frames_encoded']} {mode} "
+        f"frames ({file_size_bytes / (1024 * 1024):.1f}MB) in {result['elapsed']:.0f}s"
+        + ("" if result["overlay"] or not timelapse_encode.overlay_enabled() else " - without the timestamp overlay")
     )
     return True
 
