@@ -111,6 +111,15 @@
     margin-top: 6px; background: var(--accent); border: none; color: #0d1712;
     font-weight: 600; padding: 8px 14px; border-radius: 6px; cursor: pointer;
   }
+  /* Same shape as .save-btn, but for an action that's destructive/
+     disruptive rather than a routine save (Settings page: "Clear
+     selected history", "Restart Pi") - was already referenced by class
+     name on both buttons with no definition anywhere, so neither
+     actually rendered any differently from a bare, unstyled <button>. */
+  .danger-btn {
+    margin-top: 6px; background: var(--danger); border: none; color: #fff;
+    font-weight: 600; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+  }
   .save-msg { font-size: 0.8rem; margin-top: 6px; min-height: 1em; }
   .save-msg.ok { color: var(--accent); }
   .save-msg.err { color: var(--danger); }

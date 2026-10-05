@@ -285,6 +285,7 @@ pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart dermestid-camera.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart camera-streamer.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl stop camera-streamer.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl start camera-streamer.service
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 ```
 (Run `which systemctl` first — the path must match exactly.)
 
@@ -303,14 +304,19 @@ sudo systemctl enable --now dermestid-autoupdate.timer
 
 Local `config.json` changes are stashed before pulling and restored after (a warning is logged if that ever conflicts). Anything pushed to your GitHub repo can end up running on the Pi within the check interval.
 
+## Restarting the Pi
+
+The Settings page's **System** card has a **Restart Pi** button for a full reboot of the Raspberry Pi itself - not just one service, everything (climate control, the camera, this dashboard). It asks for confirmation first, since it's disruptive and can't be undone once clicked. Needs the same `systemctl reboot` sudoers line added above - without it, the button logs an attempt but the actual reboot silently fails (check `logs/restart_pi.log`). Like "Update now," the request is handed off to a detached background process so the reboot isn't blocked on this very request still being in flight when `dermestid-web.service` goes down with everything else.
+
 ## Dashboard pages
 
 - **Home** (`/`) — live readings, relay states, mode switch, live camera view, and the temp/humidity history graph (1h–30d).
 - **Logs** (`/logs`) — event log with level filter and pagination.
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
-- **Config** (`/config`) — per-mode setpoints (including each mode's out-of-range alert margins), sensor source/calibration, BLE and camera settings, software updates.
+- **Config** (`/config`) — per-mode setpoints, including each mode's out-of-range alert margins.
 - **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open and out-of-range alert timing.
+- **Settings** (`/settings`) — sensor source/calibration, BLE and camera settings, software updates, restarting the Pi.
 
 ## Activity modes
 

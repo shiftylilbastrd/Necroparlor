@@ -221,6 +221,16 @@
   </div>
 </div>
 
+<div class="section-title">System</div>
+<div class="grid">
+  <div class="card" style="max-width:420px;">
+    <h2>Restart</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">Reboots the Raspberry Pi itself, not just one service. Climate control, the camera, and this dashboard will all be briefly unreachable (typically under a minute) while it comes back up.</div>
+    <button class="danger-btn" id="restartPiBtn" onclick="restartPi()">Restart Pi</button>
+    <div class="save-msg" id="restartPiMsg"></div>
+  </div>
+</div>
+
 {% endblock %}
 {% block scripts %}
 <script>
@@ -812,6 +822,34 @@ async function checkForUpdateNow() {
   }
   btn.disabled = false;
   btn.textContent = originalText;
+}
+
+// Confirmation dialog first - this reboots the whole Pi, not just a
+// service, so it's worth one deliberate extra click before it's
+// irreversible. Same detached-restart reasoning as applyUpdate() above
+// for why the fetch's response may never actually arrive: unlike that
+// one, a full Pi reboot also means climate.py/ble_listener.py/camera-
+// streamer all go down too, not just dermestid-web.service, and takes
+// noticeably longer to come back - so this deliberately does NOT
+// auto-reload the page the way applyUpdate() does; the message just
+// tells you to check back, since guessing a reload delay that's right
+// for both a Pi 3 and a Pi 4/5 isn't realistic.
+async function restartPi() {
+  if (!confirm('Restart the Raspberry Pi? Climate control, the camera, and this dashboard will all be briefly unreachable while it reboots.')) {
+    return;
+  }
+  const btn = document.getElementById('restartPiBtn');
+  const msg = document.getElementById('restartPiMsg');
+  btn.disabled = true;
+  msg.textContent = 'Restarting - this page (and everything else) will go unreachable shortly, then come back on its own in a minute or two.';
+  msg.className = 'save-msg';
+  try {
+    await fetch('/api/restart-pi', { method: 'POST' });
+  } catch (e) {
+    // Same deal as applyUpdate() above - the connection can drop before
+    // the browser ever sees a response once the reboot actually starts,
+    // which looks like a network error but isn't a real failure.
+  }
 }
 
 loadUpdateStatus();

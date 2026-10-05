@@ -565,6 +565,55 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-05]** **Workflow note, not a feature change - how this sandbox's git state got confusing mid-
+  session, worth understanding before trusting `git log`/`git branch` here again.** All of this session's work
+  (notification system, out-of-range alerts, the Notifications tab split, its follow-up tweaks) was built and
+  committed on a local `notification-system` branch in Claude's own sandbox clone, then synced file-by-file to
+  Ryan's real Windows clone (`D:\GitHub\Necroparlor`) via the device bridge after each change, same pattern
+  documented elsewhere in this file - with Ryan committing and pushing each batch himself from GitHub Desktop,
+  directly to `main` (not to a `notification-system` branch on the remote - that branch only ever existed
+  locally in the sandbox). That's fine and expected, but mid-session, something (most likely this sandbox's
+  own stop-hook/git-check tooling, possibly mistaken for `auto_update.sh`'s exact "auto-update: preserving
+  local changes" stash-and-pull behavior - the message matched verbatim) fetched `origin/main`, found it now
+  contained everything Ryan had already pushed, stashed Claude's one mid-flight UNCOMMITTED edit (the Restart-
+  Pi button, see below), and switched HEAD from `notification-system` to `main` - leaving a stash-pop conflict
+  in `templates/settings.html` the next time a tool call touched that file. Diffing confirmed `notification-
+  system` and `main` were byte-identical on every file that mattered (`shared_state.py`, `templates/
+  notifications.html`) - i.e. no actual divergent/duplicate work, just the same content reachable from two
+  branch names. Resolved by `git reset --hard HEAD` (stash untouched, nothing lost) to get back to a clean
+  `main`, then `git stash pop` again and hand-resolving the one real conflict (Ryan's own already-pushed "Data
+  history"/"Clear history" section on `main` vs. the new "System" section below), keeping both. The local
+  `notification-system` branch still exists in the sandbox, now fully redundant/merged into `main` - harmless,
+  left alone rather than deleted without being asked. **Lesson for next session**: trust `git branch`/`git log`
+  in the sandbox over memory of "which branch this session has been working on" - it can change out from under
+  a long session without an explicit checkout ever being run by Claude itself.
+- **[2026-10-05]** Added a **Restart Pi** button to the Settings page's new "System" section, per Ryan's
+  request ("add a button with confirmation dialog to settings page to restart pi"). `/api/restart-pi`
+  (webapp.py) runs `sudo -n systemctl reboot` through a detached `sleep 1 && ...` shell
+  (`start_new_session=True`, same trick `/api/apply-update` already uses) rather than calling it inline -
+  this request handler is itself served by `dermestid-web.service`, which the reboot starts tearing down
+  within a second or so, so the delay gives the HTTP response time to actually reach the browser first.
+  Needs a new sudoers line (`systemctl reboot`, added to the README's existing block) to actually work -
+  without it, the button logs the attempt and fails silently server-side (check `logs/restart_pi.log`), same
+  "degrades to a no-op, never silently claims success" pattern as every other `_restart_service()` caller.
+  Confirms via a plain native `confirm()` before firing - deliberately NOT the page's existing `confirmDanger()`
+  (used by "Clear selected history" above it), because that function is called but **never actually defined
+  anywhere in the repo** - a real, pre-existing bug on `main` from whatever commit added the Data History
+  section, left as its own open item below rather than guessed-at and "fixed" blind, since its intended design
+  (styled modal?) isn't known. Also discovered and fixed, in the same pass: `.danger-btn` (used by both this
+  button and "Clear selected history") was referenced by class name but had no matching CSS rule anywhere -
+  both buttons were rendering as bare, unstyled `<button>` elements. Added a real `.danger-btn` rule to
+  `templates/base.html` (same shape as `.save-btn`, `var(--danger)` background) - a small, obviously-safe,
+  directly-adjacent fix, unlike the `confirmDanger()` gap which is left alone. **What's verified**: `py_compile`
+  on `webapp.py`, Jinja2 parse + `node --check` on `settings.html`/`base.html`, and a Flask test-client run with
+  `init_db()` actually called against a temp SQLite file (not just import-only, which was masking a `sqlite3.
+  OperationalError: no such table: events` on the FIRST attempt here - `log_event()` needs a real initialized
+  DB, something worth remembering for any future test-client smoke test in this sandbox) - confirmed all seven
+  page routes return 200 and `/api/restart-pi` returns `{"status": "restarting"}`, with the detached subprocess
+  actually spawning (failed with "not booted with systemd" in `logs/restart_pi.log`, expected/harmless in this
+  sandbox, same failure every other `_restart_service()` call would hit here too). **What's NOT verified**: an
+  actual reboot on real Pi hardware, or the sudoers line actually being added to a live Pi's `/etc/sudoers.d/
+  dermestid`.
 - **[2026-10-05]** Notifications split out into its own top-nav tab, per Ryan's explicit request ("make
   notifications its own tab"), right after the out-of-range-alert work above. Previously the Notifications
   card lived at the bottom of the Config page, underneath the per-mode Setpoints panels - `templates/

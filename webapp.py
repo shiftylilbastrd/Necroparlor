@@ -806,6 +806,43 @@ def api_apply_update():
     return jsonify({"status": "started"})
 
 
+@app.route("/api/restart-pi", methods=["POST"])
+def api_restart_pi():
+    """Reboots the Pi itself, not just one service - sudo -n systemctl
+    reboot, same non-interactive sudoers pattern as every other
+    systemctl call this dashboard makes (see README's sudoers section,
+    which needs a new `systemctl reboot` line added for this to
+    actually work).
+
+    Run through a DETACHED `sleep 1 && ...` shell, same
+    start_new_session=True trick as api_apply_update above, rather than
+    calling systemctl inline - this request handler is itself served by
+    dermestid-web.service, which `systemctl reboot` starts tearing down
+    (along with every other service, and eventually the whole OS)
+    within a second or so of being issued. The 1-second delay gives
+    this response time to actually reach the browser first; without it,
+    the reboot could win the race and the fetch in restartPi() below
+    would see a connection-reset network error instead of a normal
+    200, indistinguishable from a real failure.
+
+    Returns immediately, before the Pi has actually gone down - the
+    browser is expected to show a "restarting, give it a minute" message
+    rather than wait for a response that will never come once the
+    shutdown actually starts."""
+    log_dir = os.path.join(state.BASE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "restart_pi.log")
+    log_file = open(log_path, "a")
+    state.log_event("info", "Pi restart triggered manually from the dashboard")
+    subprocess.Popen(
+        ["bash", "-c", "sleep 1 && sudo -n systemctl reboot"],
+        cwd=state.BASE_DIR,
+        stdout=log_file, stderr=subprocess.STDOUT,
+        start_new_session=True
+    )
+    return jsonify({"status": "restarting"})
+
+
 @app.route("/api/check-for-update-now", methods=["POST"])
 def api_check_for_update_now():
     """Runs the same read-only check the background thread does
