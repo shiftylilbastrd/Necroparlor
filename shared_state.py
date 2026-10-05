@@ -51,11 +51,6 @@ DB_PATH = os.path.join(BASE_DIR, "dermestid.db")
 CAMERA_DIR = os.path.join(BASE_DIR, "camera")
 CAMERA_TIMELAPSE_DIR = os.path.join(CAMERA_DIR, "timelapse")
 CAMERA_TIMELAPSE_VIDEOS_DIR = os.path.join(CAMERA_DIR, "timelapse_videos")
-# Progress previews (Timelapse page "Build preview") - one .mp4 + .json per
-# mode, rebuilt on demand from that mode's still-pending frames and never
-# added to the timelapse_videos gallery. Kept out of the videos dir so
-# nothing that walks the gallery ever mistakes one for a real video.
-CAMERA_TIMELAPSE_PREVIEWS_DIR = os.path.join(CAMERA_DIR, "timelapse_previews")
 
 # Playback speed of a compiled session video, in frames per second of
 # OUTPUT video - unrelated to the capture cadence (snapshot_interval_
@@ -97,15 +92,6 @@ DEFAULT_CONFIG = {
     # just updates the "update available" status, doesn't pull or
     # restart anything by itself). Minutes.
     "update_check_interval_minutes": 15,
-    # How long sensor-reading history and the event log are kept before
-    # webapp.py's hourly trim deletes older rows (see prune_history). 0 =
-    # keep forever. climate.py logs a readings row every cycle (~5,800/day,
-    # ~2M/year), and before this existed nothing ever deleted any of it.
-    "history_retention_days": 365,
-    # Burn each frame's capture time + time elapsed since the session
-    # started into compiled timelapse videos and previews (see
-    # timelapse_encode.py). Toggle on the Timelapse page.
-    "timelapse_overlay": True,
     # Which git branch auto_update.sh and the background checker track.
     # Defaults to main - switching this to anything else means running
     # code that hasn't gone through the same scrutiny as what actually
@@ -117,12 +103,6 @@ DEFAULT_CONFIG = {
     #              what's actually on hand)
     #   "sht31"  - I2C sensor with condensation-recovery heater support
     "internal_source": "dht22",
-    # What the WIRED external fallback probe (the automatic backup behind
-    # the BLE sensor - see below) is:
-    #   "dht22"  - DHT22/AM2302 on climate.py's PIN_EXTERNAL_TEMP (GPIO5, default)
-    #   "sht31"  - SHT31 on its own I2C bus (EXTERNAL_SHT31_I2C_BUS, the
-    #              Pi 4's i2c5 on GPIO12/13) - never the internal sensor's bus
-    "external_fallback_source": "dht22",
     # External (outside-air) reading: automatic failover, not a manual
     # choice. climate.py always reads both the wired probe and a BLE
     # sensor every cycle and uses whichever is fresher - the BLE sensor
@@ -235,6 +215,8 @@ DEFAULT_CONFIG = {
             "disk_space_low": True,
             "disk_space_pruned": True,
             "control_loop_error": True,
+            "temp_out_of_range": True,
+            "humidity_out_of_range": True,
         },
         # Per-category cooldown - the same category won't notify again
         # until this many minutes have passed since it last did, so a
@@ -263,6 +245,14 @@ DEFAULT_CONFIG = {
         # specific check - same never sentinel convention as
         # snapshot_interval_minutes elsewhere in this file.
         "door_open_alert_minutes": 15,
+        # How long the internal reading can sit outside its mode's
+        # acceptable range (low_temp_f/high_temp_f/humidity_setpoint,
+        # widened by that mode's temp_alert_margin_f/humidity_alert_margin
+        # below) before it's worth a push - same dwell-before-alerting
+        # purpose and 0-disables-it convention as door_open_alert_minutes
+        # above, applied to climate.py's out-of-range check instead of the
+        # door switch.
+        "range_alert_minutes": 15,
         "channels": {
             "pushover": {
                 "enabled": False,
@@ -304,6 +294,15 @@ DEFAULT_CONFIG = {
             "low_temp_f": 55.0,
             "high_temp_f": 60.0,
             "humidity_setpoint": 40.0,
+            # How far outside [low_temp_f, high_temp_f] / humidity_setpoint
+            # the INTERNAL reading has to drift before climate.py's
+            # out-of-range alert (see run_cycle()) even starts its dwell
+            # timer - deliberately wider than the setpoints themselves,
+            # which the control loop is already reacting to every cycle.
+            # Per-mode, like the setpoints, since how tight a band is
+            # "normal" varies by mode.
+            "temp_alert_margin_f": 5.0,
+            "humidity_alert_margin": 15.0,
             # Timelapse snapshot cadence for this mode - 0 means never
             # (no snapshots captured while in this mode). Per-mode
             # rather than a single global setting, since a mode you
@@ -316,6 +315,8 @@ DEFAULT_CONFIG = {
             "low_temp_f": 78.0,
             "high_temp_f": 85.0,
             "humidity_setpoint": 50.0,
+            "temp_alert_margin_f": 5.0,
+            "humidity_alert_margin": 15.0,
             "snapshot_interval_minutes": 0
         },
         "cleaning": {
@@ -326,6 +327,8 @@ DEFAULT_CONFIG = {
             "low_temp_f": 78.0,
             "high_temp_f": 85.0,
             "humidity_setpoint": 50.0,
+            "temp_alert_margin_f": 5.0,
+            "humidity_alert_margin": 15.0,
             "vent_interval_minutes": 30,
             "vent_duration_minutes": 5,
             "snapshot_interval_minutes": 0
@@ -342,7 +345,12 @@ VENT_DURATION_BOUNDS = (1, 60)    # minutes
 # is validated separately from this range, same pattern as the update-
 # branch/interval validators below.
 SNAPSHOT_INTERVAL_BOUNDS = (1, 1440)  # minutes, when not 0/never
-HISTORY_RETENTION_BOUNDS = (7, 3650)  # days, when not 0/forever
+
+# Bounds for the out-of-range alert margins (how far past low_temp_f/
+# high_temp_f/humidity_setpoint the internal reading has to drift before
+# climate.py's alert dwell timer starts - see DEFAULT_CONFIG["modes"] above).
+TEMP_ALERT_MARGIN_BOUNDS_F = (0.5, 30.0)
+HUMIDITY_ALERT_MARGIN_BOUNDS = (1.0, 50.0)
 
 CAMERA_WIDTH_BOUNDS = (160, 1920)
 CAMERA_HEIGHT_BOUNDS = (120, 1080)
@@ -363,6 +371,7 @@ CAMERA_STREAMER_FORBIDDEN_PORT = 8080
 # Sanity bounds for the Notifications card on the Config page.
 NOTIFY_COOLDOWN_BOUNDS = (0, 1440)          # minutes; 0 = no cooldown (every match notifies)
 DOOR_OPEN_ALERT_BOUNDS = (1, 1440)          # minutes, when not 0/never (see DEFAULT_CONFIG)
+RANGE_ALERT_BOUNDS = (1, 1440)              # minutes, when not 0/never (see DEFAULT_CONFIG)
 SMTP_PORT_BOUNDS = (1, 65535)
 QUIET_HOURS_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")  # "HH:MM", 24h
 
@@ -539,6 +548,15 @@ def validate_notification_settings(values):
         return None, (f"door_open_alert_minutes must be 0 (never) or between "
                        f"{DOOR_OPEN_ALERT_BOUNDS[0]} and {DOOR_OPEN_ALERT_BOUNDS[1]}")
     cleaned["door_open_alert_minutes"] = door_minutes
+
+    try:
+        range_minutes = int(values.get("range_alert_minutes", 15))
+    except (TypeError, ValueError):
+        return None, "range_alert_minutes must be a whole number"
+    if range_minutes != 0 and not (RANGE_ALERT_BOUNDS[0] <= range_minutes <= RANGE_ALERT_BOUNDS[1]):
+        return None, (f"range_alert_minutes must be 0 (never) or between "
+                       f"{RANGE_ALERT_BOUNDS[0]} and {RANGE_ALERT_BOUNDS[1]}")
+    cleaned["range_alert_minutes"] = range_minutes
 
     qh = values.get("quiet_hours", {})
     start = qh.get("start", "22:00")
@@ -785,6 +803,20 @@ def validate_setpoints(mode, values):
         return None, f"humidity_setpoint must be between {HUMIDITY_BOUNDS[0]} and {HUMIDITY_BOUNDS[1]}"
 
     cleaned = {"low_temp_f": low, "high_temp_f": high, "humidity_setpoint": humidity}
+
+    try:
+        temp_margin = float(values.get("temp_alert_margin_f", 5.0))
+        humidity_margin = float(values.get("humidity_alert_margin", 15.0))
+    except (TypeError, ValueError):
+        return None, "temp_alert_margin_f and humidity_alert_margin must be numbers"
+    if not (TEMP_ALERT_MARGIN_BOUNDS_F[0] <= temp_margin <= TEMP_ALERT_MARGIN_BOUNDS_F[1]):
+        return None, (f"temp_alert_margin_f must be between "
+                       f"{TEMP_ALERT_MARGIN_BOUNDS_F[0]} and {TEMP_ALERT_MARGIN_BOUNDS_F[1]}")
+    if not (HUMIDITY_ALERT_MARGIN_BOUNDS[0] <= humidity_margin <= HUMIDITY_ALERT_MARGIN_BOUNDS[1]):
+        return None, (f"humidity_alert_margin must be between "
+                       f"{HUMIDITY_ALERT_MARGIN_BOUNDS[0]} and {HUMIDITY_ALERT_MARGIN_BOUNDS[1]}")
+    cleaned["temp_alert_margin_f"] = temp_margin
+    cleaned["humidity_alert_margin"] = humidity_margin
 
     if mode == "cleaning":
         try:
@@ -1239,6 +1271,8 @@ EVENT_CATEGORIES = {
     "disk_space_low": {"label": "Disk space projected to run low within 24h", "level": "warning"},
     "disk_space_pruned": {"label": "Old timelapse snapshots auto-deleted for disk space", "level": "warning"},
     "control_loop_error": {"label": "Unexpected error in the control loop", "level": "error"},
+    "temp_out_of_range": {"label": "Internal temp stayed outside the acceptable range", "level": "warning"},
+    "humidity_out_of_range": {"label": "Internal humidity stayed outside the acceptable range", "level": "warning"},
 }
 
 
@@ -1840,159 +1874,6 @@ def get_readings_table(limit=50, before_ts=None):
     return [dict(zip(keys, r)) for r in rows]
 
 
-# Tables that are HISTORY (safe to trim/clear) - deliberately a closed
-# list. Everything else in the database is live state (ble_readings'
-# latest-per-sensor row, door_state, update_state) or is load-bearing for
-# the timelapse pipeline (camera_snapshots' "only uncompiled frames"
-# invariant that session-boundary recovery relies on; timelapse_videos
-# rows that the video files on disk are addressed by) - never touch those
-# from here.
-HISTORY_TABLES = ("readings", "events")
-
-# Rows deleted per transaction. SQLite (even in WAL mode) allows one
-# writer at a time, and climate.py writes a readings row every cycle with
-# a 10s lock timeout (see get_db) - one giant DELETE of a year of rows
-# could hold the write lock long enough to stall it. Small batches with
-# a pause between them keep each lock hold to milliseconds.
-HISTORY_DELETE_BATCH = 2000
-HISTORY_DELETE_PAUSE_SECONDS = 0.05
-
-
-def get_pending_sessions():
-    """One entry per mode that has pending (not-yet-compiled) frames:
-    mode, count, first_ts, last_ts - oldest mode first. What the Timelapse
-    page's per-mode preview rows are built from."""
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots GROUP BY mode ORDER BY MIN(ts)"
-    ).fetchall()
-    conn.close()
-    return [{"mode": m, "count": c, "first_ts": f, "last_ts": l} for m, c, f, l in rows]
-
-
-def timelapse_preview_paths(mode):
-    base = os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, f"preview_{mode}")
-    return base + ".mp4", base + ".json"
-
-
-def get_timelapse_preview(mode):
-    """The existing preview for `mode` (dict with frame_count, first_ts,
-    last_ts, built_ts, file_size_bytes, overlay) or None."""
-    video_path, meta_path = timelapse_preview_paths(mode)
-    if not os.path.exists(video_path):
-        return None
-    try:
-        with open(meta_path) as f:
-            meta = json.load(f)
-    except (OSError, ValueError):
-        meta = {}
-    meta["file_size_bytes"] = os.path.getsize(video_path)
-    return meta
-
-
-def delete_timelapse_previews(mode=None):
-    """Removes the preview for one mode, or all of them (mode=None) - called
-    when the frames a preview was built from stop existing (a real compile
-    consumed them, or they were purged), so a stale preview can't be
-    mistaken for current progress."""
-    try:
-        names = os.listdir(CAMERA_TIMELAPSE_PREVIEWS_DIR)
-    except FileNotFoundError:
-        return
-    prefix = "preview_" if mode is None else f"preview_{mode}."
-    for name in names:
-        if name.startswith(prefix):
-            try:
-                os.remove(os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, name))
-            except OSError:
-                pass
-
-
-def get_history_stats():
-    """Row counts and oldest timestamp per history table, plus the
-    database's size on disk (main file + WAL) - for the Settings page's
-    Data history card and its clear-confirmation dialog."""
-    conn = get_db()
-    stats = {}
-    for table in HISTORY_TABLES:
-        count, oldest = conn.execute(f"SELECT COUNT(*), MIN(ts) FROM {table}").fetchone()
-        stats[table] = {"count": count, "oldest_ts": oldest}
-    conn.close()
-    size = 0
-    for path in (DB_PATH, DB_PATH + "-wal"):
-        try:
-            size += os.path.getsize(path)
-        except OSError:
-            pass
-    stats["db_bytes"] = size
-    return stats
-
-
-def prune_history(tables, older_than_ts=None):
-    """Deletes rows from the named HISTORY_TABLES older than
-    older_than_ts (or ALL rows when it's None), in small batches - see
-    HISTORY_DELETE_BATCH for why. Returns {table: rows_deleted}.
-
-    Freed space stays inside the database file (SQLite reuses it for new
-    rows) rather than shrinking the file - a VACUUM would shrink it, but
-    it takes an exclusive lock for the whole rewrite, which is exactly
-    the kind of long lock climate.py's writes shouldn't have to wait out."""
-    deleted = {}
-    for table in tables:
-        if table not in HISTORY_TABLES:
-            raise ValueError(f"{table} is not a history table")
-        total = 0
-        while True:
-            conn = get_db()
-            if older_than_ts is None:
-                cur = conn.execute(
-                    f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} LIMIT ?)",
-                    (HISTORY_DELETE_BATCH,))
-            else:
-                cur = conn.execute(
-                    f"DELETE FROM {table} WHERE rowid IN "
-                    f"(SELECT rowid FROM {table} WHERE ts < ? LIMIT ?)",
-                    (older_than_ts, HISTORY_DELETE_BATCH))
-            conn.commit()
-            n = cur.rowcount
-            conn.close()
-            total += n
-            if n < HISTORY_DELETE_BATCH:
-                break
-            time.sleep(HISTORY_DELETE_PAUSE_SECONDS)
-        deleted[table] = total
-    return deleted
-
-
-def validate_history_retention_days(value):
-    try:
-        days = int(value)
-    except (TypeError, ValueError):
-        return None, "history_retention_days must be a whole number"
-    if days != 0 and not (HISTORY_RETENTION_BOUNDS[0] <= days <= HISTORY_RETENTION_BOUNDS[1]):
-        return None, (f"history_retention_days must be 0 (keep forever) or between "
-                      f"{HISTORY_RETENTION_BOUNDS[0]} and {HISTORY_RETENTION_BOUNDS[1]}")
-    return days, None
-
-
-def iter_readings_csv():
-    """Every readings row, oldest first, as CSV lines - streamed (one
-    row at a time off the cursor) rather than built in memory, since a
-    year of history is ~2M rows. For the Settings page's "download
-    readings" link, so history can be saved before clearing it."""
-    columns = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-               "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
-               "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
-    yield "time," + ",".join(columns) + "\n"
-    conn = get_db()
-    try:
-        for row in conn.execute(f"SELECT {', '.join(columns)} FROM readings ORDER BY ts ASC"):
-            stamp = datetime.fromtimestamp(row[0]).strftime("%Y-%m-%d %H:%M:%S")
-            yield stamp + "," + ",".join("" if v is None else str(v) for v in row) + "\n"
-    finally:
-        conn.close()
-
-
 def get_recent_events(limit=50, level=None, before_ts=None):
     """level: optional MINIMUM-severity filter ('info'/'warning'/'error'/
     'critical') - matches that level and anything more severe (e.g.
@@ -2217,88 +2098,6 @@ def delete_camera_snapshots(ts_list):
     conn.commit()
     conn.close()
     return removed
-
-
-def compile_lock_path(mode):
-    """Per-mode lock file camera_service.compile_session_video() holds
-    (fcntl.flock) for the whole of a compile - shared here so anything
-    else that touches a mode's raw frames (purge_camera_snapshots below,
-    compile_timelapse.py) can respect the same lock instead of deleting
-    frames out from under a running ffmpeg."""
-    return os.path.join(CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{mode}.lock")
-
-
-def purge_camera_snapshots(orphan_min_age_seconds=60):
-    """Deletes EVERY kept (uncompiled) timelapse frame - DB rows and
-    files - for the Timelapse page's "Purge pending frames" button.
-    Compiled videos and their posters are untouched.
-
-    Refuses (returns {"busy_mode": mode}) if any mode with frames has a
-    compile running, rather than deleting the JPEGs ffmpeg is reading
-    mid-encode; all involved modes' compile locks are held for the whole
-    purge so a compile can't start part-way through it either.
-
-    Also removes stray .jpg files in CAMERA_TIMELAPSE_DIR with no DB row
-    (e.g. left by a crash between writing a file and inserting its row),
-    but only ones older than orphan_min_age_seconds: save_camera_snapshot()
-    writes the file BEFORE inserting the row, so a brand-new frame is
-    briefly a "stray" - deleting it in that window would leave a row
-    pointing at a missing file, which would make that mode's next ffmpeg
-    compile fail."""
-    os.makedirs(CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
-    conn = get_db()
-    modes = [r[0] for r in conn.execute("SELECT DISTINCT mode FROM camera_snapshots").fetchall()]
-    conn.close()
-
-    held = []
-    try:
-        for mode in modes:
-            f = open(compile_lock_path(mode), "w")
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                f.close()
-                return {"busy_mode": mode}
-            held.append(f)
-
-        conn = get_db()
-        rows = conn.execute("SELECT ts, filename FROM camera_snapshots").fetchall()
-        removed, freed = 0, 0
-        known = set()
-        for ts, filename in rows:
-            known.add(filename)
-            path = os.path.join(CAMERA_TIMELAPSE_DIR, filename)
-            try:
-                freed += os.path.getsize(path)
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
-            removed += 1
-        conn.commit()
-        conn.close()
-
-        strays = 0
-        cutoff = time.time() - orphan_min_age_seconds
-        try:
-            with os.scandir(CAMERA_TIMELAPSE_DIR) as it:
-                for entry in it:
-                    if (entry.is_file() and entry.name.endswith(".jpg")
-                            and entry.name not in known):
-                        st = entry.stat()
-                        if st.st_mtime < cutoff:
-                            os.remove(entry.path)
-                            freed += st.st_size
-                            strays += 1
-        except FileNotFoundError:
-            pass
-        # Previews were built from the frames just deleted.
-        delete_timelapse_previews()
-        return {"removed": removed, "strays_removed": strays, "freed_bytes": freed}
-    finally:
-        for f in held:
-            fcntl.flock(f, fcntl.LOCK_UN)
-            f.close()
 
 
 def save_timelapse_video(mode, start_ts, end_ts, frame_count, filename, poster_filename,

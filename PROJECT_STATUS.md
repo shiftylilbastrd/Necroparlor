@@ -565,6 +565,53 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-05]** New notifications for the internal reading staying outside its mode's acceptable range -
+  Ryan's explicit request ("I do want to add notifications for when temp/humidity are at unacceptable
+  levels"), after first deferring an Alexa-notification idea (HAOS + `alexa_media_player` + a webhook
+  automation pointed at the existing generic Webhook channel - "something to look into later," not built).
+  Design choices, picked via AskUserQuestion before building: (1) **dedicated alert thresholds**, not the
+  existing control setpoints directly - alerting on the same `low_temp_f`/`high_temp_f`/`humidity_setpoint`
+  crossing the control loop already reacts to every cycle would fire constantly during ordinary
+  hysteresis-driven swings, so each mode got its own new `temp_alert_margin_f`/`humidity_alert_margin`
+  (defaults 5.0°F / 15.0%RH) that widen the setpoints into a bigger "still fine" band before the alert even
+  starts counting; (2) **a dwell time**, mirroring `door_open_alert_minutes` - a new
+  `notifications.range_alert_minutes` (default 15, 0 = never, same sentinel convention) that the reading has
+  to stay outside the widened band for, continuously, before it fires - so a brief dip while the heater/fan is
+  already catching up doesn't page anyone; (3) **internal sensor only** - external/BLE readings aren't watched,
+  since those aren't what the control loop itself acts on either.
+
+  Implementation: two new `EVENT_CATEGORIES` entries in shared_state.py, `temp_out_of_range` and
+  `humidity_out_of_range` (both `warning`, both on by default), plus `TEMP_ALERT_MARGIN_BOUNDS_F = (0.5, 30.0)`/
+  `HUMIDITY_ALERT_MARGIN_BOUNDS = (1.0, 50.0)`/`RANGE_ALERT_BOUNDS = (1, 1440)` validated in
+  `validate_setpoints()`/`validate_notification_settings()` respectively (both new fields backfill cleanly
+  against an old config.json via the existing per-mode/notifications merge logic in `load_config()` - verified
+  by loading a deliberately old-shaped config.json and confirming the new keys land at their defaults).
+  `climate.py`'s `run_cycle()` gained the actual dwell-time tracking - four new module globals
+  (`temp_range_since`/`temp_range_alert_sent`/`humidity_range_since`/`humidity_range_alert_sent`), same
+  one-event-per-episode shape as `door_open_timeout` in `light_loop()` (set `_since` on first out-of-range
+  cycle, fire+latch `_alert_sent` once dwell time elapses, reset both the instant the reading comes back in
+  range). Placed right after `last_good_internal_temp`/`last_good_internal_humidity` are updated each cycle (a
+  good internal reading is already guaranteed at that point - the function returns early on a bad one), so it
+  naturally only ever evaluates a real, validated internal reading against the CURRENT mode's thresholds.
+
+  Config page: new "Out-of-range alert margin" fields on each mode's Setpoints panel (°F and %RH, next to the
+  existing low/high temp and humidity setpoint inputs, explicit Save like the rest of that panel) and a new
+  "Alert if internal temp/humidity stays outside its mode's acceptable range for longer than (minutes)" field
+  on the Notifications card's General section, right under the existing door-open-alert field, with the same
+  explicit-Save treatment (free-typed number, not a toggle). The per-category checklist needed no manual
+  wiring for the two new categories - it's entirely driven by `/api/notification-categories` (which just
+  reflects `EVENT_CATEGORIES`), so they show up automatically grouped under "Warning" the same as everything
+  else there.
+
+  **What's verified**: `python3 -m py_compile` on `shared_state.py`/`climate.py`, an `ast.parse` check on
+  `climate.py`, `node --check` on the extracted config.html script block, and a standalone Python smoke test
+  against the real `shared_state.py` functions - simulated an old config.json missing every new key entirely
+  and confirmed `load_config()` backfills `range_alert_minutes`/the per-mode margins/the two new category
+  defaults correctly, plus both in-bounds and out-of-bounds calls to `validate_setpoints()`/
+  `validate_notification_settings()` for the new fields. **What's NOT verified**: the actual dwell-time/
+  alerting behavior in `climate.py` has not been exercised against a real or simulated sensor reading sequence
+  (no live Pi here to force an out-of-range reading and watch it age past `range_alert_minutes`), and the new
+  Setpoints/Notifications fields haven't been clicked through in a real browser.
 - **[2026-09-18]** Config page's notification category checklist now filters/groups by the "Minimum severity"
   dropdown right above it, per Ryan's request - "the dropdown should filter the list below it... listed in
   severity order... in identifiable blocks." `EVENT_CATEGORIES` in shared_state.py changed shape from
@@ -849,10 +896,6 @@ that aren't obvious from reading the code cold.
   consideration, motivated by real DHT22 reliability issues even after
   the retry-logic fix. Probe form factor (PTFE vs. ceramic vs. metal
   mesh filter cap) was researched but no purchase decision made yet.
-  **[update, 2026-09-29]** Ryan now has two SHT31s on hand (prewired
-  probes, ~5 ft leads) - one for the internal sensor, one to replace the
-  wired external fallback DHT22. See the dated 2026-09-29 fallback-SHT31
-  entry at the end of this file.
 - **[open]** `xiaomi`/`ruuvitag` entries in `BLE_SENSOR_LIBRARIES`
   have unverified exact class names (follow the established
   convention but weren't checked against real source) - confirm before
@@ -2212,400 +2255,3 @@ that aren't obvious from reading the code cold.
   documentation alone - next step is following `docs/camera-streamer-
   setup.md` on the actual Pi, start to finish, and correcting whatever
   in this entry turns out wrong once it's real.
-
-- **[2026-09-29] Timelapse compile timed out on a real session: "ffmpeg
-  timed out compiling cleaning session (8048 frames) after 300s".**
-  Root cause: `COMPILE_TIMEOUT_SECONDS` was a flat 300s no matter how
-  many frames, but encode time scales linearly with frame count - and
-  the command didn't name an encoder, so ffmpeg used libx264's default
-  `medium` preset, its slowest reasonable one. 8048 frames (~5.6 days
-  at a 1-minute interval) in 300s needs ~27 frames/s sustained, which a
-  Pi can't do at 720p on `medium`; the cap was effectively only ever
-  going to work for sessions of a few hundred frames. Nothing was lost -
-  the frames were kept exactly as designed.
-
-  **Second bug found while tracing it**: after a failed/skipped compile,
-  the leftover frames were NOT picked up by the next session's compile,
-  despite the `MINIMUM_FRAMES_FOR_VIDEO` comment saying they would be -
-  `maybe_compile_session()` only queried `[session_start_ts, now]`, and
-  `session_start_ts` resets to the transition time on every mode change.
-  They only resurfaced after a service restart (via
-  `get_earliest_camera_snapshot_ts()` in `main()`), at which point they'd
-  merge into an even bigger session and hit the same timeout again.
-  Also: a timeout left a truncated, unplayable `.mp4` behind, and the
-  concat list filename (`.compile_<int ts>.txt`) could collide between
-  two modes compiling in the same second.
-
-  **Fixes (`camera_service.py`)**: explicit `-c:v libx264 -preset
-  veryfast` (measured ~2.5x faster than `medium` on identical 1280x720
-  frames on the dev sandbox, with no size penalty - static scene);
-  ffmpeg runs under `nice -n 19` so a long encode can't compete with
-  climate.py; timeout now `max(300, frames x 1.0s)` via
-  `compile_timeout_for()` - still a hang watchdog, just not one a
-  legitimate big job can hit; `-movflags +faststart`; partial `.mp4`
-  deleted on timeout; mode added to the list filename;
-  `maybe_compile_session()` extends its start to the mode's earliest
-  uncompiled frame; a per-mode `fcntl` lock file
-  (`timelapse_videos/.compile_<mode>.lock`) so a manual compile and the
-  service can't double-compile the same frames; encode time now logged
-  on success so the per-frame budget can be checked against the real Pi.
-
-  **New: `compile_timelapse.py`** - manual recovery CLI. No args lists
-  modes with kept frames; `python3 compile_timelapse.py <mode>` compiles
-  them through the same `compile_session_video()` with no time limit and
-  ffmpeg progress shown. Refuses to run as root (root-owned output files
-  would block the pi-user service from cleaning up later) and refuses
-  the active mode unless `--include-current`.
-
-  **Verified** (sandbox, real ffmpeg 6.1.1 + real SQLite, not on the
-  Pi): forced timeout removes the partial mp4 + list file and keeps all
-  frames; leftover rollover compiles 300 orphaned + 50 new frames into
-  one 350-frame video and clears the table; held lock makes the compile
-  skip with frames untouched; CLI list / active-mode guard / unknown
-  mode / root refusal / successful compile all behave as intended.
-  **Confirmed on the benchtop Pi 4 (same day)**: `compile_timelapse.py
-  cleaning` recovered the real 8048-frame backlog - "compiled a 671s
-  video from 8048 cleaning frames (261.5MB) in 583s", raw frames
-  removed. That's ~13.8 fps / 0.072s per frame at 1280x720 `veryfast`,
-  so the automatic path's 1.0s/frame timeout budget has ~13x headroom.
-  By the ~2.5x `medium`-vs-`veryfast` ratio measured in the sandbox, the
-  old command would have run ~5 fps here - it could only ever have
-  compiled ~1500 frames (~25h at a 1-minute interval) inside the old
-  300s cap. During the encode: CPU ~40C (105F), load average ~9-10 on 4
-  cores (expected - x264 is heavily threaded, and it's niced). ~3.1
-  Mbps output (261.5MB for 11 min); if SD-card space for videos ever
-  matters, an explicit higher `-crf` is the knob, not a slower preset.
-
-- **[2026-09-29] Status-file staleness noted**: the 2026-09-17
-  `camera-streamer` entry above still describes that rewrite as living on
-  the `camera-streamer` branch, but `main`'s `camera_service.py` already
-  has it (no OpenCV, pulls `/snapshot` over HTTP) and the branch no
-  longer exists on the remote. It was evidently merged/pushed to `main`
-  around 2026-09-17 without an entry recording it. Whether
-  camera-streamer's setup has since been verified on the Pi is not
-  recorded here either - the timelapse error itself implies snapshots
-  are being captured, so at least `/snapshot` works.
-
-- **[2026-09-29] "Purge pending frames" button on the Timelapse page
-  (explicit request).** Deletes every kept, not-yet-compiled frame (DB
-  rows + JPEGs) behind a native `<dialog>` confirmation that states the
-  frame count and size, says the in-progress session is included, and
-  that compiled videos are untouched. Cancel and Esc both back out;
-  the button is disabled at 0 pending frames. Backend:
-  `POST /api/timelapse/pending/purge` ->
-  `shared_state.purge_camera_snapshots()`, logged as an info event.
-  **Deliberately takes the same per-mode compile lock** as
-  `camera_service.compile_session_video()` (path now shared as
-  `state.compile_lock_path()`), and refuses with a 409 ("a <mode>
-  timelapse is compiling right now") rather than deleting JPEGs ffmpeg
-  is mid-way through reading. Also sweeps stray `.jpg` files with no DB
-  row, but **only ones older than 60s** - `save_camera_snapshot()`
-  writes the file before inserting its row, so a brand-new frame is
-  briefly "stray"; deleting it in that window would leave a row pointing
-  at a missing file and make that mode's next compile fail. Verified in
-  the sandbox with a real Flask server + headless Chromium: dialog
-  content, Cancel/Esc, the 409 while a lock is held (0 frames deleted),
-  and a real purge (DB emptied, header updates to 0, button disables,
-  fresh stray kept, old stray removed). Not yet clicked on the real Pi.
-
-- **[2026-09-29] Confirmation on timelapse video deletes (explicit
-  request - previously a single click on Delete / Delete selected
-  deleted immediately, with no way back).** The purge dialog was
-  generalized into one shared `<dialog id="confirmDialog">` +
-  `confirmDanger(title, paragraphs, confirmLabel)` promise in
-  `timelapse.html`, used by all three destructive actions: per-video
-  Delete (names the mode/date/length/frames/size), Delete selected
-  (count + total size), and Purge pending frames. Resolves true only on
-  the red button; Cancel, Esc, or any other close is false. Any
-  future destructive action on this page should go through
-  `confirmDanger()` rather than adding another dialog. Verified with a
-  real Flask server + headless Chromium against real compiled videos:
-  each dialog's text, Cancel and Esc deleting nothing, confirm deleting
-  exactly the chosen video(s), selection surviving a cancelled bulk
-  delete, 0 JS errors.
-
-- **[2026-09-29] Pending on-Pi verification (Ryan: "verify function of
-  all that later")** - checklist for the three 2026-09-29 timelapse
-  entries above. Tick these off (or record what broke) here:
-  - [ ] **Automatic compile on a mode change** completes without timing
-        out, and its log line's "in Ns" is in line with ~0.07s/frame.
-        The manual `compile_timelapse.py` recovery path is already
-        confirmed (8048 frames, 583s); the automatic path after a real
-        mode switch is not.
-  - [ ] **Leftover-frame rollover**: frames left behind by a skipped or
-        failed compile get included in that mode's next automatic
-        compile (without needing a service restart).
-  - [ ] **Purge pending frames** button: enables once Pending frames > 0,
-        dialog shows the right count/size, Cancel/Esc delete nothing,
-        confirm empties the pending count; ideally also see it refuse
-        with the "compiling right now" message during a compile.
-  - [ ] **Video delete confirmations**: single Delete and Delete selected
-        both open the dialog first; Cancel/Esc keep the video(s); the
-        red button deletes exactly the chosen one(s).
-  - [x] **Fallback SHT31** (entry below): `/dev/i2c-5` exists after the
-        overlay, `i2cdetect -y 5` shows 44, readings appear on the
-        dashboard with Probe type = SHT31 - **confirmed 2026-09-29** on
-        the benchtop Pi, along with the internal SHT31 on bus 1; a
-        hand-warming test moved only the matching tile for each probe,
-        so neither is mislabeled. (Benchtop only - see standing
-        context.)
-  - [ ] **Failover to the fallback SHT31**: with BLE stale/removed, the
-        external reading switches to the wired SHT31 and the failover is
-        logged. Not yet exercised.
-  - [ ] **Light relay (GPIO24, pin 18) / reed switch (GPIO26, pin 37)
-        after the pin swap**: lid open/close toggles the light relay and
-        the dashboard's door state.
-  - [ ] **Data history**: Settings -> Data history shows sensible counts;
-        clearing benchtop history works on the real Pi (download a copy
-        first if wanted); the hourly trim leaves nothing older than the
-        retention setting.
-  - [ ] **Timelapse overlay + previews**: a preview of the current session
-        builds and plays in a real browser with the timestamp overlay
-        visible; the next real compile also has it (Pi's ffmpeg is 7.x vs
-        the sandbox's 6.1.1).
-
-- **[2026-09-29] External fallback probe can now be an SHT31 (explicit
-  request).** Ryan has two prewired SHT31 probes (~5 ft leads): one
-  replaces the internal DHT22 (already supported via `internal_source`),
-  one replaces the wired external fallback DHT22. **BLE stays the primary
-  external sensor** - only the wired backup changes. The external probe
-  sits in the external hardware space, not the ductwork.
-
-  **Load-bearing decision - the fallback SHT31 is on its OWN I2C bus,
-  never the internal SHT31's.** Two SHT31s would normally share one bus
-  (0x44 + 0x45 via ADDR), but one faulty sensor or chafed lead can hold
-  SDA low and hang every device on that bus - which would take out the
-  internal reading (-> failsafe) AND its independent wired backup in the
-  same moment, exactly the coupling the two separate DHT22 pins never
-  had. Uses the Pi 4's extra hardware controller `i2c5` on GPIO12 (SDA,
-  pin 32) / GPIO13 (SCL, pin 33), enabled by `dtoverlay=i2c5,baudrate=50000`.
-  Pin mapping and params checked against the raspberrypi/linux overlays
-  README + i2c5-overlay.dts + bcm2711.dtsi, not from memory (which had
-  i2c4's default pins wrong). Both sensors stay at the default 0x44.
-  Don't "simplify" this onto one bus.
-
-  **Pull-ups**: GPIO2/3 have 1.8k pull-ups on the Pi board; GPIO12/13
-  only get the SoC's weak internal bias (~50k), not enough for a 5 ft
-  lead - README says to add 4.7k from each of SDA/SCL to 3.3V at the Pi
-  end unless the probe has its own. Whether Ryan's probes include
-  pull-ups is **unknown** (not yet checked).
-
-  **Code**: new config key `external_fallback_source` ("dht22" default |
-  "sht31"), Settings page Fallback card "Probe type" select, `POST
-  /api/external-fallback-source` (same shape as `/api/internal-source`).
-  `climate.py`: `EXTERNAL_SHT31_I2C_BUS = 5`, `_open_i2c_bus_by_number()`
-  - an inlined copy of Adafruit's `adafruit-extended-bus` ExtendedI2C,
-  **deliberately not the pip package**: it's an old setup.py-only
-  release that failed to build under current setuptools in the sandbox,
-  and an unbuildable dependency is a bad thing to discover mid-install on
-  the Pi. `_read_sht31_f()` now shared by internal + fallback. The
-  1s DHT read gap only runs when BOTH sensors are DHT22s. **No
-  condensation-heater recovery for the fallback** - that mechanism exists
-  because a pegged internal reading gets delta-rejected until it trips
-  the emergency failsafe; the fallback never feeds the failsafe and sits
-  in the dry hardware space.
-
-  Also fixed while here: Settings page said the wired probe was on
-  **GPIO4** (the dead pin) in two places - it's been GPIO5 since the
-  move; README said the internal-source switch was on the Config page
-  (it's on Settings). Pinout diagram regenerated via
-  `docs/gen_gpio_pinout.py` (pins 32/33 now I2C, fallback power/ground
-  labels cover either probe type).
-
-  **Verified in sandbox**: the real fallback read path through real
-  Blinka + real `adafruit_sht31d` against a fake SMBus speaking the SHT31
-  protocol with correct CRCs (opens bus 5, 77.0F/40.0% converted right,
-  missing bus / unplugged sensor -> (None, None) with no crash, recovers
-  on replug); the real `climate.run_cycle()` with stubbed GPIO for all
-  four internal/fallback combinations (right sensor read each way, GPIO5
-  untouched when fallback is SHT31, DHT gap only for DHT22+DHT22);
-  Settings select saves/persists across reload/rejects bad values with a
-  400/logs an event, 0 JS errors. **Not verified**: anything on the real
-  Pi - that `i2c5` really appears as `/dev/i2c-5` on this kernel (README
-  says to check with `ls /dev/i2c-*` and adjust the constant), real
-  sensor reads over 5 ft leads, and whether pull-ups are needed.
-
-- **[2026-09-29] Pinout diagram reworked for the two SHT31 probes
-  (explicit request).** Sensor power/ground pins are now labeled simply
-  "Internal power/ground" (pins 1/6) and "External power/ground" (pins
-  17/9); sensor pins use the probes' own lead colors - red power, black
-  ground, yellow SCL, green SDA. **Yellow=SCL/green=SDA is an assumption**
-  (the common convention for 4-wire SHT31 probes; some vendors swap them)
-  - not yet confirmed against Ryan's probe listing; swapping is a
-  COLORS-only change in `docs/gen_gpio_pinout.py`. The diagram now shows
-  the target build, so the DHT22 DATA pins (13, 29) show as "unused (…if
-  used instead)" even though `dht22` is still the code default for both
-  sources until the Settings page is switched. Sensor 3.3V power is drawn
-  **orange**, not the probes' red lead color (Ryan's call), so it can't be
-  confused with the red 5V pins - a sensor lead moved onto 5V would put
-  5V on the Pi's SDA/SCL via the probe's pull-ups. README's SHT31 wiring
-  tables gained a lead-color column to match. Also corrected: the two
-  5V pins aren't both relay-board power - one feeds the relay board, the
-  other the door servo (Ryan, 2026-09-29). **Which pin is which wasn't
-  stated**; the diagram assumes pin 2 = relay board, pin 4 = servo.
-  Ground pins (Ryan, same day): **relay board GND = pin 6, internal
-  sensor GND = pin 9, external sensor GND = pin 34** - earlier versions of
-  the diagram never showed the relay board's ground at all (every spare
-  GND was just "GND"). Relay ground drawn black (assumed jumper color).
-  Still not on the diagram: the servo's and reed switch's ground returns
-  - pins not yet stated.
-
-- **[2026-09-29] Light relay and door reed switch swapped pins (explicit
-  request - consolidating wiring by component).** `PIN_LIGHT` 26 -> 24
-  (physical 37 -> 18), `PIN_SWITCH` 24 -> 26 (18 -> 37). All four relay
-  inputs are now grouped on physical 11/15/16/18, and the reed switch's
-  two leads can sit on adjacent pins 37 + 39 (GND). **Deploy order
-  matters**: relays are active-low, so climate.py drives `PIN_LIGHT` HIGH
-  at startup (relay off); with the OLD wiring still in place that would
-  drive GPIO24 into the reed switch, a dead short to ground whenever the
-  switch is closed. Rewire first (Pi powered off), then let the update
-  deploy. Both GPIO24 and GPIO26 default to pull-down at power-on, so the
-  relay's pre-script boot behaviour is unchanged. Verified with stubbed
-  GPIO: pin 24 set up as output and first driven HIGH, pin 26 as input
-  with pull-up and never written. Reed switch ground pin not yet stated
-  (39 suggested).
-
-- **[2026-09-29] SHT31 bring-up on the real Pi (benchtop).** Confirmed
-  on hardware: `dtoverlay=i2c5` gives `/dev/i2c-5` (so
-  `EXTERNAL_SHT31_I2C_BUS = 5` is right; `/dev/i2c-20`/`-21` are the Pi
-  4's HDMI DDC buses, ignore); `i2cdetect` sees an SHT31 at 0x44 on both
-  bus 1 and bus 5, which also **confirms the probes' lead colors -
-  yellow = SCL, green = SDA** (the diagram's assumption) and that `pi`
-  can open both buses without sudo. **Bus 1 also shows 0x1a - that's
-  the Argon ONE case's fan/power-button controller**, which lives on I2C
-  bus 1 at 0x1a (still present with the probe unplugged). Not a fault;
-  don't go hunting it. Consequence: the internal SHT31 shares bus 1 with
-  the case fan controller, so a fault on the internal probe's lead that
-  hangs bus 1 would also freeze case fan control (the internal reading
-  dropping out already starts the failsafe, so it's visible).
-
-  **Both tiles were blank after switching to SHT31**: the
-  `adafruit-circuitpython-sht31d` package had never been installed on
-  the Pi (README's install line lists it, but the Pi's setup predates
-  anyone needing it). Fix: `pip3 install adafruit-circuitpython-sht31d
-  --break-system-packages` as pi. Root problem was `_read_sht31_f()`
-  swallowing ImportError silently, identical to "no sensor wired" -
-  **now logs the failure reason once per failure streak** (and recovery),
-  and a missing library also goes on the dashboard as a
-  `control_loop_error` with the install command. Verified with the real
-  climate.py + stubbed GPIO: 3 failing cycles -> exactly 1 dashboard
-  event, recovery logged, I/O errors log-only.
-
-- **[2026-09-29] Data history retention + "Clear history" (explicit
-  request).** Before this, nothing ever deleted sensor history:
-  climate.py writes a `readings` row every 15s cycle (~5,800/day, ~2M/yr)
-  and `events` also grew forever. New Settings section **Data history**:
-  - `history_retention_days` (default 365; 7-3650, 0 = keep forever).
-    `webapp.py`'s new `history_retention_loop` thread trims older
-    readings/events hourly (first pass 60s after startup, so the restart
-    every applied update does isn't also a big delete); logs a dashboard
-    event only for catch-up trims of 10k+ rows.
-  - "Clear selected history" (readings and/or events, all rows) behind the
-    shared confirm dialog showing exact counts; logs a "History cleared"
-    event afterwards, so a cleared event log starts with the reason it's
-    empty. Download links next to it: new `/api/readings/download` (CSV,
-    streamed row-by-row) and the existing `/api/events/download`.
-
-  **Load-bearing details:** `shared_state.HISTORY_TABLES = ("readings",
-  "events")` is a closed allow-list - `prune_history()` raises for
-  anything else. Never add `camera_snapshots` (its "only uncompiled
-  frames" invariant is what timelapse session recovery relies on),
-  `timelapse_videos` (video files are addressed by those rows),
-  `ble_readings`/`door_state`/`update_state` (live state, not history).
-  Deletes run in 2,000-row batches with 50ms pauses because SQLite
-  allows one writer and climate.py's writes wait on a 10s lock timeout;
-  measured with a separate writer process inserting every 20ms while
-  200k rows were deleted: **worst writer wait 5ms**. No VACUUM on
-  purpose (exclusive lock for the whole rewrite) - the file doesn't
-  shrink, freed pages are reused.
-
-  The Timelapse page's confirm dialog (`confirmDanger()`, markup, CSS)
-  moved into `base.html` so Settings can share it - any page's
-  destructive action should use it. Regression-tested: the Timelapse
-  single/bulk delete + purge browser test passes unchanged, all six
-  pages load with 0 JS errors. README's "Dashboard pages" list was also
-  stale (no Settings page; credited Config with sections that moved) -
-  fixed. **Verified in sandbox only**, not on the Pi.
-
-- **[2026-09-30] Timestamp overlay + progress previews on the Timelapse
-  page (explicit requests), and a real frame-loss bug found while
-  testing them.**
-
-  **Shared encoder, `timelapse_encode.py` (new).** The ffmpeg command,
-  x264 preset, and timeout budget moved out of `camera_service.py` so the
-  real compile, `compile_timelapse.py` (via camera_service) and previews
-  all encode identically. `camera_service.COMPILE_*` /
-  `compile_timeout_for` remain as aliases.
-
-  **Overlay**: `Cleaning · Sep 29, 2:05 PM · +2d 04h 12m` bottom-left on
-  every frame (capture time in `state.LOCAL_TZ`, elapsed since the first
-  frame being encoded). Done without rewriting JPEGs: each concat-list
-  entry gets `file_packet_metadata 'overlay=<label>'` (the value MUST be
-  quoted - unquoted it's cut at the first space) and one drawtext prints
-  `%{metadata:overlay}`. No measurable encode cost (400 frames: 5.0s vs
-  5.5s plain). Config `timelapse_overlay` (default true), checkbox on the
-  Timelapse page. If an overlay encode fails for a non-timeout reason it
-  retries once without the overlay (logged warning) - a font/filter
-  problem costs the timestamps, never the video. Uses DejaVuSans-Bold,
-  falls back to fontconfig's default.
-
-  **Previews**: "Build preview" per mode with pending frames ->
-  `POST /api/timelapse/preview/<mode>`; runs in a webapp.py thread,
-  one at a time, niced; builds to `.building_<mode>.mp4` and swaps in on
-  success; stored in the new `camera/timelapse_previews/` (NOT the
-  gallery dir, no `timelapse_videos` row, never deletes frames). Live
-  progress via ffmpeg `-progress pipe:1`. **Deliberately does not take
-  the per-mode compile lock** - a preview must never delay or skip a real
-  compile; if the frames get compiled/purged mid-build the preview just
-  fails and says so. Previews are deleted when their frames are compiled
-  (camera_service) or purged (purge_camera_snapshots), and
-  `/api/timelapse/sessions` self-heals any preview whose mode has no
-  pending frames left.
-
-  **Bug fixed (pre-existing, affected the real compile):** when a frame's
-  JPEG is missing, ffmpeg's concat demuxer logs "Impossible to open",
-  **stops reading the list, and still exits 0** - a truncated video that
-  looked like success. `camera_service` then deleted ALL the session's
-  frames, silently losing everything after the gap (e.g. if the
-  low-disk safety net pruned frames mid-encode, or a DB row existed
-  without its file). `encode()` now skips frames whose file is already
-  missing (logged; their dangling rows are cleaned up with the rest) and
-  verifies the finished video's duration via ffprobe - short = failure,
-  frames kept. Verified: 300 of 800 files deleted mid-compile -> "video
-  came out truncated (500 of 800 frames)", 0 rows deleted; 2 files
-  missing beforehand -> 48-frame video + warning + rows cleaned.
-
-  **Verified in sandbox** (real ffmpeg 6.1.1, Flask, headless Chromium):
-  overlay text on real frames of both preview and final video; preview
-  build with climbing progress, second build -> 409, frames and gallery
-  untouched, "N newer frames since" after new captures, overlay toggle
-  persists, purge removes previews; preview failing cleanly when frames
-  vanish; `compile_timelapse.py` end to end; Timelapse delete/bulk/purge
-  regression, 0 JS errors. Couldn't play the MP4 in the test browser
-  (Playwright's Chromium has no H.264) - checked the file with ffprobe
-  and the route serves it with range requests (206) instead. **Not on the
-  Pi yet** - in particular the overlay's font path and the Pi's ffmpeg
-  7.x `file_packet_metadata` behaviour.
-
-- **[2026-09-30] Overlay moved to TOP-left - it was in the file but
-  hidden on the real Pi.** Ryan saw no timestamp on a preview. Diagnosed
-  on the Pi itself (ffmpeg `7.1.5-0+deb13u1+rpt2`): drawtext present,
-  DejaVuSans-Bold present, `file_packet_metadata` labels reach the frames,
-  the label draws (raw-frame hash differs from plain), and a
-  blend=difference of the preview's corner vs its source JPEG gave
-  YAVG 53.8 - i.e. the text WAS encoded. Cause: bottom-left is exactly
-  where the browser's native `<video controls>` bar sits, and it stays up
-  once a clip ends - a 5-frame preview ends in 0.4s, so the label sat
-  permanently behind the play button/timeline. Now `x=16:y=16`. The
-  preview row also says "with timestamps" / "no timestamps" (from the
-  preview's own `overlay` flag) so this is checkable at a glance.
-  Previews/videos built before this keep the label at the bottom -
-  Rebuild preview to get the new position. Same day, explicit request: a
-  **Download** button on the preview row (`/api/timelapse/preview/<mode>.mp4
-  ?download=1` -> attachment named `<mode>-preview-YYYYMMDD-HHMM.mp4`, so
-  successive downloads of a growing session don't overwrite each other).
-
-- **[2026-09-30] Overlay label no longer includes the mode name** (Ryan's
-  request) - now just `Sep 29, 2:05 PM · +2d 04h 12m`. The mode is
-  already shown on the gallery card / preview row. Earlier entries' label
-  examples predate this.

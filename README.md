@@ -11,14 +11,12 @@ Raspberry Pi climate control for a dermestid beetle colony living in a converted
 | `climate.py` | Main control loop — heater, fan/vent servo, dehumidifier, door light. Always running. |
 | `webapp.py` | Flask dashboard — live readings/history, mode switching, setpoints. |
 | `shared_state.py` | Shared config + SQLite helpers used by every other script. Must live in the same folder. |
-| `templates/` | Dashboard pages: `base.html` (nav/layout, shared confirm dialog), `home.html`, `logs.html`, `data.html`, `timelapse.html`, `config.html`, `settings.html`. |
+| `templates/` | Dashboard pages: `base.html` (nav/layout), `home.html`, `logs.html`, `data.html`, `config.html`, `timelapse.html`. |
 | `config.json` | Current mode, setpoints, sensor/camera settings. Auto-created if missing. |
 | `ble_listener.py` | Optional — listens for a BLE temp/humidity sensor (SensorPush, Govee, INKBIRD, Xiaomi, RuuviTag) as the external reading. |
 | `ble_battery.py` | Optional — periodic battery check (SensorPush HT1 only; other brands broadcast battery for free). |
 | `discover_ble_sensor.py` | One-time helper to find a BLE sensor's address. |
 | `camera_service.py` | Optional — per-mode timelapse capture only (pulls snapshots from camera-streamer's HTTP API). Live view itself is served by camera-streamer, a separate daemon — see `docs/camera-streamer-setup.md`. |
-| `timelapse_encode.py` | The one ffmpeg encode used for every timelapse video and progress preview (timestamp overlay, timeout, truncation check). |
-| `compile_timelapse.py` | Manual recovery — compiles a mode's kept frames over SSH with no time limit. |
 | `discover_camera.py` | One-time helper to find the webcam's `/dev/videoN` index. |
 | `auto_update.sh` | Pulls from git and restarts the affected services. |
 | `systemd/` | Unit/timer files so everything runs on boot and restarts on crash. |
@@ -38,13 +36,11 @@ GPIO pin assignments (BCM numbering, set in `climate.py`):
 | Internal DHT22 — DATA | GPIO27 | 13 |
 | Heater relay | GPIO22 | 15 |
 | Dehumidifier relay | GPIO23 | 16 |
-| Light relay | GPIO24 | 18 |
-| External DHT22 fallback — DATA (if DHT22) | GPIO5 | 29 |
-| Door reed switch | GPIO26 | 37 |
-| Internal SHT31 SDA (optional) | GPIO2 | 3 |
-| Internal SHT31 SCL (optional) | GPIO3 | 5 |
-| External fallback SHT31 SDA (optional, i2c5) | GPIO12 | 32 |
-| External fallback SHT31 SCL (optional, i2c5) | GPIO13 | 33 |
+| Door reed switch | GPIO24 | 18 |
+| External DHT22 fallback — DATA | GPIO5 | 29 |
+| Light relay | GPIO26 | 37 |
+| SHT31 SDA (optional) | GPIO2 | 3 |
+| SHT31 SCL (optional) | GPIO3 | 5 |
 
 **GPIO4 (physical pin 7)** is dead on this specific board (confirmed via `pinctrl` — see `PROJECT_STATUS.md`) and is not used; the external fallback probe was moved to GPIO5 instead. **GPIO15/RXD** is avoided for the same reason it's marked unused above — it doubles as UART0 RXD and misbehaves if the serial console is enabled.
 
@@ -55,62 +51,35 @@ If `PIN_*` in `climate.py` ever changes again, regenerate the diagram with `pyth
 | DHT22/AM2302 pin | Pi pin |
 |---|---|
 | VCC | 3.3V (pin 1) |
-| GND | GND (pin 9) |
+| GND | GND (pin 6) |
 | DATA | GPIO27 (pin 13) |
 
-Wired to 3.3V rather than 5V because both 5V pins are already committed (pin 2 to the relay board, pin 4 to the door servo) — the DHT22 tolerates 3.3–5.5V, so this is just a wiring choice, not a workaround. Add a 4.7–10kΩ pull-up between DATA and VCC if using a bare chip (most breakout modules already have one).
+Wired to 3.3V rather than 5V because both 5V pins are already committed to relay board power — the DHT22 tolerates 3.3–5.5V, so this is just a wiring choice, not a workaround. Add a 4.7–10kΩ pull-up between DATA and VCC if using a bare chip (most breakout modules already have one).
 
-To use an SHT31 instead (drop-in swap, no code changes — flip "Internal sensor source" on the Settings page):
+To use an SHT31 instead (drop-in swap, no code changes — flip "Internal sensor source" on the Config page):
 
 ```bash
 sudo raspi-config   # Interface Options -> I2C -> Enable, then reboot
 ```
 
-| SHT31 wire | Lead color | Pi pin |
-|---|---|---|
-| VIN | red | 3.3V (pin 1) |
-| GND | black | GND (pin 9) |
-| SCL | yellow | GPIO3 (pin 5) |
-| SDA | green | GPIO2 (pin 3) |
-
-Lead colors are the prewired probes' own (yellow = SCL, green = SDA is the usual convention for these 4-wire probes, but some vendors swap them - if `i2cdetect` shows nothing, check the probe's listing and try swapping those two). Keep sensor power on the **3.3V** pins, never 5V: an SHT31 tolerates 5V itself, but with pull-ups to VIN that would put 5V on the Pi's 3.3V-only SDA/SCL pins.
+| SHT31 pin | Pi pin |
+|---|---|
+| VIN | 3.3V (pin 1) |
+| GND | GND (pin 6) |
+| SCL | GPIO3 (pin 5) |
+| SDA | GPIO2 (pin 3) |
 
 The SHT31 also has an onboard heater `climate.py` uses to recover from condensation (>99% humidity for a minute triggers a 10s heater pulse, rate-limited to once/10min) — the DHT22 has no equivalent.
 
 ### External sensor: BLE primary + wired fallback
 
-The external reading comes from a BLE sensor (primary) and a wired probe (always-on fallback) — a DHT22 on GPIO5 by default, or an SHT31. `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the wired probe) — no manual switching, and every failover is logged. Pick the probe type under Settings → Fallback → Probe type.
+The external reading comes from a BLE sensor (primary) and a wired DHT22 on GPIO5 (always-on fallback). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the wired probe) — no manual switching, and every failover is logged.
 
 | DHT22/AM2302 pin | Pi pin |
 |---|---|
 | VCC | 3.3V (pin 17) |
-| GND | GND (pin 34) |
+| GND | GND (pin 9 or similar) |
 | DATA | GPIO5 (pin 29) |
-
-**SHT31 as the fallback probe.** It goes on its **own** I2C bus — the Pi 4's extra `i2c5` controller — never on the internal SHT31's bus. One faulty sensor or chafed lead can hold a bus's data line low and hang everything on it; sharing would let a single fault take out the internal reading *and* its independent backup together. Enable the bus in `/boot/firmware/config.txt` (then reboot):
-
-```
-dtoverlay=i2c5,baudrate=50000
-```
-
-Then check it exists and the sensor answers at `0x44`:
-
-```bash
-ls /dev/i2c-*            # expect /dev/i2c-5 (if it's a different number, set EXTERNAL_SHT31_I2C_BUS in climate.py to match)
-sudo apt install i2c-tools
-i2cdetect -y 5           # expect 44
-```
-
-| SHT31 wire | Lead color | Pi pin |
-|---|---|---|
-| VIN | red | 3.3V (pin 17) |
-| GND | black | GND (pin 34) |
-| SDA | green | GPIO12 (pin 32) |
-| SCL | yellow | GPIO13 (pin 33) |
-
-**Pull-ups:** GPIO2/3 (the internal SHT31) have strong 1.8kΩ pull-ups on the Pi board itself; GPIO12/13 only get the chip's weak internal ones (~50kΩ), which aren't enough for a 5-foot lead. Unless the probe has its own pull-ups built in, add a **4.7kΩ resistor from SDA (pin 32) to 3.3V and another from SCL (pin 33) to 3.3V**, at the Pi end. `baudrate=50000` (half the 100kHz default) also buys margin for the long lead's capacitance; if the *internal* SHT31 (also on a long lead) ever shows read errors, `dtparam=i2c_arm_baudrate=50000` does the same for the primary bus.
-
-Switching the probe type back to DHT22 needs no config.txt change — the i2c5 overlay only claims GPIO12/13, not GPIO5.
 
 ## Install
 
@@ -182,34 +151,6 @@ running:
 ```bash
 sudo apt install ffmpeg   # needed to compile timelapse sessions into .mp4
 ```
-
-If a session's automatic compile ever fails or times out (the log says
-"raw frames kept"), nothing is lost — compile it by hand over SSH, as the
-`pi` user (not sudo), from the project directory:
-
-```bash
-python3 compile_timelapse.py            # lists modes with kept frames
-python3 compile_timelapse.py cleaning   # compiles them, no time limit, shows progress
-```
-
-It's safe to run while the camera service is up. Leftover frames are
-also rolled into that mode's next automatic compile if you don't.
-
-To throw kept frames away instead, use **Purge pending frames** on the
-Timelapse page (asks for confirmation first; compiled videos aren't
-touched, and it refuses while a compile is running).
-
-**Progress previews and timestamps.** The Timelapse page's **Progress
-preview** card has a **Build preview** button per mode with pending
-frames: it encodes the frames captured so far into a separate preview
-video (watch it right there) *without* deleting them or adding anything to
-the gallery — the full video is still made from every frame at the next
-mode change. One preview builds at a time (it's a full-CPU job, run at the
-lowest priority), each mode keeps only its latest preview, and a preview is
-removed once its frames are compiled or purged. New videos and previews
-get the capture time and time elapsed since the session started burned
-into each frame (e.g. `Sep 29, 2:05 PM · +2d 04h 12m`, top-left); the
-checkbox in the same card turns that off.
 
 1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
 2. Set device/resolution/port on the Config page, or in `config.json`:
@@ -290,6 +231,17 @@ safety net. Both are on by default and independently toggleable like any other e
 generic "Camera / timelapse problem" category (camera-streamer being unreachable, ffmpeg failing to compile a
 session, etc.).
 
+**Internal temp/humidity out of range** is a separate alert from the heat/cool/dehumidify control logic
+itself: each mode's setpoints (Setpoints tab) are what the control loop reacts to every cycle, but alerting on
+that exact same crossing would fire constantly during perfectly normal hysteresis-driven swings. Instead, each
+mode also has its own **alert margin** (°F for temp, %RH for humidity, defaults 5°F / 15%RH) that widens the
+setpoints into a bigger "still basically fine" band; only once the internal reading drifts past that wider
+band, and stays there for the Notifications card's configured **range-alert minutes** (default 15, 0 disables
+it - same convention as the door-open alert), does a `warning`/`temp_out_of_range` or `humidity_out_of_range`
+event fire - meant to catch an actual problem (equipment failure, a stuck door, a heat wave overwhelming
+cooling) rather than routine operation. External/BLE readings are not watched by this - it only looks at the
+internal sensor, the same one the control loop itself uses.
+
 Like every other setting on this dashboard, notification settings (including channel credentials) are saved
 to `config.json` in plain text and are visible to anything on your LAN that can reach the dashboard - see the
 "no login" note above. Don't put credentials here you wouldn't put anywhere else on this network.
@@ -356,17 +308,7 @@ Local `config.json` changes are stashed before pulling and restored after (a war
 - **Logs** (`/logs`) — event log with level filter and pagination.
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
-- **Config** (`/config`) — per-mode setpoints (including each mode's timelapse interval) and notifications.
-- **Settings** (`/settings`) — sensor sources and calibration, BLE sensor, camera, software updates, and data history.
-
-### Data history
-
-`climate.py` logs a readings row every 15-second cycle (~5,800 rows/day), so history grows by roughly 2 million rows a year. **Settings → Data history** controls it:
-
-- **Retention** — sensor readings and the event log older than this many days are trimmed automatically once an hour (default 365; 7–3650, or 0 to keep everything). Runs in the web service, in small batches, so it never stalls `climate.py`'s own writes.
-- **Clear history** — wipes sensor readings and/or the event log right now (e.g. benchtop test data before the Pi moves into the enclosure), behind a confirmation. Download links for both sit next to it.
-
-Neither touches settings, timelapse videos or pending timelapse frames. Freed space is reused inside the database file rather than shrinking it on the SD card.
+- **Config** (`/config`) — per-mode setpoints, sensor source/calibration, BLE and camera settings, software updates, notifications.
 
 ## Activity modes
 
