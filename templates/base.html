@@ -120,6 +120,29 @@
     margin-top: 6px; background: var(--danger); border: none; color: #fff;
     font-weight: 600; padding: 8px 14px; border-radius: 6px; cursor: pointer;
   }
+  /* confirmDanger()'s modal (see the shared script block below) - a
+     styled stand-in for the browser's native confirm(), used for an
+     action whose consequences are worth spelling out in more than one
+     line (e.g. "Clear selected history" needs to say exactly how many
+     rows, since what's rejected to be cleared). */
+  .confirm-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: none; align-items: center; justify-content: center;
+    z-index: 1000; padding: 16px;
+  }
+  .confirm-box {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+    padding: 20px; max-width: 420px; width: 100%;
+  }
+  .confirm-box h3 { margin: 0 0 10px 0; font-size: 1rem; }
+  .confirm-box p { margin: 0 0 10px 0; font-size: 0.85rem; color: var(--text-dim); }
+  .confirm-box p:last-of-type { margin-bottom: 0; }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .confirm-actions .save-btn, .confirm-actions .danger-btn { margin-top: 0; }
+  .confirm-cancel-btn {
+    margin-top: 0; background: var(--panel-border); border: none; color: var(--text);
+    font-weight: 600; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+  }
   .save-msg { font-size: 0.8rem; margin-top: 6px; min-height: 1em; }
   .save-msg.ok { color: var(--accent); }
   .save-msg.err { color: var(--danger); }
@@ -178,8 +201,64 @@
 </div>
 {% block content %}{% endblock %}
 </div>
+<div class="confirm-overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <h3 id="confirmTitle"></h3>
+    <div id="confirmBody"></div>
+    <div class="confirm-actions">
+      <button class="confirm-cancel-btn" id="confirmCancelBtn">Cancel</button>
+      <button class="danger-btn" id="confirmOkBtn"></button>
+    </div>
+  </div>
+</div>
 {% block scripts %}{% endblock %}
 <script>
+// A styled stand-in for the browser's native confirm() - returns a
+// Promise<boolean>, so callers just `if (!await confirmDanger(...)) return;`
+// the same way they would with the native one. `lines` is an array of
+// paragraph strings rendered via innerHTML (not textContent), same trust
+// level as every other innerHTML assignment already in these templates -
+// always built from this dashboard's own strings/numbers (row counts,
+// labels), never raw user input - so a caller can bold a number with
+// `<strong>` (see clearHistory() in settings.html) without it coming out
+// as literal angle brackets. Single shared overlay element (markup is in
+// this file, right above this script block) rather than building one
+// fresh per call - simpler, and there's never more than one of these
+// open at a time anyway.
+function confirmDanger(title, lines, confirmLabel) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('confirmOverlay');
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmBody').innerHTML = lines.map(l => `<p>${l}</p>`).join('');
+    const okBtn = document.getElementById('confirmOkBtn');
+    const cancelBtn = document.getElementById('confirmCancelBtn');
+    okBtn.textContent = confirmLabel || 'Confirm';
+    overlay.style.display = 'flex';
+
+    function cleanup(result) {
+      overlay.style.display = 'none';
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      overlay.removeEventListener('click', onOverlayClick);
+      document.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onOk() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    // Clicking the dimmed backdrop counts as Cancel - but only a click
+    // that actually STARTS on the backdrop itself (e.target === overlay),
+    // not one that merely bubbles up to it from the box - e.g. a
+    // click-drag that starts while selecting text inside the dialog and
+    // releases just outside it shouldn't silently dismiss the whole thing.
+    function onOverlayClick(e) { if (e.target === overlay) cleanup(false); }
+    function onKeydown(e) { if (e.key === 'Escape') cleanup(false); }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    overlay.addEventListener('click', onOverlayClick);
+    document.addEventListener('keydown', onKeydown);
+  });
+}
+
 // Runs on every page (outside the overridable scripts block) - polls
 // for an available update and shows a banner if one's found, regardless
 // of which page you're currently on.

@@ -308,6 +308,15 @@ Local `config.json` changes are stashed before pulling and restored after (a war
 
 The Settings page's **System** card has a **Restart Pi** button for a full reboot of the Raspberry Pi itself - not just one service, everything (climate control, the camera, this dashboard). It asks for confirmation first, since it's disruptive and can't be undone once clicked. Needs the same `systemctl reboot` sudoers line added above - without it, the button logs an attempt but the actual reboot silently fails (check `logs/restart_pi.log`). Like "Update now," the request is handed off to a detached background process so the reboot isn't blocked on this very request still being in flight when `dermestid-web.service` goes down with everything else.
 
+## Data history (retention & clearing)
+
+The Settings page's **Data history** card shows how much is currently stored (row counts, oldest timestamp, and the SQLite file's size on disk) for the two tables that grow over time - sensor readings (one row per control cycle) and the event log. Two independent controls:
+
+- **Retention** - "Keep sensor readings & event log for (days)", 0 (the default) keeps everything forever, otherwise 7–3650 days. A background thread prunes anything older than the window once an hour - a shortened window takes effect within the hour, not instantly. Settings, timelapse videos, and camera snapshot frames are never touched by this; it only ever deletes from the `readings`/`events` SQLite tables.
+- **Clear selected history** - wipes readings and/or the event log right now, with a confirmation dialog first (spelling out exactly how many rows of each, pulled live right before the dialog opens) since it can't be undone. Download a copy first if you might want it: `readings (.csv)` and `event log (.txt)` links sit right above the checkboxes.
+
+The database file itself doesn't shrink on the SD card when rows are deleted (ordinary SQLite behavior, not a bug here) - the freed space is reused for new history rather than returned to the filesystem.
+
 ## Dashboard pages
 
 - **Home** (`/`) — live readings, relay states, mode switch, live camera view, and the temp/humidity history graph (1h–30d).
@@ -316,7 +325,7 @@ The Settings page's **System** card has a **Restart Pi** button for a full reboo
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
 - **Config** (`/config`) — per-mode setpoints, including each mode's out-of-range alert margins.
 - **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open and out-of-range alert timing.
-- **Settings** (`/settings`) — sensor source/calibration, BLE and camera settings, software updates, restarting the Pi.
+- **Settings** (`/settings`) — sensor source/calibration, BLE and camera settings, software updates, data history retention/clearing, restarting the Pi.
 
 ## Activity modes
 

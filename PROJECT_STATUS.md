@@ -565,6 +565,47 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-05]** Fixed the Settings page's "Data history" card (Retention + Clear selected history), reported
+  by Ryan as "Could not load history stats." on page load. Root cause: this feature (whichever earlier commit
+  added it, before this session) was frontend-only - `templates/settings.html` called `/api/history/stats`,
+  `/api/history/retention`, `/api/history/clear`, and linked to `/api/readings/download`, and NONE of those
+  four routes existed anywhere in `webapp.py`; every fetch 404'd. Also discovered in the same pass:
+  `clearHistory()` calls `confirmDanger(...)`, a function that is likewise never defined anywhere in the repo -
+  clicking "Clear selected history" would have thrown a plain JS error instead of showing any dialog at all.
+  Built all of it for real this time:
+  - `shared_state.py`: `history_retention_days` (0 = forever, same never-sentinel convention as
+    `door_open_alert_minutes`/`snapshot_interval_minutes`) added to `DEFAULT_CONFIG` as its own top-level key
+    (not nested under `notifications`); `HISTORY_RETENTION_BOUNDS = (7, 3650)` + `validate_history_retention()`;
+    `get_history_stats()` (COUNT/MIN over both tables + `os.path.getsize(DB_PATH)` + the saved retention
+    setting); `clear_history(readings, events)` (plain `DELETE FROM ...`, not DROP/recreate - schema and
+    pending migrations stay intact); `prune_old_history()` (the actual hourly retention enforcement - was
+    completely absent; the card's own copy already claimed "trimmed automatically once an hour" for a feature
+    that did nothing); `get_all_readings()` (full column set, oldest-first, for the CSV export - kept separate
+    from `get_readings_table()` rather than teaching that one to accept `limit=None`, since binding `None` to
+    its `LIMIT ?` is a confirmed `sqlite3.IntegrityError`, not silently "no limit").
+  - `webapp.py`: `/api/history/stats` (GET), `/api/history/retention` (POST), `/api/history/clear` (POST),
+    `/api/readings/download` (GET, real CSV via the `csv`/`io` modules - newly imported - unlike `/api/events/
+    download`'s hand-built plain text, since readings are genuinely tabular/17 columns and worth a spreadsheet's
+    correct quoting). New `history_retention_loop()` background thread (started in `__main__` alongside
+    `update_checker_loop()`), plain hourly `time.sleep()` rather than that loop's short-tick re-check pattern -
+    a deliberate difference, explained inline, not an oversight.
+  - `templates/base.html`: real `confirmDanger(title, lines, confirmLabel)` - a shared, Promise-based modal
+    (overlay markup + `.confirm-*`/`.danger-btn` CSS, both likewise previously-referenced-but-undefined) so
+    `await confirmDanger(...)` behaves like `confirm()` but can show more than one line (needed here: exactly
+    how many rows of each table are about to go, fetched live right before the dialog opens). `.danger-btn` in
+    particular was ALSO referenced by this session's earlier Restart Pi button with no definition anywhere
+    (see the entry below) - one fix covers both; Restart Pi itself still uses plain native `confirm()`, not
+    `confirmDanger()`, left as-is since it already shipped and works, not revisited here.
+  - `README.md`: new "Data history (retention & clearing)" section.
+  **What's verified**: `py_compile` on `webapp.py`/`shared_state.py`, Jinja2 parse + `node --check` across every
+  template, and a from-scratch Flask test-client run against a temp SQLite DB (seeded rows directly, not just
+  through the app) exercising every new endpoint end-to-end - stats before/after a clear, a successful and an
+  out-of-bounds retention save, `/api/readings/download`'s actual CSV header/body, and `prune_old_history()`
+  called directly against a mix of old/new backdated rows, confirming it deletes only what's actually past the
+  window. **What's NOT verified**: `confirmDanger()`'s actual modal rendering/dismiss behavior (overlay click,
+  Escape key, button clicks) in a real browser - only confirmed it parses as valid JS and the function signature
+  matches every existing call site; the hourly background prune running for real over an actual hour-plus on
+  live hardware; `/api/readings/download`'s CSV opening cleanly in an actual spreadsheet app.
 - **[2026-10-05]** **Workflow note, not a feature change - how this sandbox's git state got confusing mid-
   session, worth understanding before trusting `git log`/`git branch` here again.** All of this session's work
   (notification system, out-of-range alerts, the Notifications tab split, its follow-up tweaks) was built and

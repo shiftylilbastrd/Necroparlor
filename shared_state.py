@@ -287,6 +287,13 @@ DEFAULT_CONFIG = {
     # /dev/v4l/by-id/... path won't have a cached entry, which is fine,
     # it just falls back to COMMON_RESOLUTIONS like before this existed.
     "camera_known_resolutions": {},
+    # How long to keep readings/events rows before the hourly background
+    # prune (see prune_old_history() below) deletes them - 0 means keep
+    # everything forever, same never sentinel convention as
+    # snapshot_interval_minutes/door_open_alert_minutes elsewhere in this
+    # file. Settings/timelapse videos/camera snapshots are never affected
+    # by this - it only ever touches the readings/events tables.
+    "history_retention_days": 0,
     "modes": {
         "dormant": {
             # Cold enough to slow metabolism way down (less feeding,
@@ -345,6 +352,7 @@ VENT_DURATION_BOUNDS = (1, 60)    # minutes
 # is validated separately from this range, same pattern as the update-
 # branch/interval validators below.
 SNAPSHOT_INTERVAL_BOUNDS = (1, 1440)  # minutes, when not 0/never
+HISTORY_RETENTION_BOUNDS = (7, 3650)  # days, when not 0/forever (see DEFAULT_CONFIG)
 
 # Bounds for the out-of-range alert margins (how far past low_temp_f/
 # high_temp_f/humidity_setpoint the internal reading has to drift before
@@ -848,6 +856,25 @@ def validate_setpoints(mode, values):
     cleaned["snapshot_interval_minutes"] = snapshot_interval
 
     return cleaned, None
+
+
+def validate_history_retention(days):
+    """Validates the Settings page's "Keep sensor readings & event log
+    for (days)" field. Returns (days, None) on success or (None,
+    error_message) on failure - same two-tuple shape as
+    validate_setpoints above, just for a single bare value instead of a
+    dict, since that's all this one setting is. 0 means "keep
+    everything forever" and is deliberately exempt from
+    HISTORY_RETENTION_BOUNDS, same never-sentinel convention as
+    snapshot_interval_minutes."""
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return None, "days must be a whole number"
+    if days != 0 and not (HISTORY_RETENTION_BOUNDS[0] <= days <= HISTORY_RETENTION_BOUNDS[1]):
+        return None, (f"days must be 0 (forever) or between "
+                       f"{HISTORY_RETENTION_BOUNDS[0]} and {HISTORY_RETENTION_BOUNDS[1]}")
+    return days, None
 
 
 # --------------------------------------------------------------------------
@@ -1907,6 +1934,102 @@ def get_recent_events(limit=50, level=None, before_ts=None):
     # event logged without one) - existing consumers that only look at
     # ts/level/message are unaffected by its presence.
     return [{"ts": r[0], "level": r[1], "message": r[2], "category": r[3]} for r in rows]
+
+
+def get_all_readings():
+    """Every readings row, oldest first (natural order for a downloaded
+    file - a spreadsheet reads top-to-bottom chronologically), full
+    column set - for the Settings page's "readings (.csv)" download
+    link. Deliberately a separate function from get_readings_table()
+    above rather than teaching that one to accept limit=None:
+    get_readings_table()'s query always appends "LIMIT ?", and binding
+    None there is a sqlite3.IntegrityError ("datatype mismatch"), not
+    silently "no limit" - confirmed directly against sqlite3, not
+    assumed - so this just doesn't share that code path instead of
+    adding a conditional LIMIT only this one caller would ever need."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
+        "ble_temp, ble_humidity, wired_temp, wired_humidity, active_external_source, "
+        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m FROM readings ORDER BY ts ASC"
+    ).fetchall()
+    conn.close()
+    keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
+            "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
+            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def get_history_stats():
+    """Powers the Settings page's "Data history" card: row count + the
+    oldest timestamp still on file for both readings and events (so
+    "N readings since <date>" can be shown without pulling every row
+    just to count/sort them client-side), the database file's current
+    size on disk, and the currently-configured retention window.
+    Deliberately two separate COUNT/MIN queries rather than one JOIN -
+    readings and events are unrelated tables with no shared key, there's
+    nothing to join on."""
+    conn = get_db()
+    r_count, r_oldest = conn.execute("SELECT COUNT(*), MIN(ts) FROM readings").fetchone()
+    e_count, e_oldest = conn.execute("SELECT COUNT(*), MIN(ts) FROM events").fetchone()
+    conn.close()
+    db_bytes = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+    config = load_config()
+    return {
+        "readings": {"count": r_count, "oldest_ts": r_oldest},
+        "events": {"count": e_count, "oldest_ts": e_oldest},
+        "db_bytes": db_bytes,
+        "retention_days": config.get("history_retention_days", 0),
+    }
+
+
+def clear_history(readings=False, events=False):
+    """Deletes ALL rows from the selected table(s) - the Settings page's
+    "Clear selected history" button, always behind a client-side
+    confirmation dialog (confirmDanger() in base.html) since this can't
+    be undone. A plain DELETE, not DROP/recreate - keeps the schema (and
+    anything init_db()'s migrations would otherwise need to redo) intact,
+    just empties the data. Returns how many rows were actually removed
+    from each table that was asked to be cleared, for the on-page
+    confirmation message - a table that wasn't selected is simply absent
+    from the returned dict, not present with a 0."""
+    conn = get_db()
+    deleted = {}
+    if readings:
+        cur = conn.execute("DELETE FROM readings")
+        deleted["readings"] = cur.rowcount
+    if events:
+        cur = conn.execute("DELETE FROM events")
+        deleted["events"] = cur.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def prune_old_history():
+    """Deletes readings/events rows older than the configured retention
+    window (history_retention_days) - called once an hour by webapp.py's
+    background history_retention_loop(), the same "re-check on a short
+    tick rather than sleep for the full interval" pattern
+    update_checker_loop() already uses, so shortening the retention
+    window via the Settings page takes effect within the hour rather
+    than waiting out whatever the OLD window happened to be. 0 means
+    keep everything forever (same never-sentinel convention as
+    elsewhere in this file) - a no-op in that case, not a delete-
+    everything bug. Returns how many rows of each were actually pruned,
+    purely for logging; 0/0 is the common case once history is already
+    within the window."""
+    config = load_config()
+    days = config.get("history_retention_days", 0)
+    if days == 0:
+        return {"readings": 0, "events": 0}
+    cutoff = time.time() - days * 86400
+    conn = get_db()
+    r = conn.execute("DELETE FROM readings WHERE ts < ?", (cutoff,))
+    e = conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+    conn.commit()
+    conn.close()
+    return {"readings": r.rowcount, "events": e.rowcount}
 
 
 # --------------------------------------------------------------------------

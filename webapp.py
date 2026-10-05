@@ -12,6 +12,8 @@ import time
 import datetime
 import os
 import json
+import csv
+import io
 import shutil
 import subprocess
 import threading
@@ -669,6 +671,86 @@ def api_readings_table():
     return jsonify(state.get_readings_table(limit=limit, before_ts=before))
 
 
+@app.route("/api/readings/download")
+def api_readings_download():
+    """CSV export of every readings row, oldest first - the Settings
+    page's "readings (.csv)" link next to "Clear selected history",
+    same reasoning as that button's own download-a-copy-first prompt:
+    this is the one place that data can be gotten out before a Clear
+    (or the retention prune) removes it for good. Unlike /api/events/
+    download above (hand-built plain text, since an event log reads
+    naturally as lines), this uses the csv module properly - readings
+    rows are genuinely tabular (17 columns) and worth opening in a
+    spreadsheet, where correct quoting actually matters."""
+    rows = state.get_all_readings()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
+                      "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
+                      "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"])
+    for r in rows:
+        writer.writerow([r[k] for k in ["ts", "mode", "internal_temp", "internal_humidity", "external_temp",
+                                         "external_humidity", "ble_temp", "ble_humidity", "wired_temp",
+                                         "wired_humidity", "active_external_source", "fan", "heater",
+                                         "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]])
+    filename = f"necroparlor-readings-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
+    return Response(buf.getvalue(), mimetype="text/csv",
+                     headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+@app.route("/api/history/stats")
+def api_history_stats():
+    """Powers the Settings page's "Data history" card on load (and
+    every 60s after, and right before a Clear, to confirm exactly what's
+    about to be deleted) - row counts/oldest-timestamp for readings and
+    events, the database file's size on disk, and the saved retention
+    setting. Read-only, cheap (COUNT/MIN with no full table scan of row
+    contents), safe to poll."""
+    return jsonify(state.get_history_stats())
+
+
+@app.route("/api/history/retention", methods=["POST"])
+def api_set_history_retention():
+    """Saves history_retention_days - its own top-level config key (see
+    DEFAULT_CONFIG in shared_state.py), not nested under notifications.
+    No restart needed: prune_old_history() (called hourly by
+    history_retention_loop() below) re-reads config.json fresh every
+    time it runs, same as every other setting in this file."""
+    body = request.get_json(force=True, silent=True) or {}
+    days, error = state.validate_history_retention(body.get("days"))
+    if error:
+        return jsonify({"error": error}), 400
+    config = state.load_config()
+    config["history_retention_days"] = days
+    state.save_config(config)
+    return jsonify({"retention_days": days})
+
+
+@app.route("/api/history/clear", methods=["POST"])
+def api_clear_history():
+    """Wipes readings and/or events right now, on demand - the Settings
+    page's "Clear selected history" button, always sent only after the
+    page's own confirmDanger() dialog has already been accepted
+    (client-side; this endpoint itself doesn't re-confirm anything, it
+    trusts the request the same way every other POST on this dashboard
+    does - there's no login here, see the README's "no login" note).
+
+    The log_event() call below runs AFTER state.clear_history() even
+    when events itself was one of the tables just wiped - deliberately,
+    not a bug: it leaves one fresh row behind confirming the clear
+    actually happened, rather than a completely silent, empty log that
+    gives no evidence either way."""
+    body = request.get_json(force=True, silent=True) or {}
+    readings = bool(body.get("readings", False))
+    events = bool(body.get("events", False))
+    if not readings and not events:
+        return jsonify({"error": "Select at least one of readings/events to clear"}), 400
+    deleted = state.clear_history(readings=readings, events=events)
+    state.log_event("warning", "History cleared manually from the dashboard: " +
+                     ", ".join(f"{v} {k}" for k, v in deleted.items()))
+    return jsonify({"deleted": deleted})
+
+
 @app.route("/api/mode", methods=["POST"])
 def api_set_mode():
     body = request.get_json(force=True, silent=True) or {}
@@ -944,9 +1026,35 @@ def update_checker_loop():
         time.sleep(30)
 
 
+HISTORY_RETENTION_CHECK_SECONDS = 3600  # "trimmed automatically once an hour" (Settings page copy)
+
+
+def history_retention_loop():
+    """Background thread, started once when webapp.py starts, right
+    alongside update_checker_loop() above. Deliberately plain
+    time.sleep(3600) rather than that loop's "re-check on a short tick"
+    pattern - a shortened retention window taking up to an hour to apply
+    is fine (the Settings page's own copy already says "once an hour"),
+    and pruning is cheap enough (two indexed DELETE...WHERE ts < ?
+    statements) that there's no real cost either way; the short-tick
+    pattern exists there specifically so the update-check INTERVAL
+    itself (not just the check) responds promptly to being edited, which
+    doesn't have an equivalent need here."""
+    while True:
+        try:
+            deleted = state.prune_old_history()
+            if deleted["readings"] or deleted["events"]:
+                logging.info(f"History retention prune: removed {deleted['readings']} readings, "
+                              f"{deleted['events']} events")
+        except Exception:
+            logging.exception("Unexpected error in history_retention_loop - will retry next hour")
+        time.sleep(HISTORY_RETENTION_CHECK_SECONDS)
+
+
 if __name__ == "__main__":
     state.init_db()
     threading.Thread(target=update_checker_loop, daemon=True).start()
+    threading.Thread(target=history_retention_loop, daemon=True).start()
     # threaded=True is required, not optional, now that /api/camera/
     # stream.mjpg holds its connection open indefinitely - Werkzeug's
     # dev server otherwise handles one request at a time, so a single
