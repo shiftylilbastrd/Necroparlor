@@ -73,7 +73,9 @@ The SHT31 also has an onboard heater `climate.py` uses to recover from condensat
 
 ### External sensor: BLE primary + wired fallback
 
-The external reading comes from a BLE sensor (primary) and a wired DHT22 on GPIO5 (always-on fallback). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the wired probe) — no manual switching, and every failover is logged.
+The external reading comes from a BLE sensor (primary) and a wired/local fallback probe (always-on backup). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the fallback probe) — no manual switching, and every failover is logged.
+
+The fallback probe defaults to a DHT22 on GPIO5:
 
 | DHT22/AM2302 pin | Pi pin |
 |---|---|
@@ -81,12 +83,34 @@ The external reading comes from a BLE sensor (primary) and a wired DHT22 on GPIO
 | GND | GND (pin 9 or similar) |
 | DATA | GPIO5 (pin 29) |
 
+To use an SHT31 instead (flip "Probe type" on the Settings page's Fallback card to SHT31 — `external_fallback_source` in config.json), it needs its **own** I2C bus, separate from the internal sensor's: two SHT31 breakouts both default to address 0x44, so they can't share one bus. This uses a software I2C bus on GPIO12/13 via the `i2c-gpio` device-tree overlay, exposed to Linux as `/dev/i2c-5`:
+
+```bash
+# /boot/firmware/config.txt (or /boot/config.txt on older Raspberry Pi OS):
+dtoverlay=i2c-gpio,bus=5,i2c_gpio_sda=12,i2c_gpio_scl=13
+# then reboot
+```
+
+| 2nd SHT31 pin | Pi pin |
+|---|---|
+| VIN | 3.3V (pin 1) |
+| GND | GND (pin 6) |
+| SCL | GPIO13 (pin 33) |
+| SDA | GPIO12 (pin 32) |
+
+This path also needs the `adafruit-extended-bus` package (see Install below) — Blinka's `busio.I2C` only auto-detects a board's known hardware I2C buses, not an arbitrary overlay-created one, so this uses `adafruit_extended_bus.ExtendedI2C(5)` instead. It's only imported lazily if `external_fallback_source` is actually set to `sht31`, same as the internal SHT31 path.
+
+If BOTH the BLE sensor and the fallback probe are down at the same time, that's logged as an `external_sensor_unavailable` event (visible on the Logs page and in `events.txt`) — unlike a *partial* outage (one of the two down, the other still covering for it), which is normal automatic failover and not something you need to react to.
+
 ## Install
 
 ```bash
 sudo apt update
 sudo apt install python3-pip python3-rpi.gpio
 pip3 install flask adafruit-circuitpython-dht adafruit-circuitpython-sht31d --break-system-packages
+# Only needed if using an SHT31 as the external/fallback probe (two SHT31s,
+# see "External sensor" above) rather than the default wired DHT22:
+pip3 install adafruit-extended-bus --break-system-packages
 ```
 
 Copy this whole folder to the Pi, e.g. `/home/pi/dermestid/`.

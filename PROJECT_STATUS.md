@@ -565,6 +565,40 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-05]** Fixed "the fallback sensor stopped reporting," reported by Ryan after he swapped the wired
+  external DHT22 for a second SHT31 (both internal and external sensors are now SHT31s). Two separate bugs,
+  both the same "frontend shipped without backend" pattern as the Data History fix above:
+  1. **The Settings page's Fallback "Probe type" dropdown (`dht22`/`sht31`) was a pure UI stub** - `templates/
+     settings.html` called `/api/external-fallback-source`, but that route didn't exist anywhere in
+     `webapp.py`, `external_fallback_source` wasn't in `DEFAULT_CONFIG`, and `climate.py` unconditionally read
+     the wired fallback as a DHT22 via `read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)` regardless of what the
+     dropdown said - there was no SHT31 code path for the external sensor at all (only `internal_source`
+     actually branched). Selecting SHT31 there silently 404'd on save and would have changed nothing even if it
+     had saved. Built for real: `external_fallback_source` added to `DEFAULT_CONFIG` (default `"dht22"`,
+     mirrors `internal_source`'s doc-comment style); `/api/external-fallback-source` route added to
+     `webapp.py` (identical shape to `/api/internal-source`); `climate.py` now branches
+     `read_external_sht31_f()` vs `read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)` on that config value, same
+     pattern as the internal sensor. The external SHT31 needs its **own** I2C bus (two SHT31s both default to
+     address 0x44, can't share the internal sensor's hardware I2C1 bus) - uses the `i2c-gpio` overlay on
+     GPIO12/13 (`/dev/i2c-5`) + the new `adafruit_extended_bus.ExtendedI2C(5)` dependency, lazily imported
+     exactly like the internal SHT31 path. Full wiring/overlay instructions now in README under "External
+     sensor." This matches wording that was already sitting unused in `settings.html`'s help text ("needs the
+     i2c5 overlay enabled first") - whoever stubbed the dropdown out clearly had this exact design in mind and
+     never finished it.
+  2. **A genuine wired-sensor-down outage was invisible in the dashboard Logs page / events.txt by design**,
+     independent of bug #1 - this is why Ryan's pasted `journalctl`/events excerpts showed nothing during the
+     actual outage window. `climate.py`'s only handling of `external_temp is None` was a plain
+     `logging.warning()` (climate.log/journalctl only, never `state.log_event()`/SQLite), and even that only
+     fired if thermal cooling happened to be actively requested at that exact moment - a real sensor outage
+     with cooling not in play produced *zero* log output anywhere. Added a proper transition-based
+     `state.log_event()` (new `external_sensor_unavailable` category, in `EVENT_CATEGORIES` + the default
+     notification `categories` dict) that fires once when BOTH the BLE sensor and the wired/fallback probe are
+     down simultaneously (not on a partial outage - that's just normal automatic failover, already logged via
+     `external_sensor_failover`), and again when it recovers. Worth remembering for next time: a path that
+     calls `logging.warning()`/`logging.info()` instead of `state.log_event()` is invisible to the dashboard
+     entirely, no matter how real the underlying condition is - check for this specifically whenever a reported
+     symptom doesn't match what the Logs page shows.
+
 - **[2026-10-05]** Fixed the Settings page's "Data history" card (Retention + Clear selected history), reported
   by Ryan as "Could not load history stats." on page load. Root cause: this feature (whichever earlier commit
   added it, before this session) was frontend-only - `templates/settings.html` called `/api/history/stats`,

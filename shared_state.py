@@ -114,6 +114,18 @@ DEFAULT_CONFIG = {
     # BLE_SENSOR_LIBRARIES below. Neither is a mode toggle.
     "ble_mac": None,
     "ble_sensor_type": "sensorpush",
+    # The wired/local fallback probe climate.py reads every cycle
+    # alongside the BLE sensor (see ble_mac above) - used automatically
+    # whenever the BLE sensor goes stale. Separate from internal_source
+    # above since it's a different physical sensor that can be swapped
+    # independently:
+    #   "dht22"  - wired DHT22/AM2302 probe on PIN_EXTERNAL_TEMP (default)
+    #   "sht31"  - second I2C SHT31 on its own bus (GPIO12/13 via the
+    #              i2c-gpio overlay - see README) - needed because the
+    #              internal sensor may already be an SHT31 on the
+    #              hardware I2C bus, and two SHT31s can't share one bus
+    #              at the same address
+    "external_fallback_source": "dht22",
     # The door/lid light (PIN_LIGHT) is normally slaved entirely to the
     # physical reed switch (see climate.py's light_loop()) - this is a
     # dashboard-driven manual override on top of that, for checking in on
@@ -207,6 +219,7 @@ DEFAULT_CONFIG = {
             "internal_sensor_failsafe": True,
             "sensor_reading_rejected": False,
             "external_sensor_failover": True,
+            "external_sensor_unavailable": True,
             "door_open_timeout": True,
             "heater_safety_cutoff": True,
             "fan_safety_cutoff": True,
@@ -1290,6 +1303,7 @@ EVENT_CATEGORIES = {
     "internal_sensor_failsafe": {"label": "Internal sensor failsafe countdown started", "level": "warning"},
     "sensor_reading_rejected": {"label": "A sensor reading rejected as an implausible glitch", "level": "warning"},
     "external_sensor_failover": {"label": "External sensor failed over to the wired probe", "level": "warning"},
+    "external_sensor_unavailable": {"label": "External sensor unavailable (BLE and wired/fallback both down)", "level": "warning"},
     "door_open_timeout": {"label": "Door left open too long", "level": "warning"},
     "heater_safety_cutoff": {"label": "Heater safety cutoff (max runtime exceeded)", "level": "warning"},
     "fan_safety_cutoff": {"label": "Fan safety cutoff (max runtime exceeded)", "level": "warning"},

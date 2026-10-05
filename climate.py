@@ -141,6 +141,32 @@ def _get_sht31_sensor():
         _sht31_sensor = adafruit_sht31d.SHT31D(_i2c_bus)
     return _sht31_sensor
 
+
+# === EXTERNAL/FALLBACK SENSOR (second SHT31, I2C) - only touched if
+# external_fallback_source is "sht31" ===
+# Two identical SHT31 breakouts both default to I2C address 0x44, so this
+# one can't just share the internal sensor's bus (board.SCL/board.SDA,
+# hardware I2C1 on GPIO2/3) - it needs its own bus entirely. That's what
+# the "i2c5 overlay" wiring note on the Settings page's Fallback card is
+# about: a software (bit-banged) I2C bus on GPIO12/13 enabled via a
+# dtoverlay, exposed to Linux as /dev/i2c-5, independent of the hardware
+# bus the internal sensor uses - see README for the exact overlay line.
+# Needs the `adafruit-extended-bus` package (only matters if you're
+# actually using this), since Blinka's busio.I2C only auto-detects the
+# board's known hardware I2C buses, not an arbitrary overlay-created one.
+_i2c_bus_external = None
+_sht31_sensor_external = None
+
+
+def _get_sht31_sensor_external():
+    global _i2c_bus_external, _sht31_sensor_external
+    if _sht31_sensor_external is None:
+        from adafruit_extended_bus import ExtendedI2C   # noqa: PLC0415 - deliberately deferred, see note above
+        import adafruit_sht31d                          # noqa: PLC0415 - deliberately deferred, see note above
+        _i2c_bus_external = ExtendedI2C(5)  # /dev/i2c-5, see the overlay note above
+        _sht31_sensor_external = adafruit_sht31d.SHT31D(_i2c_bus_external)
+    return _sht31_sensor_external
+
 # === MUTABLE STATE ===
 current_servo_angle = SERVO_CLOSED_ANGLE
 fan_on = False
@@ -164,6 +190,7 @@ last_good_internal_humidity = None
 last_good_external_temp = None
 last_good_external_humidity = None
 last_active_external_source = None  # tracks automatic failover transitions
+last_external_sensor_ok = None  # tracks BLE+wired-both-down transitions (see run_cycle)
 sensor_fail_since = None
 alarm_active = False
 
@@ -311,6 +338,25 @@ def read_internal_sht31_f():
     crashing the script."""
     try:
         sensor = _get_sht31_sensor()
+        temp_c = sensor.temperature
+        humidity = sensor.relative_humidity
+    except (OSError, RuntimeError, ValueError, ImportError):
+        return None, None
+    if temp_c is None or humidity is None:
+        return None, None
+    return temp_c * 9.0 / 5.0 + 32.0, humidity
+
+
+def read_external_sht31_f():
+    """External/fallback SHT31 over its own I2C bus (see
+    _get_sht31_sensor_external above). Returns (None, None) on any I2C/CRC
+    failure, or if no second SHT31 is actually wired up
+    (external_fallback_source: "sht31" selected without the hardware/
+    overlay present) - either way it flows into the same validation/
+    failsafe pipeline as a failed wired DHT22 read, rather than
+    crashing the script."""
+    try:
+        sensor = _get_sht31_sensor_external()
         temp_c = sensor.temperature
         humidity = sensor.relative_humidity
     except (OSError, RuntimeError, ValueError, ImportError):
@@ -528,6 +574,7 @@ def run_cycle():
     global last_good_internal_temp, last_good_internal_humidity, last_good_external_temp
     global last_good_external_humidity
     global sensor_fail_since, alarm_active
+    global last_external_sensor_ok
     global humidity_saturated_since, last_heater_recovery
     global temp_range_since, temp_range_alert_sent, humidity_range_since, humidity_range_alert_sent
 
@@ -576,7 +623,11 @@ def run_cycle():
     # failsafe) on their own - only basic plausibility bounds apply,
     # since a single bad reading from either isn't dangerous the way a
     # bad ACTIVE reading would be, just cosmetically wrong for one cycle.
-    raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
+    external_fallback_source = config.get("external_fallback_source", "dht22")
+    if external_fallback_source == "sht31":
+        raw_wired_temp, raw_wired_humidity = read_external_sht31_f()
+    else:
+        raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
     raw_wired_temp = apply_offset(raw_wired_temp, calib.get("wired_temp_offset", 0.0))
     raw_wired_humidity = apply_offset(raw_wired_humidity, calib.get("wired_humidity_offset", 0.0))
 
@@ -684,6 +735,32 @@ def run_cycle():
                                           MAX_DELTA_HUMIDITY, "Internal humidity")
     external_temp = validate_reading(raw_external_temp, last_good_external_temp,
                                       MAX_DELTA_TEMP, "External temp")
+
+    # Log the BLE+wired-both-down transition itself (once, not every
+    # cycle) - this is the one external-sensor failure mode that was
+    # previously completely invisible on the dashboard. A lost wired/
+    # fallback probe with BLE still fresh never affects external_temp at
+    # all (BLE is simply used instead, silently - that's the whole point
+    # of automatic failover), so this only fires when BOTH sources are
+    # down simultaneously, which is also the one case that actually
+    # matters: the dashboard's external tile has nothing at all to show.
+    # Previously the only logging for this was a thermal-cooling-specific
+    # logging.warning() below that (a) only wrote to climate.log/
+    # journalctl, never the SQLite events table the dashboard Logs page
+    # and events.txt download read from, and (b) only fired if thermal
+    # cooling happened to be actively requested at that exact moment -
+    # otherwise a real sensor outage produced zero log output anywhere.
+    external_sensor_ok = external_temp is not None
+    if last_external_sensor_ok is not None and external_sensor_ok != last_external_sensor_ok:
+        if not external_sensor_ok:
+            state.log_event("warning",
+                             "External sensor unavailable (BLE sensor stale and wired/fallback "
+                             "probe not reporting) - external reading will show as missing "
+                             "until one of them recovers",
+                             category="external_sensor_unavailable")
+        else:
+            state.log_event("info", "External sensor reporting again")
+    last_external_sensor_ok = external_sensor_ok
 
     # Only INTERNAL sensor loss is treated as critical enough to shut
     # everything down - heating, dehumidifying, and the scheduled
