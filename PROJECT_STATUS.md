@@ -565,6 +565,29 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-05]** Notifications split out into its own top-nav tab, per Ryan's explicit request ("make
+  notifications its own tab"), right after the out-of-range-alert work above. Previously the Notifications
+  card lived at the bottom of the Config page, underneath the per-mode Setpoints panels - `templates/
+  config.html` is now Setpoints-only (its own `loadConfig()`/`renderSetpointPanels()`/`saveSetpoints()`, no
+  change to any of that logic), and everything notification-related (the General/Pushover/Email/Webhook cards,
+  `populateNotificationCategories()`/`renderNotificationCategories()`/`onCategoryToggle()`/`onMinLevelChange()`/
+  `applyNotificationSettings()`/`read*Fields()`/`saveNotificationSettings()`/`sendTestNotification()`/
+  `sendChannelTest()`) moved verbatim into a new `templates/notifications.html`, served by a new
+  `/notifications` route (`notifications_page()` in webapp.py) and a new "Notifications" link in
+  `templates/base.html`'s nav, between Config and Settings. No backend/API changes at all - both pages hit the
+  same `/api/status`, `/api/notification-categories`, `/api/notification-settings`, `/api/notification-test`,
+  `/api/setpoints` endpoints as before, just split across two pages' worth of JS instead of one. Updated the
+  two READMEs mentions that pointed at "the Config page's Notifications card" / "Setpoints tab" to the new
+  page split (the dashboard-pages list, and the out-of-range-alert paragraph just added above).
+
+  **What's verified**: `python3 -m py_compile` on `webapp.py`, a Jinja2 parse check on `config.html`/
+  `notifications.html`/`base.html`, `node --check` on every extracted `<script>` block in both pages, and a
+  Flask test-client smoke test importing the real `webapp.py` (no GPIO/hardware touched at module import time)
+  hitting all seven dashboard routes including the new `/notifications` one - all return 200, and the nav's
+  `active` class lands on the right link for it. **What's NOT verified**: not clicked through in a real
+  browser - in particular, that both pages' independent `fetch('/api/status')` calls on load don't produce any
+  visible flash/race now that Setpoints and Notifications fetch and render completely separately instead of
+  from one shared `loadConfig()`.
 - **[2026-10-05]** New notifications for the internal reading staying outside its mode's acceptable range -
   Ryan's explicit request ("I do want to add notifications for when temp/humidity are at unacceptable
   levels"), after first deferring an Alexa-notification idea (HAOS + `alexa_media_player` + a webhook

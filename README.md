@@ -177,7 +177,7 @@ sudo systemctl enable --now dermestid-camera.service
 
 ## Notifications (optional)
 
-The Config page's **Notifications** card can push warning-or-above events (a safety cutoff, the emergency
+The **Notifications** page can push warning-or-above events (a safety cutoff, the emergency
 shutdown, a sensor failover, a door left open too long, ...) out to your phone or inbox, through any
 combination of:
 
@@ -232,12 +232,13 @@ generic "Camera / timelapse problem" category (camera-streamer being unreachable
 session, etc.).
 
 **Internal temp/humidity out of range** is a separate alert from the heat/cool/dehumidify control logic
-itself: each mode's setpoints (Setpoints tab) are what the control loop reacts to every cycle, but alerting on
+itself: each mode's setpoints (Config page) are what the control loop reacts to every cycle, but alerting on
 that exact same crossing would fire constantly during perfectly normal hysteresis-driven swings. Instead, each
-mode also has its own **alert margin** (°F for temp, %RH for humidity, defaults 5°F / 15%RH) that widens the
-setpoints into a bigger "still basically fine" band; only once the internal reading drifts past that wider
-band, and stays there for the Notifications card's configured **range-alert minutes** (default 15, 0 disables
-it - same convention as the door-open alert), does a `warning`/`temp_out_of_range` or `humidity_out_of_range`
+mode also has its own **alert margin** (°F for temp, %RH for humidity, defaults 5°F / 15%RH, set on the Config
+page) that widens the setpoints into a bigger "still basically fine" band; only once the internal reading
+drifts past that wider band, and stays there for the Notifications page's configured **range-alert minutes**
+(default 15, 0 disables it - same convention as the door-open alert), does a `warning`/`temp_out_of_range` or
+`humidity_out_of_range`
 event fire - meant to catch an actual problem (equipment failure, a stuck door, a heat wave overwhelming
 cooling) rather than routine operation. External/BLE readings are not watched by this - it only looks at the
 internal sensor, the same one the control loop itself uses.
@@ -308,7 +309,8 @@ Local `config.json` changes are stashed before pulling and restored after (a war
 - **Logs** (`/logs`) — event log with level filter and pagination.
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
-- **Config** (`/config`) — per-mode setpoints, sensor source/calibration, BLE and camera settings, software updates, notifications.
+- **Config** (`/config`) — per-mode setpoints (including each mode's out-of-range alert margins), sensor source/calibration, BLE and camera settings, software updates.
+- **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open and out-of-range alert timing.
 
 ## Activity modes
 
