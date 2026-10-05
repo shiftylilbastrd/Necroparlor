@@ -21,13 +21,11 @@ import os
 import signal
 
 import RPi.GPIO as GPIO
-import adafruit_dht           # DHT22/AM2302 - actively maintained (see below)
 import board
-# busio / adafruit_sht31d are NOT imported here - they're optional, only
-# needed if internal_source is "sht31", and are imported lazily inside
-# _get_sht31_sensor() below. This lets the script run with only
-# adafruit-circuitpython-dht installed when internal_source is "dht22"
-# (the default) - no need to install SHT31-only packages you're not using.
+# busio / adafruit_sht31d are NOT imported here - they're imported lazily
+# inside _get_sht31_sensor()/_get_sht31_sensor_external() below, same as
+# always (no behavior change) - kept lazy since this script should still
+# start cleanly even with one of the two SHT31s not actually connected yet.
 
 import shared_state as state
 
@@ -48,15 +46,6 @@ logging.basicConfig(
 # These are intentionally NOT exposed to the web UI - they're the
 # guardrails, not the thing you tune day-to-day.
 LOOP_INTERVAL = 15                 # seconds between control cycles
-DHT_READ_GAP_SECONDS = 1.0         # gap between back-to-back DHT22 reads
-                                    # (internal + wired fallback) - a
-                                    # mitigation for possible interference
-                                    # between two timing-sensitive
-                                    # single-wire reads with no gap at all
-DHT_READ_RETRIES = 3               # attempts per DHT22 read before giving
-                                    # up for this cycle - smooths over
-                                    # ordinary single-attempt flakiness
-DHT_READ_RETRY_DELAY_SECONDS = 0.5 # pause between retry attempts
 COOL_HYSTERESIS = 2.0
 HEAT_HYSTERESIS = 2.0
 HUMIDITY_HYSTERESIS = 3.0
@@ -88,21 +77,11 @@ PIN_FAN = 17
 PIN_HEATER = 22
 PIN_HUMIDITY = 23
 PIN_SERVO = 18            # PWM-capable pin
-PIN_INTERNAL_TEMP = 27    # wired DHT22/AM2302 (internal_source: "dht22", default)
-PIN_EXTERNAL_TEMP = 5     # wired external probe fallback (local_gpio mode)
-                          # NOT GPIO4 (physical pin 7) - confirmed dead on this
-                          # Pi 4 board 2026-09-13: `pinctrl get 4` reads "lo"
-                          # even configured as input with its internal pull-up
-                          # enabled and with nothing physically connected to
-                          # it - a pin in that state can only read high, so
-                          # this is a hardware fault on the board itself, not
-                          # a wiring/sensor/software issue (see
-                          # PROJECT_STATUS.md for the full elimination trail:
-                          # ruled out 1-Wire, pigpiod, supply voltage, GPIO
-                          # backend, and the sensor unit itself in turn).
-                          # Moved to GPIO5 (physical pin 29) instead - rewire
-                          # the probe's DATA line from physical pin 7 to
-                          # physical pin 29; GND/VCC are unchanged.
+# PIN_INTERNAL_TEMP (GPIO27) / PIN_EXTERNAL_TEMP (GPIO5) - the old wired
+# DHT22 pins - are retired now that both sensors are SHT31s (see
+# PROJECT_STATUS.md for the removal note, and for the GPIO4-is-dead-on-
+# this-board history that led to GPIO5 in the first place). Both pins
+# are unused/free for future wiring.
 PIN_LIGHT = 26            # moved off GPIO15 (was sharing UART0 RXD - see README)
 PIN_SWITCH = 24
 
@@ -122,12 +101,11 @@ GPIO.setup(PIN_SWITCH, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 servo = GPIO.PWM(PIN_SERVO, 50)
 servo.start(0)
 
-# === INTERNAL SENSOR (SHT31, I2C) - only touched if internal_source is "sht31" ===
+# === INTERNAL SENSOR (SHT31, I2C) ===
 # Needs I2C enabled via raspi-config - see README. Wiring: VIN->3.3V,
 # GND->GND, SCL->GPIO3 (pin 5), SDA->GPIO2 (pin 3).
-# Created lazily on first use, not here at import time - this script must
-# still start cleanly on a system with no SHT31 wired up at all (e.g. while
-# using a DHT22 instead), so nothing I2C-related runs unless requested.
+# Created lazily on first use, not here at import time, so a missing/
+# not-yet-wired sensor doesn't crash the script at startup.
 _i2c_bus = None
 _sht31_sensor = None
 
@@ -142,18 +120,19 @@ def _get_sht31_sensor():
     return _sht31_sensor
 
 
-# === EXTERNAL/FALLBACK SENSOR (second SHT31, I2C) - only touched if
-# external_fallback_source is "sht31" ===
+# === EXTERNAL/FALLBACK SENSOR (second SHT31, I2C) ===
 # Two identical SHT31 breakouts both default to I2C address 0x44, so this
 # one can't just share the internal sensor's bus (board.SCL/board.SDA,
 # hardware I2C1 on GPIO2/3) - it needs its own bus entirely. That's what
 # the "i2c5 overlay" wiring note on the Settings page's Fallback card is
-# about: a software (bit-banged) I2C bus on GPIO12/13 enabled via a
-# dtoverlay, exposed to Linux as /dev/i2c-5, independent of the hardware
-# bus the internal sensor uses - see README for the exact overlay line.
-# Needs the `adafruit-extended-bus` package (only matters if you're
-# actually using this), since Blinka's busio.I2C only auto-detects the
-# board's known hardware I2C buses, not an arbitrary overlay-created one.
+# about: the Pi 4/CM4's extra built-in hardware I2C controller (BCM2711
+# has more than one), enabled via `dtoverlay=i2c5` in config.txt, defaults
+# to GPIO12/13, exposed to Linux as /dev/i2c-5 - a second REAL hardware
+# bus, not a bit-banged one, independent of the one the internal sensor
+# uses - see README for the exact overlay line. Needs the
+# `adafruit-extended-bus` package (only matters if you're actually using
+# this), since Blinka's busio.I2C only auto-detects the board's *default*
+# hardware I2C bus (GPIO2/3), not this second one.
 _i2c_bus_external = None
 _sht31_sensor_external = None
 
@@ -240,102 +219,11 @@ def set_servo_angle(angle):
         current_servo_angle = angle
 
 
-_dht_devices = {}  # GPIO pin number -> adafruit_dht.DHT22 instance, created lazily
-
-
-def _get_dht_device(pin, force_new=False):
-    if force_new or pin not in _dht_devices:
-        board_pin = getattr(board, f"D{pin}")
-        _dht_devices[pin] = adafruit_dht.DHT22(board_pin, use_pulseio=False)
-    return _dht_devices[pin]
-
-
-def read_temp_and_humidity_f(pin):
-    """Wired DHT22/AM2302 probe - used for the internal sensor when
-    internal_source is "dht22" (PIN_INTERNAL_TEMP), and for the external
-    sensor's local_gpio fallback (PIN_EXTERNAL_TEMP).
-
-    Uses adafruit-circuitpython-dht rather than the old Adafruit_DHT
-    package: Adafruit has deprecated and archived Adafruit_DHT and
-    directs everyone to the CircuitPython library instead. Practically,
-    Adafruit_DHT's build-time Pi-detection code is also just broken on
-    newer OS releases (it fails to install outright on Raspberry Pi OS
-    Trixie), so there's no path back to it anyway.
-
-    Retries a couple of times within this single call before giving up.
-    DHT sensors fail an occasional individual read attempt as a matter
-    of course - it's a timing-sensitive single-wire bit-banged protocol,
-    not a robust checksummed bus like I2C, and even a healthy sensor can
-    see the odd "no response"/"checksum did not validate" error. The old
-    Adafruit_DHT library actually built retries in by default
-    (read_retry()) for exactly this reason - the newer CircuitPython
-    library this project uses does not, so it's worth doing here
-    explicitly rather than treating every single failed attempt as a
-    real sensor problem. Real-world evidence: dozens of "internal sensor
-    unavailable" failsafe-countdown starts in one evening, each
-    recovering within a cycle or two - consistent with ordinary
-    single-attempt DHT flakiness, not a genuine sustained failure.
-
-    Logs a warning (visible via `journalctl -u dermestid-climate.service`)
-    only once all DHT_READ_RETRIES attempts are exhausted - not on every
-    individual attempt, since those are expected/routine. Previously this
-    failed completely silently, making a genuinely dead/disconnected
-    sensor indistinguishable from ordinary transient flakiness without
-    reading the raw GPIO trace by hand. Also now catches any exception
-    type, not just RuntimeError - the underlying bit-banged read (this
-    project runs with use_pulseio=False, since pulseio isn't available on
-    Raspberry Pi) can occasionally raise other exception types too, and
-    those shouldn't be able to crash the whole control loop.
-
-    IMPORTANT retry-timing fix: adafruit_dht's DHTBase.measure() enforces
-    its own ~2 second minimum interval between physical reads *per device
-    instance* - if called again sooner than that, it does NOT re-trigger a
-    real read, it just silently re-returns whatever self._temperature/
-    self._humidity already held (None, on a device that has never had a
-    successful read yet) with no exception raised at all. DHT_READ_RETRY_
-    DELAY_SECONDS is only 0.5s, so without recreating the device object,
-    attempts 2 and 3 below were never doing a real bitbang read - they
-    were instantly echoing attempt 1's already-failed (None) result back,
-    three times faster than the sensor's own minimum sample interval
-    allows. That's exactly the "device returned None for temperature/
-    humidity" pattern seen in the logs. A fresh adafruit_dht.DHT22
-    instance has _last_called reset to 0, so measure() always treats it
-    as a first read and actually re-triggers the protocol - so we
-    recreate the device on every retry (attempt > 0), not just once per
-    pin. This makes DHT_READ_RETRIES do what it was meant to do: real
-    independent physical attempts, not one real attempt disguised as
-    three.
-    """
-    last_error = None
-    for attempt in range(DHT_READ_RETRIES):
-        try:
-            device = _get_dht_device(pin, force_new=(attempt > 0))
-            temp_c = device.temperature
-            humidity = device.humidity
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-            if attempt < DHT_READ_RETRIES - 1:
-                time.sleep(DHT_READ_RETRY_DELAY_SECONDS)
-                continue
-            logging.warning(f"DHT22 on GPIO{pin} failed after {DHT_READ_RETRIES} attempts: {last_error}")
-            return None, None
-        if temp_c is None or humidity is None:
-            last_error = "device returned None for temperature/humidity"
-            if attempt < DHT_READ_RETRIES - 1:
-                time.sleep(DHT_READ_RETRY_DELAY_SECONDS)
-                continue
-            logging.warning(f"DHT22 on GPIO{pin} failed after {DHT_READ_RETRIES} attempts: {last_error}")
-            return None, None
-        return temp_c * 9.0 / 5.0 + 32.0, humidity
-    return None, None
-
-
 def read_internal_sht31_f():
     """Internal SHT31 over I2C. Returns (None, None) on any I2C/CRC failure,
-    or if no SHT31 is actually wired up (internal_source: "sht31" selected
-    without the hardware present) - either way it flows into the same
-    validation/failsafe pipeline as a failed wired read, rather than
-    crashing the script."""
+    or if it's not actually wired up/responding - either way it flows into
+    the same validation/failsafe pipeline as any other failed read, rather
+    than crashing the script."""
     try:
         sensor = _get_sht31_sensor()
         temp_c = sensor.temperature
@@ -350,11 +238,9 @@ def read_internal_sht31_f():
 def read_external_sht31_f():
     """External/fallback SHT31 over its own I2C bus (see
     _get_sht31_sensor_external above). Returns (None, None) on any I2C/CRC
-    failure, or if no second SHT31 is actually wired up
-    (external_fallback_source: "sht31" selected without the hardware/
-    overlay present) - either way it flows into the same validation/
-    failsafe pipeline as a failed wired DHT22 read, rather than
-    crashing the script."""
+    failure, or if the overlay/hardware isn't actually present - either way
+    it flows into the same validation/failsafe pipeline as any other
+    failed read, rather than crashing the script."""
     try:
         sensor = _get_sht31_sensor_external()
         temp_c = sensor.temperature
@@ -393,7 +279,7 @@ def apply_offset(value, offset):
 
 
 def validate_reading(new_val, last_val, max_delta, label):
-    """Reject physically-implausible DHT glitches: an implausible jump
+    """Reject physically-implausible sensor glitches: an implausible jump
     from the last known-good reading. (Absolute-range checks happen
     before this is called.)
 
@@ -586,20 +472,8 @@ def run_cycle():
     LOW_TEMP_F = setpoints["low_temp_f"]
     HUMIDITY_SETPOINT = setpoints["humidity_setpoint"]
 
-    internal_source = config.get("internal_source", "dht22")
     calib = config.get("calibration", {})
-    if internal_source == "sht31":
-        raw_internal_temp, raw_internal_humidity = read_internal_sht31_f()
-    else:
-        raw_internal_temp, raw_internal_humidity = read_temp_and_humidity_f(PIN_INTERNAL_TEMP)
-        # A short gap before reading the second DHT22 below (the wired
-        # external/fallback probe) - two of these timing-sensitive
-        # single-wire sensors read back-to-back, with no gap at all, is a
-        # plausible source of interference between the two reads. Only
-        # needed when the internal sensor is ALSO a DHT22 - the SHT31
-        # path above uses I2C, a completely different bus, so there's
-        # nothing to interfere with there.
-        time.sleep(DHT_READ_GAP_SECONDS)
+    raw_internal_temp, raw_internal_humidity = read_internal_sht31_f()
     raw_internal_temp = apply_offset(raw_internal_temp, calib.get("internal_temp_offset", 0.0))
     raw_internal_humidity = apply_offset(raw_internal_humidity, calib.get("internal_humidity_offset", 0.0))
 
@@ -623,11 +497,7 @@ def run_cycle():
     # failsafe) on their own - only basic plausibility bounds apply,
     # since a single bad reading from either isn't dangerous the way a
     # bad ACTIVE reading would be, just cosmetically wrong for one cycle.
-    external_fallback_source = config.get("external_fallback_source", "dht22")
-    if external_fallback_source == "sht31":
-        raw_wired_temp, raw_wired_humidity = read_external_sht31_f()
-    else:
-        raw_wired_temp, raw_wired_humidity = read_temp_and_humidity_f(PIN_EXTERNAL_TEMP)
+    raw_wired_temp, raw_wired_humidity = read_external_sht31_f()
     raw_wired_temp = apply_offset(raw_wired_temp, calib.get("wired_temp_offset", 0.0))
     raw_wired_humidity = apply_offset(raw_wired_humidity, calib.get("wired_humidity_offset", 0.0))
 
@@ -693,22 +563,18 @@ def run_cycle():
 
 
 
-    # SHT31 condensation recovery: only applies when the SHT31 is actually
-    # the internal sensor - a DHT22 has no onboard heater to pulse, so this
-    # whole mechanism is meaningless (and internal_sensor wouldn't even be
-    # initialized) when internal_source is "dht22". This checks the RAW
-    # (physically-plausible but not yet delta-validated) humidity,
-    # deliberately upstream of the delta check below. A real condensation
-    # event legitimately produces a fast jump to ~100% that the delta check
-    # would otherwise reject as an implausible glitch every single cycle,
-    # forever - since the reading never gets a chance to become "last good"
-    # to compare against, this would look identical to a dead sensor and
-    # eventually trip the emergency-shutdown failsafe instead of ever
-    # getting a chance to dry itself out. Reacting to the raw value here is
-    # what actually lets the heater pulse happen; the delta-validated value
-    # below still is - and should remain - the only thing the
-    # heat/cool/dehumidify logic acts on.
-    if (internal_source == "sht31" and raw_internal_humidity is not None
+    # SHT31 condensation recovery: checks the RAW (physically-plausible
+    # but not yet delta-validated) humidity, deliberately upstream of the
+    # delta check below. A real condensation event legitimately produces a
+    # fast jump to ~100% that the delta check would otherwise reject as an
+    # implausible glitch every single cycle, forever - since the reading
+    # never gets a chance to become "last good" to compare against, this
+    # would look identical to a dead sensor and eventually trip the
+    # emergency-shutdown failsafe instead of ever getting a chance to dry
+    # itself out. Reacting to the raw value here is what actually lets the
+    # heater pulse happen; the delta-validated value below still is - and
+    # should remain - the only thing the heat/cool/dehumidify logic acts on.
+    if (raw_internal_humidity is not None
             and raw_internal_humidity >= HUMIDITY_SATURATION_THRESHOLD):
         if humidity_saturated_since is None:
             humidity_saturated_since = loop_start

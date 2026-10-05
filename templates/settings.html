@@ -27,15 +27,7 @@
 <div class="grid">
   <div class="card" style="max-width:420px;">
     <h2>Internal</h2>
-    <div class="field">
-      <label>Source</label>
-      <select id="internalSourceSelect" onchange="saveInternalSource()">
-        <option value="dht22">Wired DHT22 / AM2302 (GPIO27)</option>
-        <option value="sht31">SHT31 (I2C) - adds condensation-recovery heater</option>
-      </select>
-    </div>
-    <div class="stat-sub" style="margin-top:6px;">Applies within one cycle - only switch to SHT31 once it's actually wired.</div>
-    <div class="save-msg" id="internalSourceMsg"></div>
+    <div class="stat-sub" style="margin-bottom:10px;">SHT31 (I2C, GPIO2/3) - includes a condensation-recovery heater.</div>
     <div class="field" style="margin-top:14px;">
       <label>Calibration offset (temp °F / humidity %RH)</label>
       <div style="display:flex; gap:8px;">
@@ -93,16 +85,7 @@
 
   <div class="card" style="max-width:420px;">
     <h2>Fallback</h2>
-    <div class="stat-sub" style="margin-bottom:10px;">The wired probe - automatic backup for the BLE sensor.</div>
-    <div class="field">
-      <label>Probe type</label>
-      <select id="fallbackSourceSelect" onchange="saveFallbackSource()">
-        <option value="dht22">Wired DHT22 / AM2302 (GPIO5)</option>
-        <option value="sht31">SHT31 (I2C, GPIO12/13)</option>
-      </select>
-    </div>
-    <div class="stat-sub" style="margin-top:6px;">Applies within one cycle - SHT31 needs the i2c5 overlay enabled first (see README).</div>
-    <div class="save-msg" id="fallbackSourceMsg"></div>
+    <div class="stat-sub" style="margin-bottom:10px;">The wired probe - automatic backup for the BLE sensor. SHT31 (I2C, GPIO12/13, i2c5 overlay - see README).</div>
     <div class="field" style="margin-top:14px;">
       <label>Calibration offset (temp °F / humidity %RH)</label>
       <div style="display:flex; gap:8px;">
@@ -305,8 +288,6 @@ async function loadSettings() {
   const data = await res.json();
   await populateBleSensorTypes(data.config.ble_sensor_type);
   document.getElementById('bleMacInput').value = data.config.ble_mac || '';
-  document.getElementById('internalSourceSelect').value = data.config.internal_source || 'dht22';
-  document.getElementById('fallbackSourceSelect').value = data.config.external_fallback_source || 'dht22';
   const cal = data.config.calibration || {};
   document.getElementById('calInternalTemp').value = cal.internal_temp_offset ?? 0;
   document.getElementById('calInternalHumidity').value = cal.internal_humidity_offset ?? 0;
@@ -545,40 +526,6 @@ function selectCameraIndex(index) {
   document.querySelectorAll('.camera-discover-item').forEach(el => el.classList.remove('selected'));
   const chosen = document.getElementById(`cam-discover-${index}`);
   if (chosen) chosen.classList.add('selected');
-}
-
-async function saveInternalSource() {
-  const source = document.getElementById('internalSourceSelect').value;
-  const res = await fetch('/api/internal-source', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source})
-  });
-  const data = await res.json();
-  const msg = document.getElementById('internalSourceMsg');
-  if (!res.ok) {
-    msg.textContent = data.error || 'Save failed';
-    msg.className = 'save-msg err';
-  } else {
-    msg.textContent = 'Saved';
-    msg.className = 'save-msg ok';
-    setTimeout(() => { msg.textContent = ''; }, 2500);
-  }
-}
-
-async function saveFallbackSource() {
-  const source = document.getElementById('fallbackSourceSelect').value;
-  const res = await fetch('/api/external-fallback-source', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source})
-  });
-  const data = await res.json();
-  const msg = document.getElementById('fallbackSourceMsg');
-  if (!res.ok) {
-    msg.textContent = data.error || 'Save failed';
-    msg.className = 'save-msg err';
-  } else {
-    msg.textContent = 'Saved';
-    msg.className = 'save-msg ok';
-    setTimeout(() => { msg.textContent = ''; }, 2500);
-  }
 }
 
 let lastHistoryStats = null;

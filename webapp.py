@@ -265,31 +265,6 @@ def api_set_calibration():
     return jsonify(config)
 
 
-@app.route("/api/internal-source", methods=["POST"])
-def api_set_internal_source():
-    body = request.get_json(force=True, silent=True) or {}
-    source = body.get("source")
-    if source not in ("dht22", "sht31"):
-        return jsonify({"error": "source must be 'dht22' or 'sht31'"}), 400
-    config = state.load_config()
-    config["internal_source"] = source
-    state.save_config(config)
-    state.log_event("info", f"Internal sensor source changed to '{source}'")
-    return jsonify(config)
-
-
-@app.route("/api/external-fallback-source", methods=["POST"])
-def api_set_external_fallback_source():
-    body = request.get_json(force=True, silent=True) or {}
-    source = body.get("source")
-    if source not in ("dht22", "sht31"):
-        return jsonify({"error": "source must be 'dht22' or 'sht31'"}), 400
-    config = state.load_config()
-    config["external_fallback_source"] = source
-    state.save_config(config)
-    state.log_event("info", f"External fallback sensor source changed to '{source}'")
-    return jsonify(config)
-
 
 @app.route("/api/camera/status")
 def api_camera_status():
@@ -658,7 +633,7 @@ def api_events_download():
     log_event()), which is what the Logs page actually shows - NOT any
     one service's own raw logs/*.log file on disk (those are per-
     process and also catch lower-level logging() calls that never went
-    through log_event() at all, e.g. individual DHT22 retry-attempt
+    through log_event() at all, e.g. individual sensor retry-attempt
     warnings), so this export and that page always agree on content."""
     level = request.args.get("level", default=None, type=str)
     if level not in (None, *state.EVENT_LEVELS):

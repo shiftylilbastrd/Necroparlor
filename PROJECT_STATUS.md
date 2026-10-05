@@ -565,6 +565,41 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-05]** Removed DHT22 support entirely - Ryan confirmed he's not going back to wired DHT22 probes
+  now that both the internal and external/fallback sensors are SHT31s. This was the natural follow-up to the
+  fallback-sensor fix directly below: rather than leave a dead "dht22" option sitting in two dropdowns nobody
+  will ever pick again, ripped it out everywhere:
+  - `climate.py`: removed the `adafruit_dht` import, `DHT_READ_GAP_SECONDS`/`DHT_READ_RETRIES`/
+    `DHT_READ_RETRY_DELAY_SECONDS` constants, `PIN_INTERNAL_TEMP`/`PIN_EXTERNAL_TEMP` pin assignments (GPIO27/
+    GPIO5 are now just free/unused pins - see README), `_get_dht_device()`/`read_temp_and_humidity_f()`
+    entirely, and the `internal_source`/`external_fallback_source` config branching in `run_cycle()` - it now
+    unconditionally calls `read_internal_sht31_f()`/`read_external_sht31_f()`. Also dropped the
+    `internal_source == "sht31"` guard on the condensation-recovery heater pulse (now unconditional) and the
+    now-pointless `DHT_READ_GAP_SECONDS` sleep between the two reads (that gap existed purely to avoid
+    interference between two back-to-back single-wire DHT reads - irrelevant once both reads are I2C on
+    separate buses).
+  - `shared_state.py`: removed `internal_source`/`external_fallback_source` from `DEFAULT_CONFIG`. Note: an
+    existing `config.json` with those keys still saved just carries two now-unread, harmless orphan keys -
+    nothing crashes or migrates them away, they're just ignored going forward.
+  - `webapp.py`: removed the `/api/internal-source` and `/api/external-fallback-source` routes.
+  - `templates/settings.html`: removed the "Source"/"Probe type" dropdowns (Internal and Fallback cards) and
+    their `saveInternalSource()`/`saveFallbackSource()` JS, replaced with a plain "SHT31 (I2C, ...)" note in
+    each card's subtitle - the calibration-offset fields in both cards are untouched (calibration is tied to
+    physical sensor identity, not sensor type, and didn't need to change).
+  - `docs/gen_gpio_pinout.py` + regenerated `docs/gpio-pinout.svg`: dropped the "if used instead" DHT22 wording
+    on GPIO27/GPIO5 (now just "former internal/external DHT22 DATA"), and `README.md`'s pin table/wiring
+    sections were rewritten around "both sensors are SHT31" instead of "DHT22 default, SHT31 optional" for
+    each one. The DHT22 pip packages (`adafruit-circuitpython-dht`) came out of the Install section too;
+    `adafruit-extended-bus` is no longer conditional ("only needed if...") since the external SHT31 path is now
+    the only path.
+  - Deliberately did NOT rename the `wired_temp_offset`/`wired_humidity_offset` calibration config keys (still
+    named for the old "wired probe" framing even though it's an SHT31 now) - renaming would silently drop
+    Ryan's already-saved calibration offsets for that sensor, and the physical-sensor-identity convention
+    these keys already follow (see the `/api/calibration` route's own docstring) doesn't actually require the
+    name to match the current hardware, just to stay stable across hardware swaps.
+  - If DHT22 support is ever needed again, it's not gone - just `git log`/`git show` the commit before this
+    one for the full working implementation to copy back in.
+
 - **[2026-10-05]** Fixed "the fallback sensor stopped reporting," reported by Ryan after he swapped the wired
   external DHT22 for a second SHT31 (both internal and external sensors are now SHT31s). Two separate bugs,
   both the same "frontend shipped without backend" pattern as the Data History fix above:

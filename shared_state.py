@@ -98,11 +98,6 @@ DEFAULT_CONFIG = {
     # ships to main, so it's meant for deliberate testing, not a normal
     # setting to leave changed long-term.
     "update_branch": "main",
-    # Where climate.py gets the *internal* reading from:
-    #   "dht22"  - wired DHT22/AM2302 probe on PIN_INTERNAL_TEMP (default -
-    #              what's actually on hand)
-    #   "sht31"  - I2C sensor with condensation-recovery heater support
-    "internal_source": "dht22",
     # External (outside-air) reading: automatic failover, not a manual
     # choice. climate.py always reads both the wired probe and a BLE
     # sensor every cycle and uses whichever is fresher - the BLE sensor
@@ -114,18 +109,6 @@ DEFAULT_CONFIG = {
     # BLE_SENSOR_LIBRARIES below. Neither is a mode toggle.
     "ble_mac": None,
     "ble_sensor_type": "sensorpush",
-    # The wired/local fallback probe climate.py reads every cycle
-    # alongside the BLE sensor (see ble_mac above) - used automatically
-    # whenever the BLE sensor goes stale. Separate from internal_source
-    # above since it's a different physical sensor that can be swapped
-    # independently:
-    #   "dht22"  - wired DHT22/AM2302 probe on PIN_EXTERNAL_TEMP (default)
-    #   "sht31"  - second I2C SHT31 on its own bus (GPIO12/13 via the
-    #              i2c-gpio overlay - see README) - needed because the
-    #              internal sensor may already be an SHT31 on the
-    #              hardware I2C bus, and two SHT31s can't share one bus
-    #              at the same address
-    "external_fallback_source": "dht22",
     # The door/lid light (PIN_LIGHT) is normally slaved entirely to the
     # physical reed switch (see climate.py's light_loop()) - this is a
     # dashboard-driven manual override on top of that, for checking in on

@@ -33,63 +33,51 @@ GPIO pin assignments (BCM numbering, set in `climate.py`):
 |---|---|---|
 | Fan relay | GPIO17 | 11 |
 | Door servo (PWM) | GPIO18 | 12 |
-| Internal DHT22 — DATA | GPIO27 | 13 |
 | Heater relay | GPIO22 | 15 |
 | Dehumidifier relay | GPIO23 | 16 |
 | Door reed switch | GPIO24 | 18 |
-| External DHT22 fallback — DATA | GPIO5 | 29 |
 | Light relay | GPIO26 | 37 |
-| SHT31 SDA (optional) | GPIO2 | 3 |
-| SHT31 SCL (optional) | GPIO3 | 5 |
+| Internal SHT31 SDA | GPIO2 | 3 |
+| Internal SHT31 SCL | GPIO3 | 5 |
+| External/fallback SHT31 SDA (i2c5) | GPIO12 | 32 |
+| External/fallback SHT31 SCL (i2c5) | GPIO13 | 33 |
 
-**GPIO4 (physical pin 7)** is dead on this specific board (confirmed via `pinctrl` — see `PROJECT_STATUS.md`) and is not used; the external fallback probe was moved to GPIO5 instead. **GPIO15/RXD** is avoided for the same reason it's marked unused above — it doubles as UART0 RXD and misbehaves if the serial console is enabled.
+**GPIO4 (physical pin 7)** is dead on this specific board (confirmed via `pinctrl` — see `PROJECT_STATUS.md`) and is not used. **GPIO15/RXD** is avoided for the same reason it's marked unused above — it doubles as UART0 RXD and misbehaves if the serial console is enabled. GPIO27 and GPIO5 (physical pins 13/29) are free/unused — the old wired DHT22 probes that lived there have been retired in favor of two SHT31s (see "Sensors" below and `PROJECT_STATUS.md`).
 
 If `PIN_*` in `climate.py` ever changes again, regenerate the diagram with `python3 docs/gen_gpio_pinout.py` after updating its `ROWS` table to match.
 
-### Internal sensor: DHT22/AM2302 (default) or SHT31 (optional)
+### Sensors: both internal and external are SHT31 (I2C)
 
-| DHT22/AM2302 pin | Pi pin |
-|---|---|
-| VCC | 3.3V (pin 1) |
-| GND | GND (pin 6) |
-| DATA | GPIO27 (pin 13) |
-
-Wired to 3.3V rather than 5V because both 5V pins are already committed to relay board power — the DHT22 tolerates 3.3–5.5V, so this is just a wiring choice, not a workaround. Add a 4.7–10kΩ pull-up between DATA and VCC if using a bare chip (most breakout modules already have one).
-
-To use an SHT31 instead (drop-in swap, no code changes — flip "Internal sensor source" on the Config page):
+This project originally supported wired DHT22/AM2302 probes as well (for both the internal sensor and the external wired fallback), with a config toggle to pick either one. That DHT22 support has since been removed — both physical sensors are now SHT31s, so `climate.py` always reads both sensors as SHT31. (If you ever need the DHT22 code back for reference, it's in git history before this change.)
 
 ```bash
 sudo raspi-config   # Interface Options -> I2C -> Enable, then reboot
 ```
 
-| SHT31 pin | Pi pin |
+Internal SHT31 (hardware I2C1, the Pi's default I2C bus):
+
+| Internal SHT31 pin | Pi pin |
 |---|---|
 | VIN | 3.3V (pin 1) |
 | GND | GND (pin 6) |
 | SCL | GPIO3 (pin 5) |
 | SDA | GPIO2 (pin 3) |
 
-The SHT31 also has an onboard heater `climate.py` uses to recover from condensation (>99% humidity for a minute triggers a 10s heater pulse, rate-limited to once/10min) — the DHT22 has no equivalent.
+Both SHT31s have an onboard heater `climate.py` uses to recover from condensation (>99% humidity for a minute triggers a 10s heater pulse, rate-limited to once/10min per sensor).
 
-### External sensor: BLE primary + wired fallback
+### External sensor: BLE primary + wired/local SHT31 fallback
 
-The external reading comes from a BLE sensor (primary) and a wired/local fallback probe (always-on backup). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the fallback probe) — no manual switching, and every failover is logged.
+The external reading comes from a BLE sensor (primary) and the second, local SHT31 (always-on backup). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the fallback probe) — no manual switching, and every failover is logged.
 
-The fallback probe defaults to a DHT22 on GPIO5:
-
-| DHT22/AM2302 pin | Pi pin |
-|---|---|
-| VCC | 3.3V (pin 17) |
-| GND | GND (pin 9 or similar) |
-| DATA | GPIO5 (pin 29) |
-
-To use an SHT31 instead (flip "Probe type" on the Settings page's Fallback card to SHT31 — `external_fallback_source` in config.json), it needs its **own** I2C bus, separate from the internal sensor's: two SHT31 breakouts both default to address 0x44, so they can't share one bus. This uses a software I2C bus on GPIO12/13 via the `i2c-gpio` device-tree overlay, exposed to Linux as `/dev/i2c-5`:
+The fallback SHT31 needs its **own** I2C bus, separate from the internal sensor's: two SHT31 breakouts both default to address 0x44, so they can't share one bus. Rather than bit-banging a software bus, this uses the Pi 4/CM4's extra built-in hardware I2C controller (BCM2711 has more than just the one on GPIO2/3), enabled via the `i2c5` overlay — defaults to GPIO12/13, exposed to Linux as `/dev/i2c-5`:
 
 ```bash
 # /boot/firmware/config.txt (or /boot/config.txt on older Raspberry Pi OS):
-dtoverlay=i2c-gpio,bus=5,i2c_gpio_sda=12,i2c_gpio_scl=13
+dtoverlay=i2c5
 # then reboot
 ```
+
+(`dtoverlay=i2c5,baudrate=50000` also works if you want a slower, more reliable bus — same as the main `i2c_arm_baudrate` setting, just scoped to this one. Pi 3 and earlier don't have this extra controller, so this overlay is Pi 4/400/CM4-only.)
 
 | 2nd SHT31 pin | Pi pin |
 |---|---|
@@ -98,7 +86,7 @@ dtoverlay=i2c-gpio,bus=5,i2c_gpio_sda=12,i2c_gpio_scl=13
 | SCL | GPIO13 (pin 33) |
 | SDA | GPIO12 (pin 32) |
 
-This path also needs the `adafruit-extended-bus` package (see Install below) — Blinka's `busio.I2C` only auto-detects a board's known hardware I2C buses, not an arbitrary overlay-created one, so this uses `adafruit_extended_bus.ExtendedI2C(5)` instead. It's only imported lazily if `external_fallback_source` is actually set to `sht31`, same as the internal SHT31 path.
+This path also needs the `adafruit-extended-bus` package (see Install below) — Blinka's `busio.I2C` only auto-detects the board's *default* hardware I2C bus (board.SCL/board.SDA, GPIO2/3), not this second one, even though it's real hardware too - so this uses `adafruit_extended_bus.ExtendedI2C(5)` to open `/dev/i2c-5` directly instead.
 
 If BOTH the BLE sensor and the fallback probe are down at the same time, that's logged as an `external_sensor_unavailable` event (visible on the Logs page and in `events.txt`) — unlike a *partial* outage (one of the two down, the other still covering for it), which is normal automatic failover and not something you need to react to.
 
@@ -107,10 +95,7 @@ If BOTH the BLE sensor and the fallback probe are down at the same time, that's 
 ```bash
 sudo apt update
 sudo apt install python3-pip python3-rpi.gpio
-pip3 install flask adafruit-circuitpython-dht adafruit-circuitpython-sht31d --break-system-packages
-# Only needed if using an SHT31 as the external/fallback probe (two SHT31s,
-# see "External sensor" above) rather than the default wired DHT22:
-pip3 install adafruit-extended-bus --break-system-packages
+pip3 install flask adafruit-circuitpython-sht31d adafruit-extended-bus --break-system-packages
 ```
 
 Copy this whole folder to the Pi, e.g. `/home/pi/dermestid/`.
