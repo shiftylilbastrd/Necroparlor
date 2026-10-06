@@ -39,13 +39,12 @@
 {% endblock %}
 {% block content %}
 
-<h1>Data</h1>
 <div class="subtitle">Raw readings, one row per control cycle - every column exactly as stored, newest first</div>
 
 <div class="filter-row">
   <select id="pageSizeSelect" onchange="changePageSize()">
-    <option value="25">25 rows</option>
-    <option value="50" selected>50 rows</option>
+    <option value="25" selected>25 rows</option>
+    <option value="50">50 rows</option>
     <option value="100">100 rows</option>
     <option value="200">200 rows</option>
     <option value="500">500 rows</option>
@@ -108,7 +107,7 @@
     <h2>Clear readings</h2>
     <div class="stat-sub" style="margin-bottom:10px;">Wipes sensor readings now - e.g. benchtop test data before moving into the enclosure.</div>
     <div style="display:flex; gap:8px;">
-      <a class="save-btn" href="/api/readings/download" style="text-decoration:none; display:inline-block; min-width:100px; text-align:center;">Download</a>
+      <a class="save-btn" href="/api/readings/download" style="text-decoration:none; display:inline-block; min-width:160px; text-align:center;">Download</a>
       <button class="danger-btn" id="clearReadingsBtn" onclick="clearReadings()" style="margin-top:0; min-width:160px;">Clear readings</button>
     </div>
     <div class="save-msg" id="clearReadingsMsg"></div>
@@ -128,7 +127,7 @@
 // so re-fetching it later (e.g. via Newer/Older) always returns the
 // same page even if new rows have since appeared above it. Index 0 is
 // always null (first page, no lower bound).
-let pageSize = 50;
+let pageSize = 25;
 let currentPage = 0;
 let pageCursors = [null];
 let lastPageHadFullRows = false;

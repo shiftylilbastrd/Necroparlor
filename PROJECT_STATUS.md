@@ -2974,3 +2974,25 @@ that aren't obvious from reading the code cold.
   just did.
   **Verified**: `webapp.py` compiles; Jinja2 parses `system.html`; its `<script>` blocks still pass
   `node --check`; confirmed the rendered `/system` page's placeholder now reads "Loading...".
+
+- **[2026-10-06, same day] Removed redundant page titles, made Download/Clear buttons the same width,
+  changed the default row count on Data/Logs to 25.**
+  - Removed the `<h1>` on every page where it just repeated what the nav tab already says: `camera.html`,
+    `config.html`, `data.html`, `notifications.html`, `settings.html`, `system.html`, `timelapse.html`, and
+    `logs.html` (the last of these had its `<h1>` nested inside a flex row next to the level filter select -
+    that row's layout is unchanged, just the heading element removed, with the subtitle div now the left
+    side of the flex instead of wrapping it with the heading). `home.html`'s `<h1>🪲 Necroparlor</h1>` was
+    deliberately left alone - that's the app's own branding, not an echo of a tab label.
+  - `data.html`/`logs.html`: the Download link and Clear button in the "Clear readings"/"Clear event log"
+    cards are now the same width as EACH OTHER (`min-width:160px` on both). The previous fix (a few entries
+    up) made Download match Download and Clear match Clear across the two pages, but left Download
+    narrower (100px) than Clear (160px) on each individual page - this is what Ryan was still seeing as
+    "not the same size." Both buttons on both pages now share the same 160px minimum.
+  - `data.html`/`logs.html`: the rows-per-page dropdown now defaults to 25 instead of 50 - moved the
+    `selected` attribute from the `value="50"` option to `value="25"`, and changed the script's initial
+    `let pageSize = 50;` to `let pageSize = 25;`, on both pages.
+  **Verified**: Jinja2 parsed all 10 templates; Flask test-client hit every route (200 on all); every
+  route's rendered `<script>` blocks still pass `node --check`; confirmed via rendered output that no
+  `<h1>` remains anywhere except `home.html`; confirmed both pages' Download and Clear buttons carry
+  matching `min-width:160px`; confirmed both pages' `pageSizeSelect` default option and initial `pageSize`
+  JS variable are both `25`.

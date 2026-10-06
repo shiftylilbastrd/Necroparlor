@@ -12,10 +12,7 @@
 {% block content %}
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
-  <div>
-    <h1>Logs</h1>
-    <div class="subtitle">Mode changes, relay activity, warnings, and alarms</div>
-  </div>
+  <div class="subtitle">Mode changes, relay activity, warnings, and alarms</div>
   <!-- Values match get_recent_events' MINIMUM-severity filter (see
        shared_state.py) - selecting Warning also shows Error/Critical,
        not just Warning rows, same as most log viewers. "Info" is
@@ -32,8 +29,8 @@
 
 <div class="filter-row">
   <select id="pageSizeSelect" onchange="changePageSize()">
-    <option value="25">25 rows</option>
-    <option value="50" selected>50 rows</option>
+    <option value="25" selected>25 rows</option>
+    <option value="50">50 rows</option>
     <option value="100">100 rows</option>
     <option value="200">200 rows</option>
     <option value="500">500 rows</option>
@@ -63,7 +60,7 @@
     <h2>Clear event log</h2>
     <div class="stat-sub" style="margin-bottom:10px;">Wipes the event log now.</div>
     <div style="display:flex; gap:8px;">
-      <a class="save-btn" href="/api/events/download" style="text-decoration:none; display:inline-block; min-width:100px; text-align:center;">Download</a>
+      <a class="save-btn" href="/api/events/download" style="text-decoration:none; display:inline-block; min-width:160px; text-align:center;">Download</a>
       <button class="danger-btn" id="clearEventsBtn" onclick="clearEvents()" style="margin-top:0; min-width:160px;">Clear event log</button>
     </div>
     <div class="save-msg" id="clearEventsMsg"></div>
@@ -76,7 +73,7 @@
 // --- Paging --- (see data.html's identical comment for why this is
 // cursor/timestamp-based rather than offset-based - same reasoning
 // applies here: new events land at the top constantly.)
-let pageSize = 50;
+let pageSize = 25;
 let currentPage = 0;
 let pageCursors = [null];
 let lastPageHadFullRows = false;
