@@ -2675,3 +2675,49 @@ that aren't obvious from reading the code cold.
   the correct sub-nav tab get `active` on every one of the 5 grouped routes. **Not yet visually verified on
   an actual phone** - the scrolling behavior and tap targets on `nav.subnav` should be checked on Ryan's
   iPhone once this is deployed, same as every other mobile-layout change in this project.
+
+- **[2026-10-06] MAJOR FIND: automatic timelapse compiling has been silently broken since 2026-09-something
+  (commit `efd3664`, "Extereme alert") - not just the Timelapse page's on-demand preview button Ryan actually
+  reported.** Ryan said the "Progress preview" section on the Timelapse page was stuck on "Loading..." -
+  tracing it down (`templates/timelapse.html`'s `refreshSessions()` hits `/api/timelapse/sessions`, silently
+  swallowing the fetch error into "try again next tick" when it 404s) found that route didn't exist in
+  `webapp.py` at all, alongside `/api/timelapse/preview/<mode>` (POST), `/api/timelapse/preview/<mode>.mp4`,
+  `/api/timelapse/settings`, and `/api/timelapse/pending/purge`. Bisected with `git show <commit>:webapp.py |
+  grep` across main's first-parent history: commit `efd3664` ("Extereme alert") deleted a large block of
+  `shared_state.py` functions - `get_pending_sessions`, `timelapse_preview_paths`, `get_timelapse_preview`,
+  `delete_timelapse_previews`, `compile_lock_path`, `purge_camera_snapshots`, plus some history/CSV helpers -
+  and the very next commit `3b49b22` ("notification tab") deleted the `webapp.py` routes that called them,
+  presumably because they'd stopped working once their backend disappeared. `6c8aa39` ("Fix the Data history
+  card") later restored the history-card half of this gap (`get_history_stats` and the `/api/history/*`
+  routes work fine today) but the timelapse half was never caught - until now.
+  **Why this is a MUCH bigger deal than a stuck loading spinner**: `compile_lock_path()` is called directly
+  by `camera_service.py`'s `compile_session_video()` - the function that runs automatically every time the
+  enclosure LEAVES a mode with enough accumulated frames, i.e. the actual "turn captured frames into a
+  timelapse video" step this whole feature exists for. With `compile_lock_path` missing, that call raised
+  `AttributeError` inside a background thread with no enclosing try/except, so the thread just died silently
+  - confirmed by literally calling `camera_service.compile_session_video()` against synthetic frames in the
+  sandbox and watching it fail before this fix, succeed after. **Every automatic compile since `efd3664` has
+  silently failed** - frames were never lost (compile failures always leave the raw frames in place by
+  design), which is exactly why nobody noticed: pending-frame counts kept climbing instead of periodically
+  resetting to near-zero after a mode change, but a slowly-growing number doesn't look broken the way an
+  error would. The "Purge pending frames" button was ALSO broken this whole time via the same gap
+  (`purge_camera_snapshots` missing).
+  **Fix**: restored all six missing `shared_state.py` functions (`git show 0640fc6:shared_state.py`, the
+  commit right before `efd3664`, checked against this file's current state rather than pasted blind) plus
+  the `CAMERA_TIMELAPSE_PREVIEWS_DIR` constant they need (also missing), and all five missing `webapp.py`
+  routes plus the `_build_preview`/`_preview_job` machinery and the `import timelapse_encode` line that went
+  with them (`git show 0640fc6:webapp.py`). **Verified for real, not just imported cleanly**: in the sandbox,
+  synthetic frames were inserted into `camera_snapshots`, `POST /api/timelapse/preview/cleaning` actually
+  built a working preview `.mp4` end-to-end (confirmed via `GET .../preview/cleaning.mp4` returning real
+  video bytes), `POST /api/timelapse/pending/purge` and `POST /api/timelapse/settings` both returned correctly,
+  and - the important one - `camera_service.compile_session_video()` was called directly against synthetic
+  frames and produced a real compiled video row via `state.save_timelapse_video()`, not just "didn't crash."
+  All 7 page routes still render (Jinja2 + Flask test-client pass) with these restored.
+  **What this means practically for Ryan**: whatever's accumulated in `camera/timelapse/` on the real Pi
+  right now is every frame since this broke - potentially a lot of sessions' worth, all still sitting there
+  uncompiled. Once this is deployed (`git pull` + restart `dermestid-camera.service`/`webapp.py`'s service),
+  the Timelapse page's "Purge pending frames" button will work again, but **it deletes pending frames instead
+  of compiling them** - if Ryan wants those old sessions preserved as actual videos rather than discarded, the
+  thing to run on the Pi first is `compile_timelapse.py` (mentioned in `camera_service.py`'s own comments as
+  the manual-recovery path for exactly this kind of leftover-frames situation) BEFORE touching the purge
+  button, and the NEXT mode change after deploying should compile normally on its own either way.

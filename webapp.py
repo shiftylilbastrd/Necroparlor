@@ -25,6 +25,11 @@ import urllib.request
 from flask import Flask, jsonify, request, render_template, send_file, abort, Response
 
 import shared_state as state
+# [2026-10-06] Restored alongside the /api/timelapse/sessions and
+# /api/timelapse/preview/* routes below (see PROJECT_STATUS.md's
+# 2026-10-06 entry) - this import itself went missing in the same
+# accidental deletion (commit 3b49b22) that dropped those routes.
+import timelapse_encode
 
 app = Flask(__name__)
 
@@ -376,6 +381,151 @@ def api_timelapse_pending():
     shared_state.get_pending_timelapse_stats for why a plain directory
     scan is both correct and cheap here."""
     return jsonify(state.get_pending_timelapse_stats())
+
+
+# [2026-10-06] Everything from here down to api_timelapse_settings() below
+# was missing entirely - restored from `git show 0640fc6:webapp.py` (the
+# commit right before it was accidentally dropped in 3b49b22, "notification
+# tab" - see PROJECT_STATUS.md's 2026-10-06 entry and shared_state.py's own
+# matching restoration comment, which has the fuller story). This is what
+# the Timelapse page's per-mode "Progress preview" rows, "Build/Rebuild
+# preview" button, and "Purge pending frames" button all call - all of them
+# have been silently broken since that commit.
+_preview_lock = threading.Lock()
+_preview_job = {}  # mode, frames, done, started_ts - empty when idle
+_preview_last_error = {}  # mode -> message from its last failed build
+
+
+def _build_preview(mode, frames):
+    video_path, meta_path = state.timelapse_preview_paths(mode)
+    os.makedirs(state.CAMERA_TIMELAPSE_PREVIEWS_DIR, exist_ok=True)
+    # Build to a temp name and swap in on success, so the previous preview
+    # stays watchable while the new one builds and survives a failed build.
+    tmp_path = os.path.join(state.CAMERA_TIMELAPSE_PREVIEWS_DIR, f".building_{mode}.mp4")
+    try:
+        def progress(n):
+            _preview_job["done"] = min(n, len(frames))
+        result = timelapse_encode.encode(mode, frames, tmp_path, progress_cb=progress)
+        if result["ok"]:
+            os.replace(tmp_path, video_path)
+            meta = {"mode": mode, "frame_count": result["frames_encoded"], "first_ts": frames[0]["ts"],
+                    "last_ts": frames[-1]["ts"], "built_ts": time.time(),
+                    "overlay": result["overlay"], "encode_seconds": round(result["elapsed"], 1)}
+            with open(meta_path, "w") as f:
+                json.dump(meta, f)
+            _preview_last_error.pop(mode, None)
+            logging.info(f"Timelapse preview for {mode}: {len(frames)} frames in {result['elapsed']:.0f}s")
+        else:
+            missing = sum(1 for fr in frames
+                          if not os.path.exists(os.path.join(state.CAMERA_TIMELAPSE_DIR, fr["filename"])))
+            if missing or "truncated" in result["error"]:
+                msg = ("The session was compiled or its frames purged while the preview was building - "
+                       "build it again if there are still pending frames.")
+            elif result["timed_out"]:
+                msg = "Timed out."
+            else:
+                msg = f"ffmpeg failed: {result['error'][:200]}"
+            _preview_last_error[mode] = msg
+            logging.warning(f"Timelapse preview for {mode} failed: {msg}")
+    except Exception as e:  # never let a preview thread die silently
+        _preview_last_error[mode] = f"Unexpected error: {e}"
+        logging.exception("Timelapse preview build crashed")
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        with _preview_lock:
+            _preview_job.clear()
+
+
+@app.route("/api/timelapse/sessions")
+def api_timelapse_sessions():
+    """Per-mode pending sessions for the Timelapse page's preview rows,
+    each with its existing preview (if any) and build status."""
+    config = state.load_config()
+    current = config.get("current_mode")
+    sessions = state.get_pending_sessions()
+    with_frames = {s["mode"] for s in sessions}
+    # Self-heal: a preview whose mode has no pending frames any more is of
+    # footage that's since been compiled or purged.
+    for mode in list(timelapse_encode.MODE_LABELS):
+        if mode not in with_frames and state.get_timelapse_preview(mode):
+            state.delete_timelapse_previews(mode)
+    job = dict(_preview_job)
+    for s in sessions:
+        s["label"] = timelapse_encode.MODE_LABELS.get(s["mode"], s["mode"].capitalize())
+        s["is_current"] = s["mode"] == current
+        preview = state.get_timelapse_preview(s["mode"])
+        if preview:
+            preview["url"] = f"/api/timelapse/preview/{s['mode']}.mp4?v={int(preview.get('built_ts', 0))}"
+        s["preview"] = preview
+        s["building"] = ({"done": job.get("done", 0), "total": job["frames"],
+                          "started_ts": job["started_ts"]} if job.get("mode") == s["mode"] else None)
+        s["last_error"] = _preview_last_error.get(s["mode"])
+    return jsonify({"sessions": sessions, "busy": bool(job),
+                    "overlay": bool(config.get("timelapse_overlay", True)),
+                    "min_frames": 3})
+
+
+@app.route("/api/timelapse/preview/<mode>", methods=["POST"])
+def api_timelapse_preview_build(mode):
+    if mode not in timelapse_encode.MODE_LABELS:
+        abort(404)
+    frames = state.get_camera_snapshots_in_range(mode, 0, time.time())
+    if len(frames) < 3:
+        return jsonify({"error": "Need at least 3 pending frames to build a preview."}), 400
+    with _preview_lock:
+        if _preview_job:
+            return jsonify({"error": f"A {_preview_job['mode']} preview is already building."}), 409
+        _preview_job.update({"mode": mode, "frames": len(frames), "done": 0, "started_ts": time.time()})
+    _preview_last_error.pop(mode, None)
+    threading.Thread(target=_build_preview, args=(mode, frames), daemon=True).start()
+    return jsonify({"started": True, "frames": len(frames)})
+
+
+@app.route("/api/timelapse/preview/<mode>.mp4")
+def api_timelapse_preview_file(mode):
+    if mode not in timelapse_encode.MODE_LABELS:
+        abort(404)
+    video_path, _ = state.timelapse_preview_paths(mode)
+    if not os.path.exists(video_path):
+        abort(404)
+    # ?download=1 (the preview row's Download button) saves it instead of
+    # playing inline; the filename carries the build time so repeated
+    # downloads of a growing session don't overwrite each other.
+    built = datetime.datetime.fromtimestamp(os.path.getmtime(video_path), state.LOCAL_TZ)
+    return send_file(video_path, mimetype="video/mp4",
+                     as_attachment=request.args.get("download") == "1",
+                     download_name=f"{mode}-preview-{built.strftime('%Y%m%d-%H%M')}.mp4", max_age=0)
+
+
+@app.route("/api/timelapse/settings", methods=["POST"])
+def api_timelapse_settings():
+    body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body.get("overlay"), bool):
+        return jsonify({"error": "overlay must be true or false"}), 400
+    config = state.load_config()
+    config["timelapse_overlay"] = body["overlay"]
+    state.save_config(config)
+    state.log_event("info", "Timelapse timestamp overlay " + ("enabled" if body["overlay"] else "disabled"))
+    return jsonify({"overlay": body["overlay"]})
+
+
+@app.route("/api/timelapse/pending/purge", methods=["POST"])
+def api_timelapse_pending_purge():
+    """Timelapse page's "Purge pending frames" button - deletes every
+    kept, not-yet-compiled frame (compiled videos untouched). The
+    confirmation lives in the page's dialog; this just refuses with 409
+    while a compile is running rather than pulling frames out from
+    under ffmpeg (see shared_state.purge_camera_snapshots)."""
+    result = state.purge_camera_snapshots()
+    if "busy_mode" in result:
+        return jsonify({"error": f"A {result['busy_mode']} timelapse is compiling right now - "
+                                  "try again once it finishes."}), 409
+    total = result["removed"] + result["strays_removed"]
+    if total:
+        state.log_event("info", f"Timelapse: purged {total} pending frame(s) "
+                                 f"({result['freed_bytes'] / (1024 * 1024):.1f}MB) via dashboard")
+    return jsonify(result)
 
 
 @app.route("/api/timelapse/video/<int:video_id>.mp4")

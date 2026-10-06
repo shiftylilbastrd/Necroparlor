@@ -51,6 +51,7 @@ DB_PATH = os.path.join(BASE_DIR, "dermestid.db")
 CAMERA_DIR = os.path.join(BASE_DIR, "camera")
 CAMERA_TIMELAPSE_DIR = os.path.join(CAMERA_DIR, "timelapse")
 CAMERA_TIMELAPSE_VIDEOS_DIR = os.path.join(CAMERA_DIR, "timelapse_videos")
+CAMERA_TIMELAPSE_PREVIEWS_DIR = os.path.join(CAMERA_DIR, "timelapse_previews")
 
 # Playback speed of a compiled session video, in frames per second of
 # OUTPUT video - unrelated to the capture cadence (snapshot_interval_
@@ -2313,6 +2314,162 @@ def delete_camera_snapshots(ts_list):
     conn.commit()
     conn.close()
     return removed
+
+
+# [2026-10-06] get_pending_sessions() through purge_camera_snapshots() below
+# all went missing from this file in commit efd3664 ("Extereme alert") back
+# on 2026-09-whatever that was, with the webapp.py routes that called them
+# dropped in the very next commit (3b49b22) - restored here from
+# `git show 0640fc6:shared_state.py` (the commit right before efd3664),
+# lightly checked against this file's current state rather than pasted
+# blind. Two real, previously-undiscovered consequences of the gap, not
+# just the Timelapse page's on-demand preview button:
+#   1. compile_lock_path() is what camera_service.py's own
+#      compile_session_video() calls on every single automatic compile
+#      (every mode change with enough pending frames) - with it missing,
+#      that call raised AttributeError inside compile_session_video()'s
+#      background thread, which has no top-level try/except, so the
+#      thread just died silently. In other words: EVERY automatic
+#      timelapse compile since efd3664 has been failing silently, not
+#      just the manual "Build preview" button - see PROJECT_STATUS.md's
+#      2026-10-06 entry for the full story (this was found by Ryan
+#      reporting the preview UI stuck on "Loading...").
+#   2. The Timelapse page's "Purge pending frames" button
+#      (purge_camera_snapshots) has also been 404ing this whole time for
+#      the same reason the preview button was.
+# CAMERA_TIMELAPSE_PREVIEWS_DIR (restored above, near CAMERA_TIMELAPSE_DIR)
+# was missing too - these functions need it and nothing else in this file
+# still referenced it once they were gone.
+def get_pending_sessions():
+    """One entry per mode that has pending (not-yet-compiled) frames:
+    mode, count, first_ts, last_ts - oldest mode first. What the Timelapse
+    page's per-mode preview rows are built from."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots GROUP BY mode ORDER BY MIN(ts)"
+    ).fetchall()
+    conn.close()
+    return [{"mode": m, "count": c, "first_ts": f, "last_ts": l} for m, c, f, l in rows]
+
+
+def timelapse_preview_paths(mode):
+    base = os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, f"preview_{mode}")
+    return base + ".mp4", base + ".json"
+
+
+def get_timelapse_preview(mode):
+    """The existing preview for `mode` (dict with frame_count, first_ts,
+    last_ts, built_ts, file_size_bytes, overlay) or None."""
+    video_path, meta_path = timelapse_preview_paths(mode)
+    if not os.path.exists(video_path):
+        return None
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        meta = {}
+    meta["file_size_bytes"] = os.path.getsize(video_path)
+    return meta
+
+
+def delete_timelapse_previews(mode=None):
+    """Removes the preview for one mode, or all of them (mode=None) - called
+    when the frames a preview was built from stop existing (a real compile
+    consumed them, or they were purged), so a stale preview can't be
+    mistaken for current progress."""
+    try:
+        names = os.listdir(CAMERA_TIMELAPSE_PREVIEWS_DIR)
+    except FileNotFoundError:
+        return
+    prefix = "preview_" if mode is None else f"preview_{mode}."
+    for name in names:
+        if name.startswith(prefix):
+            try:
+                os.remove(os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, name))
+            except OSError:
+                pass
+
+
+def compile_lock_path(mode):
+    """Per-mode lock file camera_service.compile_session_video() holds
+    (fcntl.flock) for the whole of a compile - shared here so anything
+    else that touches a mode's raw frames (purge_camera_snapshots below,
+    compile_timelapse.py) can respect the same lock instead of deleting
+    frames out from under a running ffmpeg."""
+    return os.path.join(CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{mode}.lock")
+
+
+def purge_camera_snapshots(orphan_min_age_seconds=60):
+    """Deletes EVERY kept (uncompiled) timelapse frame - DB rows and
+    files - for the Timelapse page's "Purge pending frames" button.
+    Compiled videos and their posters are untouched.
+
+    Refuses (returns {"busy_mode": mode}) if any mode with frames has a
+    compile running, rather than deleting the JPEGs ffmpeg is reading
+    mid-encode; all involved modes' compile locks are held for the whole
+    purge so a compile can't start part-way through it either.
+
+    Also removes stray .jpg files in CAMERA_TIMELAPSE_DIR with no DB row
+    (e.g. left by a crash between writing a file and inserting its row),
+    but only ones older than orphan_min_age_seconds: save_camera_snapshot()
+    writes the file BEFORE inserting the row, so a brand-new frame is
+    briefly a "stray" - deleting it in that window would leave a row
+    pointing at a missing file, which would make that mode's next ffmpeg
+    compile fail."""
+    os.makedirs(CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
+    conn = get_db()
+    modes = [r[0] for r in conn.execute("SELECT DISTINCT mode FROM camera_snapshots").fetchall()]
+    conn.close()
+
+    held = []
+    try:
+        for mode in modes:
+            f = open(compile_lock_path(mode), "w")
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                f.close()
+                return {"busy_mode": mode}
+            held.append(f)
+
+        conn = get_db()
+        rows = conn.execute("SELECT ts, filename FROM camera_snapshots").fetchall()
+        removed, freed = 0, 0
+        known = set()
+        for ts, filename in rows:
+            known.add(filename)
+            path = os.path.join(CAMERA_TIMELAPSE_DIR, filename)
+            try:
+                freed += os.path.getsize(path)
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
+            removed += 1
+        conn.commit()
+        conn.close()
+
+        strays = 0
+        cutoff = time.time() - orphan_min_age_seconds
+        try:
+            with os.scandir(CAMERA_TIMELAPSE_DIR) as it:
+                for entry in it:
+                    if (entry.is_file() and entry.name.endswith(".jpg")
+                            and entry.name not in known):
+                        st = entry.stat()
+                        if st.st_mtime < cutoff:
+                            os.remove(entry.path)
+                            freed += st.st_size
+                            strays += 1
+        except FileNotFoundError:
+            pass
+        # Previews were built from the frames just deleted.
+        delete_timelapse_previews()
+        return {"removed": removed, "strays_removed": strays, "freed_bytes": freed}
+    finally:
+        for f in held:
+            fcntl.flock(f, fcntl.LOCK_UN)
+            f.close()
 
 
 def save_timelapse_video(mode, start_ts, end_ts, frame_count, filename, poster_filename,
