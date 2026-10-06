@@ -78,6 +78,29 @@
   }
   .light-toggle-btn.on { filter: grayscale(0); }
   .light-toggle-btn:disabled { opacity: 0.6; cursor: default; }
+  .fullscreen-btn {
+    position: absolute; top: 8px; left: 8px; z-index: 2;
+    width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--panel-border);
+    background: rgba(16,21,26,0.75); color: var(--text-dim); font-size: 1.1rem;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  /* The CSS-overlay fallback fullscreen mode (see toggleFullscreen() below) -
+     only applied when the real Fullscreen API isn't available/usable
+     (notably iOS Safari, which still only partially supports
+     requestFullscreen() on a non-<video> element). Covers the viewport
+     directly rather than relying on the browser's own fullscreen chrome,
+     so it works the same way on a phone that has no Escape key. */
+  .live-frame-wrap.fullscreen-fallback {
+    position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100vh;
+    aspect-ratio: auto; border: none; border-radius: 0;
+  }
+  /* object-fit switches from "cover" (fills the small dashboard tile,
+     cropping edges) to "contain" (shows the whole frame, letterboxed if
+     needed) in either fullscreen mode - cropping the one view meant for
+     actually looking closely at the enclosure would defeat the point. */
+  .live-frame-wrap:fullscreen .home-live-frame,
+  .live-frame-wrap.fullscreen-fallback .home-live-frame { object-fit: contain; }
+  .live-frame-wrap:fullscreen { background: #000; }
 </style>
 {% endblock %}
 {% block content %}
@@ -172,6 +195,8 @@
          old Flask-relayed MJPEG. -->
     <img class="home-live-frame" id="homeLiveFrame" alt="Live camera view"
          onerror="setTimeout(reconnectHomeStream, 2000)">
+    <button class="fullscreen-btn" id="fullscreenBtn" onclick="toggleFullscreen()"
+            title="Fullscreen">⛶</button>
     <button class="light-toggle-btn" id="lightToggleBtn" onclick="toggleLight()"
             title="Turn light on">💡</button>
   </div>
@@ -482,6 +507,76 @@ function reconnectHomeStream() {
     document.getElementById('homeLiveFrame').src = lastStreamUrl + '?t=' + Date.now();
   }
 }
+
+// Fullscreen for the live view, PC + mobile. Tries the real Fullscreen
+// API first (works on desktop and Android Chrome) and falls back to a
+// fixed-position CSS overlay covering the viewport when that's
+// unavailable or refused - mainly iOS Safari, which still only has
+// partial/no support for requestFullscreen() on anything other than a
+// <video> element, so an <img>-based MJPEG stream like this one never
+// gets real native fullscreen there. The fallback looks the same to the
+// user either way; only the mechanism differs.
+function isInFullscreenView() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement)
+      || document.querySelector('.live-frame-wrap').classList.contains('fullscreen-fallback');
+}
+
+function updateFullscreenButton() {
+  const btn = document.getElementById('fullscreenBtn');
+  const active = isInFullscreenView();
+  btn.textContent = active ? '✕' : '⛶';
+  btn.title = active ? 'Exit fullscreen' : 'Fullscreen';
+}
+
+function enterFallbackFullscreen() {
+  document.querySelector('.live-frame-wrap').classList.add('fullscreen-fallback');
+  document.body.style.overflow = 'hidden';  // stop background scroll on mobile
+  updateFullscreenButton();
+}
+
+function exitFallbackFullscreen() {
+  document.querySelector('.live-frame-wrap').classList.remove('fullscreen-fallback');
+  document.body.style.overflow = '';
+  updateFullscreenButton();
+}
+
+function toggleFullscreen() {
+  const wrap = document.querySelector('.live-frame-wrap');
+  if (isInFullscreenView()) {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen ? document.exitFullscreen() : document.webkitExitFullscreen());
+    }
+    exitFallbackFullscreen();
+    return;
+  }
+  const request = wrap.requestFullscreen || wrap.webkitRequestFullscreen;
+  if (request) {
+    const result = request.call(wrap);
+    // requestFullscreen() returns a Promise on standard browsers, but
+    // the older webkit-prefixed version (some Android/older Safari
+    // builds) returns nothing - only chain .catch when there's actually
+    // a Promise to chain onto, and fall back either way it fails.
+    if (result && typeof result.catch === 'function') {
+      result.then(updateFullscreenButton).catch(enterFallbackFullscreen);
+    } else {
+      updateFullscreenButton();
+    }
+  } else {
+    enterFallbackFullscreen();
+  }
+}
+
+// Keep the button's icon in sync if fullscreen is exited some other way
+// (Escape key, browser/OS back gesture, the browser's own exit control)
+// rather than via our button.
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement) exitFallbackFullscreen();
+  else updateFullscreenButton();
+});
+document.addEventListener('webkitfullscreenchange', () => {
+  if (!document.webkitFullscreenElement) exitFallbackFullscreen();
+  else updateFullscreenButton();
+});
 
 let lightOverrideActive = false;
 

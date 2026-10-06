@@ -565,6 +565,19 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-05]** Added a fullscreen button to the Live view on the home dashboard, cross-platform (PC +
+  mobile). The live view is an `<img>` running a long-lived MJPEG stream (not a `<video>` element), and iOS
+  Safari still only has partial/no support for the standard Fullscreen API (`requestFullscreen()`) on anything
+  other than an actual `<video>` tag (confirmed via caniuse as of this writing, current iOS releases
+  included) - so a naive `requestFullscreen()`-only implementation would silently do nothing on an iPhone/iPad.
+  `toggleFullscreen()` in `templates/home.html` tries the real Fullscreen API first (works on desktop browsers
+  and Android Chrome) and falls back to a `position:fixed` CSS overlay covering the viewport
+  (`.fullscreen-fallback` class) when that's unavailable or the browser refuses it - same visual result either
+  way, just a different mechanism. `object-fit` switches from `cover` (small dashboard tile, cropped) to
+  `contain` (whole frame visible, letterboxed if needed) in both fullscreen paths. A `fullscreenchange`/
+  `webkitfullscreenchange` listener keeps the button's icon in sync if the user exits some other way (Escape,
+  back gesture, the browser's own exit control) rather than tapping the button again.
+
 - **[2026-10-05]** Removed DHT22 support entirely - Ryan confirmed he's not going back to wired DHT22 probes
   now that both the internal and external/fallback sensors are SHT31s. This was the natural follow-up to the
   fallback-sensor fix directly below: rather than leave a dead "dht22" option sitting in two dropdowns nobody
