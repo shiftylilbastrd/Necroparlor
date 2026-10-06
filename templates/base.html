@@ -63,6 +63,31 @@
     margin-left: auto; padding-right: 4px; color: var(--text-dim);
     font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* [2026-10-06] Second-level nav for the Settings group (Logs, Data,
+     Config, Notifications, Settings itself) - see the "Narrow the
+     mobile nav" entry in PROJECT_STATUS.md for why this exists: with 7
+     top-level tabs the mobile nav got too wide to use comfortably, so
+     everything except Home/Timelapse/Settings moved down a level,
+     reachable once you're on any page in this group. Rendered by
+     base.html only when active_page is one of the five grouped pages
+     (see the Jinja block below) - Home and Timelapse don't get this
+     second bar at all. overflow-x:auto + no flex-grow on the links
+     (unlike nav.topnav, which stretches tabs to fill the width) is
+     deliberate: a sub-nav that scrolls sideways on a narrow phone is
+     the same "don't force the page wider than the screen" fix the top
+     nav needed, but doesn't force these particular labels to shrink or
+     abbreviate the way evenly-stretched tabs would. */
+  nav.subnav {
+    display: flex; gap: 4px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    border-bottom: 1px solid var(--panel-border); padding: 0 20px; background: var(--bg);
+  }
+  nav.subnav a {
+    display: block; padding: 10px 14px; color: var(--text-dim); text-decoration: none;
+    font-size: 0.85rem; font-weight: 600; border-bottom: 2px solid transparent;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  nav.subnav a.active { color: var(--text); border-bottom-color: var(--accent); }
+  nav.subnav a:hover { color: var(--text); }
 
   .grid {
     display: grid;
@@ -174,6 +199,8 @@
     nav.topnav { padding: 0; }
     nav.topnav a { flex: 1; text-align: center; padding: 14px 8px; font-size: 0.85rem; }
     .nav-pi-stats { display: none; } /* no room next to full-width tabs on a phone */
+    nav.subnav { padding: 0 8px; }
+    nav.subnav a { padding: 9px 10px; font-size: 0.8rem; }
     .save-btn, .range-row button, .filter-row select, .filter-row button {
       padding: 10px 14px; font-size: 0.85rem;
     }
@@ -184,16 +211,27 @@
 </style>
 </head>
 <body>
+<!-- [2026-10-06] Down to 3 top-level tabs (was 7) - see PROJECT_STATUS.md's
+     "Narrow the mobile nav" entry. Logs/Data/Config/Notifications moved
+     into the settings_group sub-nav below; Settings itself is both a
+     top-level tab (linking straight to /settings) AND a member of that
+     group, so it's "active" up here whenever any grouped page is open. -->
+{% set settings_group = ['logs', 'data', 'config', 'notifications', 'settings'] %}
 <nav class="topnav">
   <a href="/" class="{{ 'active' if active_page == 'home' }}">Home</a>
-  <a href="/logs" class="{{ 'active' if active_page == 'logs' }}">Logs</a>
-  <a href="/data" class="{{ 'active' if active_page == 'data' }}">Data</a>
   <a href="/timelapse" class="{{ 'active' if active_page == 'timelapse' }}">Timelapse</a>
-  <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
-  <a href="/notifications" class="{{ 'active' if active_page == 'notifications' }}">Notifications</a>
-  <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">Settings</a>
+  <a href="/settings" class="{{ 'active' if active_page in settings_group }}">Settings</a>
   <div class="nav-pi-stats" id="navPiStats" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings. Useful while tuning the camera's capture/relay settings on the Settings page: watch this doesn't climb into the warning range as those get pushed faster."></div>
 </nav>
+{% if active_page in settings_group %}
+<nav class="subnav">
+  <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">Settings</a>
+  <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
+  <a href="/notifications" class="{{ 'active' if active_page == 'notifications' }}">Notifications</a>
+  <a href="/data" class="{{ 'active' if active_page == 'data' }}">Data</a>
+  <a href="/logs" class="{{ 'active' if active_page == 'logs' }}">Logs</a>
+</nav>
+{% endif %}
 <div class="page">
 <div class="banner" id="globalDoorBanner">🚪 Enclosure door is open</div>
 <div class="update-banner" id="globalUpdateBanner">

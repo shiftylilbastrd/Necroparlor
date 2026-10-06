@@ -2647,3 +2647,31 @@ that aren't obvious from reading the code cold.
     `camera-streamer.service` + `daemon-reload` + restart on the real Pi, then confirm both that `/video`
     being disabled hasn't broken anything (it shouldn't - the dashboard never required it) and that overall
     responsiveness/the "no frame" flapping actually goes back to normal.
+
+- **[2026-10-06] Narrowed the mobile nav - went from 7 top-level tabs down to 3.** Ryan reported the top tabs
+  had gotten too wide on mobile; asked for options, Ryan picked a bigger restructure over any of the
+  mobile-only CSS tweaks offered (scroll/abbreviate/wrap/dropdown): **Home, Timelapse, and Settings as the
+  only top-level tabs**, with Logs/Data/Config/Notifications moved down a level as a second-row sub-nav that
+  only appears once you're on Settings or one of those four pages. No URL/route changes - `webapp.py`'s
+  `active_page` values (`home`/`logs`/`data`/`timelapse`/`config`/`notifications`/`settings`) are unchanged,
+  this is purely `templates/base.html`'s nav markup/CSS. Implementation, all in `base.html` (shared by every
+  page):
+  - A new `settings_group` Jinja list (`['logs', 'data', 'config', 'notifications', 'settings']`) - the
+    top-level "Settings" tab gets the `active` class whenever `active_page` is IN this list, not just when
+    it's exactly `'settings'`, so it stays visibly "on" while browsing Logs/Data/Config/Notifications too.
+  - A new `nav.subnav` bar, rendered only `{% if active_page in settings_group %}` - absent entirely on
+    Home/Timelapse, present with the right tab highlighted on all five grouped pages (verified via a Flask
+    test-client check of every route, both for the sub-nav's presence and which tab gets `active` in each
+    nav). Deliberately NOT stretched edge-to-edge with `flex: 1` the way the top nav is - `overflow-x: auto`
+    with `white-space: nowrap` lets it scroll sideways on a narrow phone instead, so none of these labels
+    need shrinking or abbreviating to fit (the actual root cause of the original mobile-width problem: 7
+    evenly-stretched full-width labels, including "Notifications," simply don't fit a phone screen without
+    either scrolling, shrinking, or wrapping - scrolling was picked for whichever bar ends up holding the
+    longer label set, which is now the sub-nav).
+  - The top nav, now down to 3 tabs (Home/Timelapse/Settings), keeps its existing `flex: 1` evenly-stretched
+    mobile layout unchanged - 3 tabs stretched across a phone screen was never the width problem, 7 was.
+  **Verified**: Jinja2 parses all 7 templates against the new `base.html`; a Flask test-client pass confirms
+  the sub-nav renders (or doesn't) on exactly the right pages and that both the top-level "Settings" tab and
+  the correct sub-nav tab get `active` on every one of the 5 grouped routes. **Not yet visually verified on
+  an actual phone** - the scrolling behavior and tap targets on `nav.subnav` should be checked on Ryan's
+  iPhone once this is deployed, same as every other mobile-layout change in this project.
