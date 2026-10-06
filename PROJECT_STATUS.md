@@ -2996,3 +2996,11 @@ that aren't obvious from reading the code cold.
   `<h1>` remains anywhere except `home.html`; confirmed both pages' Download and Clear buttons carry
   matching `min-width:160px`; confirmed both pages' `pageSizeSelect` default option and initial `pageSize`
   JS variable are both `25`.
+
+- **[2026-10-06, same day] Removed the redundant "Sensor sources" and "Camera" section-title headers.**
+  Same reasoning as the `<h1>` cleanup above - `settings.html`'s `<div class="section-title">Sensor
+  sources</div>` and `camera.html`'s `<div class="section-title">Camera</div>` just repeated what the
+  Settings sub-nav tab (Sensors) and top-level Camera tab already say, with no other content on either
+  page competing for a section label. Removed both divs; the `.grid` of cards underneath is unaffected.
+  **Verified**: Flask test-client hit `/settings` and `/camera` (200 on both); confirmed `section-title`
+  no longer appears in either template.
