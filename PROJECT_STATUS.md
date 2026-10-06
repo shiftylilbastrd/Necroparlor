@@ -2822,3 +2822,42 @@ that aren't obvious from reading the code cold.
   the climate/BLE/camera restart cascade a few update-cycles earlier) rather than a reproducible bug. Not
   otherwise investigated since it didn't recur and there's no server-side evidence of what happened; worth
   revisiting if it comes back.
+
+- **[2026-10-06, same day] Renamed the "Config" sub-nav tab to "Setpoints" and moved it to the front.** Small
+  follow-up to the Sensors/Camera/System split - the sub-nav under Settings/Camera/etc. now reads Setpoints
+  · Sensors · Camera · Notifications · Data · System (was Sensors · Camera · Config · Notifications · Data ·
+  System). `/config` is still the URL and still `active_page="config"` - only the label changed, plus the
+  page's own `<h1>` ("Configuration" → "Setpoints") and title tag, and a few other pages' doc-comments/copy
+  that referenced "the Config page/tab" by name (`camera.html`, `notifications.html`, `timelapse.html`) -
+  updated to say "Setpoints" so they stay accurate. No route, API, or JS behavior changed.
+
+- **[2026-10-06, same day] Data and Logs pages: real paging (with a rows-per-page dropdown) instead of
+  "Load more," plus their own Retention/Clear controls.** Previously both pages only ever grew a single
+  long list via a "Load more" button at the bottom; now each has a page-size dropdown (25/50/100/200/500,
+  default 50) and Newer/Older buttons with a "Page N" label, replacing that button entirely.
+  - **Why cursor/timestamp-based, not offset-based**: both tables get a new row roughly every control cycle,
+    so an offset scheme ("page 3 = rows 101-150") would silently drift as new rows land at the top - whatever
+    was page 3 a minute ago becomes page 4 without warning. Instead each page tracks the `before` timestamp
+    cursor that fetched it (`pageCursors[]`, index 0 = `null`/no lower bound); Older pushes a new cursor
+    (the oldest row's `ts` just rendered) and advances, Newer just steps back through cursors already
+    recorded. A page is therefore pinned to a fixed point in time once visited, immune to new rows arriving
+    above it - no backend changes needed, `/api/readings-table` and `/api/events` already supported
+    `limit`/`before`. "Older" disables once a page comes back with fewer rows than the page size (no more
+    history); "Newer" disables on page 1.
+  - Logs' existing 15s auto-refresh now only fires on page 1 (same intent as before - don't disrupt someone
+    paged back into history - just expressed against `currentPage` instead of the old "list length <= page
+    size" heuristic, which doesn't make sense anymore now that each page is its own fetch rather than an
+    ever-growing appended list).
+  - **Retention/Clear, duplicated onto each page**: Data gets a "Retention" card (saves the same shared
+    `history_retention_days` - there's only ever been one retention window, covering both tables together,
+    see `prune_old_history()`) worded around readings, and a "Clear readings" card that calls
+    `/api/history/clear` with just `{readings: true}`. Logs gets the mirror image - same retention field,
+    "Clear event log" with `{events: true}`. Each page's copy is explicit that the retention number is
+    shared, not a separate per-table setting, and points at the System page where both appear together (that
+    combined card is untouched - this is additive, not a move). `escapeHtml()`/`confirmDanger()` (global,
+    `base.html`) back the clear confirmation same as System's version.
+  **Verified**: Jinja2 parsed both templates; extracted `<script>` blocks passed `node --check`; a Flask
+  test-client run seeded 130 synthetic readings/events and confirmed `/api/readings-table`'s and
+  `/api/events`' `before` cursor correctly returns the next 50-row page with no overlap, that
+  `/api/history/clear` with only `{readings: true}` or only `{events: true}` leaves the other table
+  untouched, and that `/api/history/retention` still saves correctly from here.

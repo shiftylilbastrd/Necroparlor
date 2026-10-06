@@ -42,7 +42,7 @@
     <div class="field">
       <label>Alert if internal temp/humidity stays outside its mode's acceptable range for longer than (minutes, 0 = never)</label>
       <input type="number" min="0" max="1440" id="notifyRangeAlertInput">
-      <div class="stat-sub" style="margin-top:4px;">"Acceptable range" is each mode's low/high temp and humidity setpoint (set on the Config tab) widened by that mode's own alert margin - not the same moment the heater/fan/dehumidifier kicks in, which would fire this constantly during normal operation.</div>
+      <div class="stat-sub" style="margin-top:4px;">"Acceptable range" is each mode's low/high temp and humidity setpoint (set on the Setpoints tab) widened by that mode's own alert margin - not the same moment the heater/fan/dehumidifier kicks in, which would fire this constantly during normal operation.</div>
     </div>
     <div class="field" style="margin-top:14px;">
       <label><input type="checkbox" id="notifyQuietEnabled" style="width:auto; margin-right:6px;" onchange="saveNotificationSettings('notifySettingsMsg')">Quiet hours</label>

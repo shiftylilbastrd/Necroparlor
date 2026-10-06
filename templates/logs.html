@@ -27,19 +27,61 @@
     <option value="error">Error</option>
     <option value="critical">Critical</option>
   </select>
+  <select id="pageSizeSelect" onchange="changePageSize()">
+    <option value="25">25 rows</option>
+    <option value="50" selected>50 rows</option>
+    <option value="100">100 rows</option>
+    <option value="200">200 rows</option>
+    <option value="500">500 rows</option>
+  </select>
   <button onclick="resetAndLoad()">Refresh</button>
   <button onclick="downloadLog()">Download log</button>
+  <button id="prevPageBtn" onclick="prevPage()" disabled>&larr; Newer</button>
+  <span class="stat-sub" id="pageLabel" style="margin: 0 4px;">Page 1</span>
+  <button id="nextPageBtn" onclick="nextPage()" disabled>Older &rarr;</button>
 </div>
 
 <div class="card events" id="eventsList"></div>
-<div style="text-align:center; margin-top:14px;">
-  <button id="loadMoreBtn" onclick="loadMore()">Load more</button>
+
+<div class="section-title">History</div>
+<div class="grid">
+  <div class="card" style="max-width:420px;">
+    <h2>Retention</h2>
+    <div class="stat-sub" id="historyStats" style="margin-bottom:12px;">Loading...</div>
+    <div class="field">
+      <label>Keep event log for (days, 0 = forever)</label>
+      <input type="number" id="historyRetentionInput" min="0" max="3650">
+    </div>
+    <button class="save-btn" onclick="saveHistoryRetention()">Save</button>
+    <div class="save-msg" id="historyRetentionMsg"></div>
+    <div class="stat-sub" style="margin-top:6px;">
+      Older rows are trimmed automatically once an hour. 7&ndash;3650 days, or 0 to keep everything. This
+      also controls how long sensor readings (see the Data page) are kept - it's one shared setting, not a
+      separate one per table. Also editable from the System page.
+    </div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Clear event log</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">
+      Wipes the event log now. Download a copy first if you might want it:
+      <a href="/api/events/download" style="color:var(--accent);">event log (.txt)</a>
+    </div>
+    <button class="danger-btn" id="clearEventsBtn" onclick="clearEvents()">Clear event log</button>
+    <div class="save-msg" id="clearEventsMsg"></div>
+  </div>
 </div>
 
 {% endblock %}
 {% block scripts %}
 <script>
-const PAGE_SIZE = 50;
+// --- Paging --- (see data.html's identical comment for why this is
+// cursor/timestamp-based rather than offset-based - same reasoning
+// applies here: new events land at the top constantly.)
+let pageSize = 50;
+let currentPage = 0;
+let pageCursors = [null];
+let lastPageHadFullRows = false;
 let oldestLoadedTs = null;
 let autoRefreshTimer = null;
 
@@ -49,7 +91,7 @@ function fmtDateTime(ts) {
   });
 }
 
-function renderEvents(events, append) {
+function renderEvents(events) {
   const container = document.getElementById('eventsList');
   const html = events.map(e => `
     <div class="event-row level-${e.level}">
@@ -58,35 +100,54 @@ function renderEvents(events, append) {
       <div>${e.message}</div>
     </div>
   `).join('');
-  if (append) {
-    container.insertAdjacentHTML('beforeend', html);
-  } else {
-    container.innerHTML = html || '<div class="stat-sub">No events yet</div>';
-  }
-  if (events.length > 0) {
-    oldestLoadedTs = events[events.length - 1].ts;
-  }
-  document.getElementById('loadMoreBtn').style.display = events.length < PAGE_SIZE ? 'none' : 'inline-block';
+  container.innerHTML = html || '<div class="stat-sub">No events yet</div>';
+  oldestLoadedTs = events.length > 0 ? events[events.length - 1].ts : null;
+  lastPageHadFullRows = events.length >= pageSize;
+  updatePagerControls();
+}
+
+function updatePagerControls() {
+  document.getElementById('pageLabel').textContent = `Page ${currentPage + 1}`;
+  document.getElementById('prevPageBtn').disabled = currentPage === 0;
+  document.getElementById('nextPageBtn').disabled = !lastPageHadFullRows;
 }
 
 async function fetchEvents(beforeTs) {
   const level = document.getElementById('levelFilter').value;
-  let url = `/api/events?limit=${PAGE_SIZE}`;
+  let url = `/api/events?limit=${pageSize}`;
   if (level) url += `&level=${level}`;
   if (beforeTs) url += `&before=${beforeTs}`;
   const res = await fetch(url);
   return res.json();
 }
 
-async function resetAndLoad() {
-  oldestLoadedTs = null;
-  const events = await fetchEvents(null);
-  renderEvents(events, false);
+async function loadPage(pageIndex) {
+  currentPage = pageIndex;
+  const events = await fetchEvents(pageCursors[pageIndex]);
+  renderEvents(events);
 }
 
-async function loadMore() {
-  const events = await fetchEvents(oldestLoadedTs);
-  renderEvents(events, true);
+async function resetAndLoad() {
+  pageCursors = [null];
+  await loadPage(0);
+}
+
+function changePageSize() {
+  pageSize = parseInt(document.getElementById('pageSizeSelect').value, 10);
+  resetAndLoad();
+}
+
+async function nextPage() {
+  if (!lastPageHadFullRows) return;
+  if (pageCursors.length === currentPage + 1) {
+    pageCursors.push(oldestLoadedTs);
+  }
+  await loadPage(currentPage + 1);
+}
+
+async function prevPage() {
+  if (currentPage === 0) return;
+  await loadPage(currentPage - 1);
 }
 
 // A plain navigation (not fetch+blob) so the browser's own download
@@ -101,11 +162,104 @@ function downloadLog() {
   window.location.href = url;
 }
 
+// --- Retention / clear (events only - see the Data page for the
+// readings-table equivalent, and the System page for both combined).
+// history_retention_days is one shared setting that prunes both tables
+// together (see prune_old_history() in shared_state.py) - there's no
+// separate "events retention" in the backend, so saving here changes
+// the same value the Data/System pages show. ---
+let lastHistoryStats = null;
+
+function fmtBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fmtSince(ts) {
+  return ts ? new Date(ts * 1000).toLocaleDateString([], {year: 'numeric', month: 'short', day: 'numeric'}) : null;
+}
+
+function describeTable(t, noun) {
+  const since = fmtSince(t.oldest_ts);
+  const word = t.count === 1 ? noun.replace(/s$/, '') : noun;
+  return `${t.count.toLocaleString()} ${word}${since ? ` since ${since}` : ''}`;
+}
+
+async function loadHistoryStats() {
+  try {
+    const res = await fetch('/api/history/stats');
+    const data = await res.json();
+    lastHistoryStats = data;
+    document.getElementById('historyStats').textContent =
+      `${describeTable(data.events, 'log events')} · database ${fmtBytes(data.db_bytes)}`;
+    const input = document.getElementById('historyRetentionInput');
+    if (document.activeElement !== input) input.value = data.retention_days;
+  } catch (e) {
+    document.getElementById('historyStats').textContent = 'Could not load history stats.';
+  }
+}
+
+async function saveHistoryRetention() {
+  const days = parseInt(document.getElementById('historyRetentionInput').value, 10);
+  const msg = document.getElementById('historyRetentionMsg');
+  const res = await fetch('/api/history/retention', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({days})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = data.retention_days === 0 ? 'Saved - keeping everything' : `Saved - keeping ${data.retention_days} days`;
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  }
+}
+
+async function clearEvents() {
+  const msg = document.getElementById('clearEventsMsg');
+  msg.textContent = '';
+  await loadHistoryStats();
+  const s = lastHistoryStats;
+  const what = s ? `<strong>${escapeHtml(describeTable(s.events, 'log events'))}</strong>` : 'the whole event log';
+  const ok = await confirmDanger('Clear event log?', [
+    `This permanently deletes ${what}.`,
+    'Sensor readings, timelapse videos and pending frames aren\'t affected. The database file stays the same ' +
+      'size on the SD card - the freed space is reused for new history. This can\'t be undone.'
+  ], 'Clear event log');
+  if (!ok) return;
+  const btn = document.getElementById('clearEventsBtn');
+  btn.disabled = true;
+  msg.textContent = 'Clearing...';
+  msg.className = 'save-msg';
+  try {
+    const res = await fetch('/api/history/clear', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({events: true})
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      msg.textContent = data.error || 'Clear failed';
+      msg.className = 'save-msg err';
+    } else {
+      msg.textContent = `Cleared ${data.deleted.events.toLocaleString()} events.`;
+      msg.className = 'save-msg ok';
+    }
+  } catch (e) {
+    msg.textContent = 'Clear failed - dashboard unreachable.';
+    msg.className = 'save-msg err';
+  }
+  btn.disabled = false;
+  loadHistoryStats();
+  resetAndLoad();
+}
+
 resetAndLoad();
+loadHistoryStats();
+setInterval(loadHistoryStats, 60000);
 // Only auto-refresh the newest page - if the user has paged further back,
 // refreshing out from under them would be disorienting, so pause it then.
 autoRefreshTimer = setInterval(() => {
-  if (oldestLoadedTs === null || document.querySelectorAll('.event-row').length <= PAGE_SIZE) {
+  if (currentPage === 0) {
     resetAndLoad();
   }
 }, 15000);

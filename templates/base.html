@@ -229,9 +229,9 @@
 </nav>
 {% if active_page in settings_group %}
 <nav class="subnav">
+  <a href="/config" class="{{ 'active' if active_page == 'config' }}">Setpoints</a>
   <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">Sensors</a>
   <a href="/camera" class="{{ 'active' if active_page == 'camera' }}">Camera</a>
-  <a href="/config" class="{{ 'active' if active_page == 'config' }}">Config</a>
   <a href="/notifications" class="{{ 'active' if active_page == 'notifications' }}">Notifications</a>
   <a href="/data" class="{{ 'active' if active_page == 'data' }}">Data</a>
   <a href="/system" class="{{ 'active' if active_page == 'system' }}">System</a>
