@@ -15,18 +15,24 @@ rather than just editing it silently.
 
 ## Current state (as of this writing)
 
-**[STANDING CONTEXT, stated by Ryan 2026-09-14 - re-read this every session,
-it keeps getting lost across auto-summaries]**
-1. **This is still benchtop development.** Nothing here is installed in
-   the actual freezer enclosure yet. Don't treat "confirmed on real
-   hardware" entries elsewhere in this file as "confirmed in the final
-   deployment" - they mean "confirmed on the benchtop rig."
-2. **All three sensors (internal DHT22, external DHT22, and the BLE
-   sensor if attached) are sitting within inches of each other** on the
-   bench right now. Internal/external readings tracking each other
-   closely is expected right now and is NOT evidence the fixed-identity/
-   fallback logic is broken - there's no real environmental separation
-   yet to tell them apart.
+**[STANDING CONTEXT, stated by Ryan 2026-09-14, items 1-2 UPDATED by Ryan
+2026-10-06 - re-read this every session, it keeps getting lost across
+auto-summaries]**
+1. **Monitoring-only deployment, not yet controlling.** *(Updated
+   2026-10-06; was "still benchtop development.")* The Pi and its sensors
+   are now physically in the real environment - the Pi is currently
+   positioned *inside* the container (repositioned there 2026-10-05 while
+   setting up the new camera) and will eventually move to its permanent
+   exterior hardware location. But the Pi is **not** controlling the
+   climate yet - a different device still does that. So readings are
+   real-environment readings, but nothing the Pi's control logic "does"
+   has any real effect yet (see item 3).
+2. **The sensors now have real environmental separation.** *(Updated
+   2026-10-06; previously "all three sensors within inches of each other
+   on the bench.")* Both wired sensors are SHT31s now (DHT22 support was
+   removed 2026-10-05). Internal vs. external/fallback readings differing
+   significantly (e.g. 2026-10-06: internal ~78°F, BLE external ~54°F/85%,
+   wired fallback ~64°F/63%) is expected and real, not a bug.
 3. **The relays are not switching any actual devices** - no real heater,
    fan, dehumidifier, or light is connected downstream of them right
    now. A relay "safety cutoff" (e.g. the 20-minute heater max-runtime)
@@ -74,13 +80,19 @@ it keeps getting lost across auto-summaries]**
   own proper 5V/3A USB-C supply - reusing the 3B+'s old micro-USB
   supply via an adapter would reintroduce a *new* under-voltage
   problem, not fix the old one) - not yet confirmed either way.
+  **[superseded 2026-09-13/2026-10-06]** Confirmed: the Pi 4 has its own
+  proper PSU (`get_throttled` = `0x0`, re-checked clean 2026-10-06), and
+  BLE is working on the Pi 4 (see the 2026-10-06 verification entry in
+  Open threads).
   **`camera-streamer` (ayufan's, a
   native binary alternative to the hand-rolled MJPEG relay - see the
   superseded live-view entry below for why it wasn't used initially) is
   deliberately not yet integrated into the dashboard** - the plan is to
   verify it runs standalone on the Pi 4 first, then write dashboard
   integration code against its actual observed API behavior, not
-  against documentation alone.
+  against documentation alone. **[superseded 2026-09-17]** camera-streamer
+  IS now integrated and is what serves the live view/snapshots - see the
+  2026-09-17 "camera-streamer switch actually implemented" entry.
 - **SD card upgraded (2026-09-14)**: 16GB SanDisk Class 4 -> 64GB PNY
   Elite-X (UHS-I U3, A1, V30), cloned over via `rpi-clone` rather than a
   from-scratch reinstall. See the dated Open-threads entry below for the
@@ -541,11 +553,16 @@ that aren't obvious from reading the code cold.
 
 ## Established workflows / things that look like bugs but aren't
 
-- Deployment is via dragging files into GitHub's web UI, not git CLI
-  pushes from a dev machine. **Always check the branch selector shows
-  the intended branch before dragging files in** - it's easy to
-  accidentally commit to whatever branch GitHub happened to have
-  selected.
+- **[updated 2026-10-06]** Deployment is via **GitHub Desktop** from
+  Ryan's local clone at `D:\GitHub\Necroparlor` (Windows laptop; moved
+  there from a OneDrive-synced path that broke change detection) - Claude
+  hands off changed files, Ryan copies them into that clone and commits/
+  pushes. Claude sessions can't push directly. Hand-offs should include 3
+  ready-to-paste commit summary options (lowercase, no `feat:`/`fix:`
+  prefixes, terse, matching the repo's history style). Earlier entries in
+  this file describe the older drag-into-GitHub's-web-UI workflow - the
+  same caution applies either way: **check the current branch is the
+  intended one before committing**.
 - `auto_update.sh`'s own executable permission bit (`chmod +x`) shows
   up as a "local change" on essentially every pull or branch switch,
   since GitHub's web uploader doesn't preserve the exec bit. This is
@@ -564,6 +581,72 @@ that aren't obvious from reading the code cold.
   can disagree about which branch is "current."
 
 ## Open threads / known issues
+
+- **[2026-10-06] Verification pass on the real Pi - what's actually deployed vs. what this file claimed.**
+  Ryan noticed several items here had been done but never checked off, so we went through every open/
+  unverified item one at a time with read-only checks on the Pi (no fixes made in this pass). Pi was on
+  `d0d21e7` (latest `main`) throughout. Results:
+  **NOT done - still needs action:**
+  - **camera-streamer H264 revert was never installed on the Pi.** The repo's `systemd/camera-streamer.service`
+    has `--camera-video.disabled=1`, but `/etc/systemd/system/camera-streamer.service` was still the OLD
+    H264-enabled version (`diff` showed the full `--camera-video.options=...` block), and the running process
+    (started 2026-10-05 19:47, 0 restarts) had all the H264 flags. So the H264 encoder has been running
+    continuously this whole time. **This contradicts the revert entry's "the revert fixed the symptom
+    (confirmed by Ryan)"** - whatever improved, it wasn't the server-side unit; most likely it was the
+    `home.html` change that stopped the page from requesting `/video`. That also further supports that entry's
+    own correction that CPU was never the cause: with the encoder running, load average was 0.02, 7.2GB free,
+    37°C, `throttled=0x0`. Fix still needed: `sudo cp systemd/camera-streamer.service /etc/systemd/system/ &&
+    sudo systemctl daemon-reload && sudo systemctl restart camera-streamer.service`. Also: that unit's own
+    comment block still says the encoder "overloaded the Pi badly" - stale per the correction, update it.
+  - **Pillow is not installed** (`ModuleNotFoundError: No module named 'PIL'`). A crop IS set, so every
+    timelapse frame is being saved uncropped and logs "Failed to crop timelapse snapshot" (518 times on
+    2026-10-06 alone by 08:39). No frames lost (by design), but today's session frames are uncropped and will
+    stay that way. Fix: `pip3 install Pillow --break-system-packages`, restart `dermestid-camera.service`.
+  - **`ruuvitag` class name in `BLE_SENSOR_LIBRARIES` is wrong**: `RuuviTagBluetoothDeviceData` vs. the real
+    `RuuvitagBluetoothDeviceData` (lowercase t), checked against ruuvitag-ble 0.4.0's source. Would raise
+    `ble_listener.py`'s "has no class" `AttributeError` at startup if selected. All four others
+    (sensorpush 1.9.0, govee 1.5.1, inkbird 1.7.1, xiaomi 1.17.0) confirmed correct.
+  **Deployed, final proof pending:**
+  - **Timelapse auto-compile fix** is deployed. The September backlog is gone - but `timelapse_videos` is
+    EMPTY, so it was purged, not compiled; no compile has ever succeeded on the Pi yet. Only pending frames:
+    the current `cleaning` session (918 frames from 2026-10-05 17:21, ~15s at the 60fps Ryan set). The real
+    proof is the next mode change: that session should appear in the gallery on its own.
+  - **iPhone crop/zoom/pan** - was working, but couldn't be re-confirmed because the dashboard was too slow
+    to use at the time (see the Wi-Fi item below). Retry once it's responsive.
+  **Confirmed done:**
+  - External/fallback SHT31: `dtoverlay=i2c5` present, `/dev/i2c-5` exists, `i2cdetect -y 5` shows `0x44`,
+    `adafruit-extended-bus` 1.0.2 installed, direct read worked (64.5°F/62.6%). It differed from the logged
+    "External" value, i.e. BLE was the active external source and the wired SHT31 was correctly on standby.
+    (Note: README uses the hardware `i2c5` overlay, not `i2c-gpio` as the 2026-10-05 fallback entry says - the
+    README is right.)
+  - BLE on the Pi 4: `dermestid-ble.service` 0 restarts, no errors since boot, `rfkill` clear. The old
+    `POWERED_OFF` symptom is gone.
+  - `dermestid-battery.service` `ExecStart` now points at `ble_battery.py`, timer scheduled every ~4h. Last
+    successful battery read 2026-10-05 12:00 (81.4%).
+  - Nav (newer Home/Timelapse/Settings/Logs + sub-nav arrangement) and the live-view fullscreen button both
+    work on iPhone; iOS live view runs in the reduced-frame-rate snapshot-poll fallback, as expected.
+  **NEW - Wi-Fi firmware resets from the Pi's current position inside the container:**
+  - `dmesg` showed repeated `brcmf_psm_watchdog_notify: PSM's watchdog has fired!` (the Wi-Fi chip's firmware
+    hanging/resetting) starting 2026-10-05 22:20, the evening after the Pi was repositioned inside the
+    container; ~7 times between 08:09 and 08:28 on 2026-10-06. Signal -70 dBm, link quality 40/70. Symptoms:
+    PuTTY dropping, the dashboard very slow to respond.
+  - "Could not reach camera-streamer" notifications (the `127.0.0.1` snapshot check in `camera_service.py`)
+    came in only 2 bursts (08:31, 08:43) - **not** during the overnight Wi-Fi resets, only while Ryan had the
+    dashboard open on phone + PC over Tailscale. Unconfirmed theory: remote `/snapshot` pollers on a flaky
+    link tie up camera-streamer's HTTP workers, and the Pi's own local request times out behind them - the same
+    "connection handling, not CPU" idea as the H264 entry.
+  - The 2026-10-06 08:00 battery check failed all 3 attempts (`failed to discover services, device
+    disconnected`) - the first real attempt since the reposition (earlier runs skipped on freshness). An active
+    GATT connection is much less forgiving of a weak/contended radio than passive advertisement listening, and
+    BLE shares the BCM combo chip with the struggling Wi-Fi.
+  - Expected to clear once the Pi moves to its permanent exterior location; treat as location-caused rather than
+    a software bug unless it persists after the move. Worth re-checking `dmesg | grep psm_watchdog`, the
+    battery check, and the camera warnings after that.
+  **Closed as stale in this pass** (tags updated in place with the reason): the Data-page old-headers report,
+  the Tier-3 BLE entries, Pi 3B+ live-view performance, the SHT31 upgrade, the `add-webcam` foreground-testing
+  entry, and "Current state"'s camera-streamer-not-integrated and Pi 4 PSU-unconfirmed notes. Standing context
+  items 1-2 updated per Ryan (monitoring-only in the real environment; a different device still controls the
+  climate).
 
 - **[2026-10-05]** Added a fullscreen button to the Live view on the home dashboard, cross-platform (PC +
   mobile). The live view is an `<img>` running a long-lived MJPEG stream (not a `<video>` element), and iOS
@@ -935,14 +1018,14 @@ that aren't obvious from reading the code cold.
   actually dead (climate.py crashed/hung) - that path never wrote a row before either and still doesn't.
 - **[resolved]** `ble-genericization` merged into `main`; Pi confirmed
   switched back to tracking `main`.
-- **[open]** A Data-page report of "Fallback missing for a while" came
+- **[closed 2026-10-06 - not recurred, and the Data page has since been rebuilt]** A Data-page report of "Fallback missing for a while" came
   in showing old "External"/"Fallback" column headers from *before*
   the fixed-identity rename - most likely just a stale
   `dermestid-web.service` that hadn't been restarted to pick up the
   new template (Flask caches templates in production mode), not a new
   bug. No further reports since, but never explicitly re-confirmed
   fixed - worth a fresh look if it recurs.
-- **[open]** Tier-3 BLE failure (deep bluetoothd stuck state,
+- **[resolved 2026-10-06 - BLE healthy on the Pi 4, see the 2026-10-06 verification entry]** Tier-3 BLE failure (deep bluetoothd stuck state,
   `systemctl restart bluetooth` insufficient, needs a full reboot) -
   happened twice this session, then a third time (2026-09-13) on real
   hardware right after the USB webcam was first plugged in and opened.
@@ -956,7 +1039,7 @@ that aren't obvious from reading the code cold.
   recovery built yet; if this keeps coinciding with the webcam
   specifically, a powered USB hub for the webcam is the likely real
   fix rather than another BLE-side workaround.
-- **[open, 2026-09-13, worse recurrence]** A fourth occurrence, and the
+- **[resolved 2026-10-06 - `dermestid-ble.service` 0 restarts/0 errors, rfkill clear; battery-service ExecStart fix confirmed applied]** **[was: open, 2026-09-13, worse recurrence]** A fourth occurrence, and the
   first that didn't self-clear: `dermestid-ble.service` was reported
   missing external BLE data for ~12 hours straight, confirmed via
   `journalctl` as a continuous restart loop (`restart counter` in the
@@ -1075,7 +1158,7 @@ that aren't obvious from reading the code cold.
   Pi's working copy** (the device bridge that pushes files to the
   user's folder can't delete remotely, same limitation as the earlier
   template cleanup).
-- **[open, 2026-09-13]** Live view performance on the Pi 3B+ confirmed
+- **[superseded - Pi 4 migration + camera-streamer]** Live view performance on the Pi 3B+ confirmed
   poor with real hardware + real network (Chrome on desktop, same LAN):
   "very slow and choppy," not the smooth video the MJPEG relay was
   designed to deliver. Not yet root-caused to a specific bottleneck
@@ -1087,11 +1170,11 @@ that aren't obvious from reading the code cold.
   be the pending Pi 4 migration (more CPU/power headroom); not worth
   chasing a 3B+-specific optimization (lower resolution/quality/fps as
   a stopgap) given the migration is already imminent.
-- **[open]** SHT31 upgrade for the internal sensor is under
+- **[done 2026-10-05 - both wired sensors are SHT31s, DHT22 support removed]** SHT31 upgrade for the internal sensor is under
   consideration, motivated by real DHT22 reliability issues even after
   the retry-logic fix. Probe form factor (PTFE vs. ceramic vs. metal
   mesh filter cap) was researched but no purchase decision made yet.
-- **[open]** `xiaomi`/`ruuvitag` entries in `BLE_SENSOR_LIBRARIES`
+- **[checked 2026-10-06 - xiaomi OK, ruuvitag WRONG, see the 2026-10-06 verification entry]** `xiaomi`/`ruuvitag` entries in `BLE_SENSOR_LIBRARIES`
   have unverified exact class names (follow the established
   convention but weren't checked against real source) - confirm before
   actually switching to either.
@@ -1100,7 +1183,7 @@ that aren't obvious from reading the code cold.
   claim that it wasn't tracked - see the dated correction note under
   "Current state" above. Re-fixed; watch for it recurring via the
   drag-and-drop upload workflow.
-- **[open, 2026-09-13]** New USB webcam feature (`add-webcam` branch)
+- **[superseded - merged, Pi 4, camera-streamer]** New USB webcam feature (`add-webcam` branch)
   now partially verified on real hardware (Logitech C922, Pi 3B+):
   `discover_camera.py` found it at `/dev/video0` fine, `pip install
   opencv-python-headless --break-system-packages` was needed (not
