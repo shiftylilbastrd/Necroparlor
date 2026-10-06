@@ -2609,3 +2609,35 @@ that aren't obvious from reading the code cold.
   `camera-streamer`'s build actually has V4L2 M2M (Pi hardware H264 encoder) support compiled in at all -
   `--camera-video.disabled=0` being the default suggests it should, but that's inferred from `--help` text,
   not confirmed against this build's actual behavior yet.
+
+- **[2026-10-06] REVERTED the H264/`/video` fix above** - it did stop the frozen-frame problem, but Ryan
+  reported after deploying it that the whole dashboard got noticeably slower and the iOS live view started
+  "frequently saying no frame" (the `cameraUnavailableBanner` text), with the HLS fallback never actually
+  winning when it did show something (`liveViewMode` kept landing on `snapshot-poll`, not `video`). Read
+  together, this means running the H264 encoder continuously - on top of the existing MJPEG capture, on the
+  same Pi 4 already running `climate.py` and `webapp.py` - is expensive enough to make
+  `/api/camera/status`'s own `/snapshot` reachability check start timing out intermittently (the flapping
+  "no frame" banner) and to starve the HLS segmenting badly enough that it never got fast enough for
+  `tryVideoFallback()`'s 4-second readiness check to catch on. **This is a worse real-world outcome than the
+  problem it was meant to fix** - a dashboard-wide slowdown on a safety-relevant climate controller, just to
+  get smoother video on one phone.
+  - `systemd/camera-streamer.service`: `--camera-video.*` tuning flags removed, replaced with an explicit
+    `--camera-video.disabled=1` (not just omitting the flags - `disabled` defaults to 0/enabled, so leaving
+    it unset would silently re-enable this on a future camera-streamer update). Same change mirrored in
+    `docs/camera-streamer-setup.md`'s standalone test command.
+  - `templates/home.html`: `checkStreamSupport()` now calls `startSnapshotPolling()` directly instead of
+    `tryVideoFallback()` when the MJPEG stream fails - no point attempting a tier that's disabled
+    server-side. `tryVideoFallback()` itself, the `#homeLiveVideo` element, and `video_url` on
+    `/api/camera/status` are all left in place (not ripped out) in case H264 output is worth a second attempt
+    later with real headroom - just not wired up to run automatically right now.
+  - **If H264/`/video` is ever revisited**: measure actual CPU/temp under load (`top`, `vcgencmd
+    measure_temp`) while it's running BEFORE trusting that it plays back correctly - this entry is exactly
+    why "it plays" and "it's actually fine to run" turned out to be two different questions. Worth considering
+    separately: a lower resolution/bitrate specifically for the H264 encode (vs. the MJPEG capture's own
+    width/height), since 1280x720 @ 2Mbps continuous H264 may simply be too much to ask of this Pi alongside
+    everything else it's already doing - not evaluated here, since the decision was to back out rather than
+    tune further for now.
+  - **Needs the same deploy-and-verify step as always**: `git pull` + copy the updated
+    `camera-streamer.service` + `daemon-reload` + restart on the real Pi, then confirm both that `/video`
+    being disabled hasn't broken anything (it shouldn't - the dashboard never required it) and that overall
+    responsiveness/the "no frame" flapping actually goes back to normal.

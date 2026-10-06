@@ -29,33 +29,26 @@ EnvironmentFile=/home/pi/dermestid/camera-streamer.env
 #     UVC webcam. libcamera is built around the Pi's CSI camera + ISP
 #     pipeline, not a generic USB device - this project's earlier
 #     recommendation was simply wrong.
-# [2026-10-06] Added the --camera-video.* block below - see
-# PROJECT_STATUS.md's 2026-10-06 entry. Without it, /video's H264
-# encoder was left on whatever camera-streamer's own internal defaults
-# are (not documented), which produced exactly one frame and then froze
-# - confirmed on real hardware (Ryan: "video player with controls but a
-# frozen frame" when opening /video directly in Safari). These are the
-# exact values from `camera-streamer --help`'s own example invocation
-# (confirmed via `--help | grep -i -E "h264|video"` on the real Pi),
-# not guessed - --camera-video.disabled=0 is actually the existing
-# default (disabled takes 0/1, defaulting to 0 = enabled) so this isn't
-# what was missing; the encoding option tuning (bitrate, keyframe
-# interval, profile/level, QP range) is what was never being set at all.
+# [2026-10-06] --camera-video.* H264 encoding was tried and REVERTED -
+# see PROJECT_STATUS.md's 2026-10-06 entries for the full story. It did
+# fix /video's frozen-frame problem, but running the H264 encoder
+# continuously alongside the MJPEG capture overloaded the Pi badly
+# enough to also slow down the rest of the dashboard and make
+# /api/camera/status's own availability check start flapping - a much
+# worse real-world outcome than the iOS frame-rate problem it was meant
+# to fix. --camera-video.disabled=1 explicitly turns the encoder back
+# off (it defaults to enabled otherwise) rather than just omitting the
+# flags, so a later change to camera-streamer's own defaults can't
+# silently re-enable this. If H264 output is revisited later, it needs
+# real resource measurements (CPU/temp under `top`/`vcgencmd
+# measure_temp` while it's running) before trying again, not just
+# confirming it produces a playable stream.
 ExecStart=/usr/local/bin/camera-streamer \
     --camera-path=${CAMERA_PATH} \
     --camera-type=v4l2 --camera-format=MJPEG \
     --camera-width=${CAMERA_WIDTH} --camera-height=${CAMERA_HEIGHT} \
     --http-listen=0.0.0.0 --http-port=${CAMERA_STREAMER_PORT} \
-    --camera-video.disabled=0 \
-    --camera-video.options=video_bitrate_mode=0 \
-    --camera-video.options=video_bitrate=2000000 \
-    --camera-video.options=repeat_sequence_header=5000000 \
-    --camera-video.options=h264_i_frame_period=30 \
-    --camera-video.options=h264_level=4 \
-    --camera-video.options=h264_profile=high \
-    --camera-video.options=h264_minimum_qp_value=16 \
-    --camera-video.options=h264_maximum_qp_value=32 \
-    --camera-video.height=0
+    --camera-video.disabled=1
 Restart=on-failure
 RestartSec=5
 

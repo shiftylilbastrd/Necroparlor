@@ -586,7 +586,16 @@ function checkStreamSupport() {
   setTimeout(() => {
     const img = document.getElementById('homeLiveFrame');
     if (liveViewMode === 'stream' && img.naturalWidth === 0) {
-      tryVideoFallback();
+      // [2026-10-06] Goes straight to startSnapshotPolling() rather than
+      // tryVideoFallback() - the /video (H264) tier is disabled
+      // server-side right now (camera-streamer.service's
+      // --camera-video.disabled=1) after it turned out to overload the
+      // Pi badly enough to slow down the whole dashboard, not just fail
+      // to help iOS (see PROJECT_STATUS.md's 2026-10-06 entries).
+      // tryVideoFallback() itself is left in place below in case H264
+      // output gets revisited later with real resource headroom - just
+      // not called from here until then.
+      startSnapshotPolling();
     }
   }, 3000);
 }
