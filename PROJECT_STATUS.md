@@ -3025,3 +3025,37 @@ that aren't obvious from reading the code cold.
   blocks pass `node --check`; rendered `/data` in a headless Chromium (Playwright) and measured both
   buttons' actual bounding boxes - Download and Clear readings both came back `{width: 160, height: 38}`,
   pixel-identical.
+
+- **[2026-10-06, same day] Actually actually fixed it - the Download/Clear mismatch was a flexbox quirk,
+  not a font issue.** Ryan's screenshot showed Clear event log still visibly wider than Download even
+  after the font fix above - on his actual machine (Windows, Segoe UI), not reproducible in this sandbox
+  (no Segoe UI installed, so a shorter fallback font happened to fit inside 160px without exposing the
+  bug). The real cause: both buttons are children of a `display:flex` row, and flex items default to
+  `min-width: auto`, which means a flex item's content-driven minimum size (its natural, unwrapped text
+  width) can silently override an explicit `width` - so "Clear event log" (longer text, bold) was pushing
+  past the declared `width:160px` while "Download" (shorter text) happily stayed at 160px, even though
+  both had the exact same CSS width set. This is why the bug never showed in this sandbox's own font
+  metrics but did on Ryan's.
+  - `data.html`/`logs.html`: both buttons in both pairs now also set `min-width:180px; max-width:180px;
+    flex-shrink:0; white-space:nowrap; overflow:hidden;` alongside `width:180px` (widened from 160 to
+    comfortably fit "Clear event log", the longest label across both pages) - `min-width`/`max-width`
+    pin the box exactly regardless of the flex-item auto-sizing quirk, `flex-shrink:0` stops the flex
+    container from compressing it either, and `white-space:nowrap`/`overflow:hidden` are a safety net so
+    content can never visually overflow the fixed box even under an unusually wide font.
+  **Verified**: Jinja2 parsed all 10 templates; Flask test-client hit every route (200 on all); `<script>`
+  blocks pass `node --check`; rendered both `/data` and `/logs` in headless Chromium and measured all four
+  buttons - all came back exactly `{width: 180, height: 38}`; additionally stress-tested by force-injecting
+  a much wider font (20px Georgia) onto the Logs buttons via `page.addStyleTag` and re-measuring - still
+  exactly 180×38 on both, confirming the lock holds regardless of font metrics, not just coincidentally in
+  this sandbox's fonts.
+
+- **[2026-10-06, same day] Fixed the Download/Clear vertical misalignment Ryan spotted right after the
+  width fix.** Even with matching 180×38 boxes, the two buttons sat 6px apart vertically - `.save-btn`
+  (used by the Download `<a>`) carries a default `margin-top: 6px` from `base.html`, and every inline
+  override up to this point had only ever been applied to the `<button>` (which already had `margin-top:0`
+  set), never to the `<a>`, so Download kept getting pushed down those 6px relative to Clear. Added
+  `margin-top:0` to both Download links (`data.html` and `logs.html`).
+  **Verified**: Jinja2 parsed all 10 templates; Flask test-client hit every route (200 on all); `<script>`
+  blocks pass `node --check`; rendered both `/data` and `/logs` in headless Chromium and measured all four
+  buttons' bounding boxes - Download and Clear now share the exact same `y` (and `x`, `width`, `height`) on
+  both pages: no gap, fully lined up.
