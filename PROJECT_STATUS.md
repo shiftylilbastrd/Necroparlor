@@ -2956,3 +2956,21 @@ that aren't obvious from reading the code cold.
   **Verified**: Jinja2 parsed all 10 templates; `<script>` blocks still pass `node --check`; confirmed via
   rendered output that the top-level Settings link's `href` is `/config`, and that both pages' Refresh
   buttons carry the `margin-left:auto` that pushes them right.
+
+- **[2026-10-06, same day] Fixed misleading "Checking..." placeholder on the System page.** Ryan noticed
+  that opening the System tab shows "Checking for updates..." but nothing actually checks - correct
+  behavior (see the lock-race fix a few entries up: loading the page only reads `/api/update-status`, which
+  is deliberately read-only and never triggers a git fetch itself), but the static placeholder text
+  implied an active check was happening on page load, which it never was. A real check only ever happens on
+  the background checker's own timer or an explicit "Check now" click. Changed the placeholder from
+  "Checking..." to "Loading..." - it's replaced within a moment by `renderUpdateStatus()` either way, so
+  this is purely about not implying an action that isn't occurring. Left `checkForUpdateNow()`'s own
+  "Checking..." button text alone - THAT one is accurate, since clicking "Check now" really does trigger
+  `/api/check-for-update-now`, a real fetch+compare.
+  Also fixed a stale docstring on `/api/update-status` in `webapp.py` that still said it was "polled by...
+  the Config page's tile" - that moved to the System page in the earlier Sensors/Camera/System split and
+  Setpoints (the page `/config` serves now) was never involved; updated the comment and added an explicit
+  note that this endpoint never triggers a check itself, for the next person wondering the same thing Ryan
+  just did.
+  **Verified**: `webapp.py` compiles; Jinja2 parses `system.html`; its `<script>` blocks still pass
+  `node --check`; confirmed the rendered `/system` page's placeholder now reads "Loading...".

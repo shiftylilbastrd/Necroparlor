@@ -973,7 +973,10 @@ def api_set_setpoints():
 @app.route("/api/update-status")
 def api_update_status():
     """Read-only - reflects whatever the background checker last found.
-    Polled by the banner on every page and the Config page's tile."""
+    Never triggers a fetch itself; that only happens on the background
+    checker's own timer (update_checker_loop) or an explicit "Check now"
+    (see api_check_for_update_now below). Polled by the banner on every
+    page and the System page's own status tile."""
     status = state.get_update_status()
     config = state.load_config()
     return jsonify({
