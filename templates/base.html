@@ -251,6 +251,21 @@
 </div>
 {% block scripts %}{% endblock %}
 <script>
+// [2026-10-06] Restored - deleted in the same accidental commit (3b49b22,
+// "notification tab") that dropped the Timelapse preview backend (see
+// PROJECT_STATUS.md's 2026-10-06 entries). confirmDanger() right below
+// this was caught and fixed back in September (6c8aa39), but this one
+// slipped through - every call to it (templates/timelapse.html's session
+// rows and video gallery labels, templates/settings.html's "Clear
+// selected history" confirmation) threw a ReferenceError, which is what
+// actually kept the Timelapse page's "Progress preview" section stuck on
+// "Loading..." even after the preview backend itself was restored:
+// refreshSessions()'s try/catch silently swallowed the error and just
+// retried forever instead of ever rendering the rows.
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 // A styled stand-in for the browser's native confirm() - returns a
 // Promise<boolean>, so callers just `if (!await confirmDanger(...)) return;`
 // the same way they would with the native one. `lines` is an array of

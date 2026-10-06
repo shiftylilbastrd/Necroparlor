@@ -2721,3 +2721,25 @@ that aren't obvious from reading the code cold.
   thing to run on the Pi first is `compile_timelapse.py` (mentioned in `camera_service.py`'s own comments as
   the manual-recovery path for exactly this kind of leftover-frames situation) BEFORE touching the purge
   button, and the NEXT mode change after deploying should compile normally on its own either way.
+
+- **[2026-10-06, same day] Found the ACTUAL reason the preview kept showing "Loading..." even after the fix
+  above was deployed** - Ryan confirmed the overlay checkbox was saving (so the new code was really running)
+  and pasted `/api/timelapse/sessions`'s raw response, which was perfectly valid JSON (`count: 191`, `busy:
+  false`, etc.) - so the backend was never the problem the second time around. The real culprit:
+  `escapeHtml()`, a shared helper in `base.html` used by `templates/timelapse.html`'s `sessionRowHtml()` (and
+  video gallery labels) and `templates/settings.html`'s history-clear confirmation, was ALSO deleted in the
+  same `3b49b22` ("notification tab") commit that dropped the preview backend - and, unlike its neighbor
+  `confirmDanger()` (fixed back in `6c8aa39`), never got restored. Every call to it threw `ReferenceError:
+  escapeHtml is not defined`, and `refreshSessions()`'s `try { ... } catch (e) { /* try again next tick */ }`
+  silently swallowed that error and just kept polling forever - so the backend fix alone could never have
+  shown anything, no matter how correct the JSON was. Restored `escapeHtml()` to `base.html`, in its original
+  position right before `confirmDanger()` (matching the pre-deletion file). **Verified for real**: extracted
+  the actual rendered `/timelapse` page's inline `<script>` blocks (via a Flask test-client request, not the
+  source files) and ran `sessionRowHtml()` against a session object shaped exactly like Ryan's pasted
+  191-frame response in a real Node process - confirmed it now returns real HTML with no `ReferenceError`,
+  where it previously would have thrown on the first `escapeHtml(s.label)` call.
+  **Also worth knowing**: since `escapeHtml` is shared via `base.html`, this quietly affects more than just
+  the preview rows - the Timelapse page's compiled-video gallery labels and Settings' "Clear selected
+  history" confirmation dialog both call it too, and would have hit the same silent failure the moment either
+  was actually exercised (the video gallery likely never rendered a real video card before today, since no
+  compile had succeeded since September - see the entry above). This one fix covers all of those at once.
