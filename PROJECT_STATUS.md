@@ -584,6 +584,40 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-06, later same day] Follow-ups to the verification pass below.**
+  - **camera-streamer H264 revert: now actually installed** (09:12). Unit re-copied, `diff` clean, running
+    process has only `--camera-video.disabled=1`. Unit comment block rewritten to drop the stale "overloaded the
+    Pi" claim.
+  - **`ruuvitag` class name fixed** (`RuuvitagBluetoothDeviceData`) and all five `BLE_SENSOR_LIBRARIES` entries
+    re-checked against real library source - all match.
+  - **Fullscreen squish fixed** (`a05ffda`): portrait fullscreen on the phone stretched the image to the
+    screen's shape, because the crop is done by sizing the frame in % of its box and fullscreen made that box
+    the screen. Now an inner `.live-crop-box` holds the crop's aspect ratio (`--crop-ratio`) and is letterboxed
+    inside the black fullscreen backdrop. Verified in headless Chromium: portrait box ratio 0.462 before ->
+    1.778 after (correct), same in landscape and on a 16:10 desktop; normal tile unchanged, pan clamp and
+    zoom-reset-on-exit still work. Needs a real-phone confirm.
+  - **iPhone double-tap does NOT reset zoom - by design, not a bug.** Only desktop `dblclick` is wired up;
+    an earlier session reply wrongly said double-tap would work. On the phone, zoom resets on fullscreen exit
+    or a crop change. A mobile double-tap reset would be a small new feature if wanted.
+  - **Live-view trouble is the Wi-Fi link, not the Pi or camera-streamer.** Measured: local `/snapshot`
+    ~0.06s both with no viewers and with phone + PC both watching; CPU ~96% idle; camera-streamer logging no
+    errors. Meanwhile the Wi-Fi chip kept resetting (`psm_watchdog` at 09:08, 09:14, 09:20, 09:46). Dropping
+    the camera from 1920x1080 (~249KB/frame, ~60 Mbit/s per full-speed viewer at 30fps) to 1280x720 (~134KB)
+    did NOT help - so it's link stability, not raw bandwidth. Decision (Ryan): wait for the connection fix
+    (exterior move / Ethernet / USB Wi-Fi with antenna outside the container) before chasing it further.
+    Camera was left at 720p at the time of writing - switch back to 1080p if timelapse resolution matters.
+  - **Two real code issues found along the way, deferred until the link is stable enough to test:**
+    1. The "No recent camera frame" banner is shown both when the Pi can't get a snapshot AND when the
+       browser's own `/api/camera/status` fetch fails (`refreshCameraStatus()`'s `catch`) - so a phone losing
+       contact with the Pi is reported as a camera problem. Should say "can't reach the Pi" in that case.
+    2. `checkStreamSupport()` decides once, 3s after page load, and a slow first MJPEG frame downgrades that
+       tab to snapshot-poll permanently - never retries the full-speed stream. That's why the PC sat on
+       "reduced frame rate."
+  - A "Could not reach camera-streamer" notification at ~09:50 was just camera-streamer restarting after the
+    resolution change (Camera page save restarts it) - confirmed recovered (restart 09:50:43, snapshot 0.08s).
+  - Still open from the pass below: **Pillow not installed** (timelapse frames saved uncropped), and the
+    timelapse auto-compile awaits its first real mode change.
+
 - **[2026-10-06] Verification pass on the real Pi - what's actually deployed vs. what this file claimed.**
   Ryan noticed several items here had been done but never checked off, so we went through every open/
   unverified item one at a time with read-only checks on the Pi (no fixes made in this pass). Pi was on

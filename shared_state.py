@@ -462,7 +462,7 @@ BLE_SENSOR_LIBRARIES = {
     "govee": {"package": "govee_ble", "class": "GoveeBluetoothDeviceData", "label": "Govee"},
     "inkbird": {"package": "inkbird_ble", "class": "INKBIRDBluetoothDeviceData", "label": "INKBIRD"},
     "xiaomi": {"package": "xiaomi_ble", "class": "XiaomiBluetoothDeviceData", "label": "Xiaomi"},
-    "ruuvitag": {"package": "ruuvitag_ble", "class": "RuuviTagBluetoothDeviceData", "label": "RuuviTag"},
+    "ruuvitag": {"package": "ruuvitag_ble", "class": "RuuvitagBluetoothDeviceData", "label": "RuuviTag"},
 }
 
 
