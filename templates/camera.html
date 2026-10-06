@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+{% block title %}Camera - Necroparlor{% endblock %}
+{% block head_extra %}
+<style>
+  .camera-discover-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 8px;
+  }
+  .camera-discover-item {
+    cursor: pointer; border: 2px solid var(--panel-border); border-radius: 6px;
+    overflow: hidden; background: #10151a; text-align: center;
+  }
+  .camera-discover-item.selected { border-color: var(--accent); }
+  .camera-discover-item img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
+  .camera-discover-item .idx-label { font-size: 0.75rem; padding: 4px; color: var(--text-dim); }
+  .crop-preview-wrap {
+    position: relative; width: 100%; background: #000; border-radius: 6px;
+    overflow: hidden; border: 1px solid var(--panel-border); min-height: 80px;
+    /* touch-action: none keeps a drag on the box/handles below from also
+       scrolling the page on a phone - without it, a touchmove here fights
+       the browser's own scroll gesture instead of just moving the box. */
+    touch-action: none; user-select: none;
+  }
+  #cropPreviewImg { width: 100%; display: block; }
+  .crop-box {
+    position: absolute; border: 2px solid var(--accent);
+    background: rgba(79,178,134,0.12); cursor: move; box-sizing: border-box;
+  }
+  .crop-handle {
+    position: absolute; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent); border: 2px solid #0d1712;
+  }
+</style>
+{% endblock %}
+{% block content %}
+
+<h1>Camera</h1>
+<div class="subtitle">USB webcam device, resolution, and live-view crop - things you set up once and rarely touch</div>
+
+<div class="section-title">Camera</div>
+<div class="grid">
+  <div class="card" style="max-width:420px;">
+    <h2>USB webcam</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">
+      Optional - only relevant if <code>camera-streamer</code> is installed and running (see
+      <code>docs/camera-streamer-setup.md</code>). Per-mode timelapse intervals are set on the
+      Config page, next to each mode's setpoints.
+    </div>
+    <div class="field">
+      <label>Device (index, e.g. "0", or a /dev path)</label>
+      <input type="text" id="cameraDeviceInput" placeholder="0" oninput="onCameraDeviceInput()">
+    </div>
+    <button class="save-btn" onclick="discoverCameras()" id="cameraDiscoverBtn" style="margin-top:2px;">Discover</button>
+    <div id="cameraDiscoverResults" style="margin-top:10px; display:none;">
+      <div class="camera-discover-grid" id="cameraDiscoverGrid"></div>
+      <div class="stat-sub" id="cameraDiscoverEmpty" style="display:none; margin-top:6px;"></div>
+      <div class="stat-sub" id="cameraDiscoverHint" style="margin-top:6px; display:none;"></div>
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>Resolution</label>
+      <select id="cameraResolutionSelect"></select>
+      <div class="stat-sub" id="cameraResolutionHint">Common resolutions shown - click Discover above to narrow this to only what your camera actually supports.</div>
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label>camera-streamer HTTP port</label>
+      <input type="number" min="1024" max="65535" id="cameraStreamerPortInput">
+      <div class="stat-sub">Can't be 8080 - that's this dashboard's own port. The live view on the Home page connects to your Pi on this port directly.</div>
+    </div>
+    <button class="save-btn" onclick="saveCameraSettings()">Save</button>
+    <div class="save-msg" id="cameraSettingsMsg"></div>
+    <div class="stat-sub" style="margin-top:8px;">
+      Saving restarts <code>camera-streamer.service</code> to apply device/resolution/port changes -
+      expect a few seconds of live-view interruption. JPEG quality and capture rate are set on the
+      Pi itself now (camera-streamer's own flags - see <code>docs/camera-streamer-setup.md</code>),
+      not from this page.
+    </div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Live view crop</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">
+      Permanently crops the live view and timelapse frames to just this rectangle - for trimming
+      extra background/shelf out of the shot. Drag the box or its corner to adjust. This doesn't
+      touch camera-streamer or need a restart.
+    </div>
+    <div class="crop-preview-wrap" id="cropPreviewWrap">
+      <img id="cropPreviewImg" alt="Camera snapshot for cropping">
+      <div class="stat-sub" id="cropPreviewEmpty" style="display:none;">
+        No snapshot available yet - check camera-streamer is running, then click Refresh preview.
+      </div>
+      <div class="crop-box" id="cropBox" style="display:none;">
+        <div class="crop-handle" data-handle="nw" style="top:-5px; left:-5px; cursor:nwse-resize;"></div>
+        <div class="crop-handle" data-handle="ne" style="top:-5px; right:-5px; cursor:nesw-resize;"></div>
+        <div class="crop-handle" data-handle="sw" style="bottom:-5px; left:-5px; cursor:nesw-resize;"></div>
+        <div class="crop-handle" data-handle="se" style="bottom:-5px; right:-5px; cursor:nwse-resize;"></div>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="save-btn" onclick="refreshCropPreview()" id="cropRefreshBtn">Refresh preview</button>
+      <button class="save-btn" onclick="resetCrop()" id="cropResetBtn">Reset to full frame</button>
+    </div>
+    <button class="save-btn" style="margin-top:8px;" onclick="saveCameraCrop()">Save crop</button>
+    <div class="save-msg" id="cameraCropMsg"></div>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+// Keep in sync with discover_camera.py's COMMON_RESOLUTIONS - this is
+// the pre-Discover fallback list (and the list used if a discovered
+// device's own supported_resolutions ever comes back empty), so the
+// dropdown isn't blocked on having clicked Discover at least once.
+// Discover narrows this down to only what the actual connected camera
+// supports (see renderCameraDiscover/selectCameraIndex below).
+const COMMON_RESOLUTIONS = [
+  [3840, 2160], [2560, 1440], [1920, 1080], [1600, 1200],
+  [1280, 960], [1280, 720], [1024, 768], [800, 600],
+  [640, 480], [640, 360], [320, 240],
+];
+
+// Rebuilds the resolution <select>'s options from a list of [w, h]
+// pairs, always including the currently-configured value even if it
+// isn't one of them (e.g. a resolution set by hand-editing config.json)
+// so saving without touching this field can never silently change it.
+function populateResolutionOptions(resolutions, selectedW, selectedH) {
+  const select = document.getElementById('cameraResolutionSelect');
+  const pairs = resolutions.map(r => [r[0], r[1]]);
+  if (selectedW && selectedH && !pairs.some(([w, h]) => w === selectedW && h === selectedH)) {
+    pairs.unshift([selectedW, selectedH]);
+  }
+  select.innerHTML = pairs.map(([w, h]) => `<option value="${w}x${h}">${w}x${h}</option>`).join('');
+  if (selectedW && selectedH) {
+    select.value = `${selectedW}x${selectedH}`;
+  }
+}
+
+// Populated from config.json's camera_known_resolutions (see
+// shared_state.py's DEFAULT_CONFIG) every time loadSettings() runs - this
+// is what lets a previously-Discovered device's resolution list survive
+// a page reload or switching back to it, without needing to click
+// Discover again. Keyed by device index as a string, same as the
+// server-side cache.
+let knownCameraResolutions = {};
+
+// Shared by loadSettings() (initial page load) and onCameraDeviceInput()
+// (typing/switching the device field afterward) - looks up the given
+// device key in the persisted cache first, then lastDiscoveredCameras
+// (this session's own fresher Discover results, if any), and only
+// falls back to the generic, unverified COMMON_RESOLUTIONS list if
+// neither has anything for this device.
+function applyResolutionsForDevice(deviceKey, selectedW, selectedH) {
+  const live = lastDiscoveredCameras[deviceKey] || lastDiscoveredCameras[Number(deviceKey)];
+  const cached = knownCameraResolutions[deviceKey];
+  const resolutions = (live && live.supported_resolutions && live.supported_resolutions.length)
+    ? live.supported_resolutions
+    : (cached && cached.length) ? cached : COMMON_RESOLUTIONS;
+  populateResolutionOptions(resolutions, selectedW, selectedH);
+  const hint = document.getElementById('cameraResolutionHint');
+  if (resolutions !== COMMON_RESOLUTIONS) {
+    hint.textContent = `Confirmed supported by this camera (${resolutions.length} mode${resolutions.length === 1 ? '' : 's'}, remembered from a previous Discover).`;
+  } else {
+    hint.textContent = 'Common resolutions shown - click Discover above to narrow this to only what your camera actually supports.';
+  }
+}
+
+// Fires as the Device field is typed into (not just when Discover finds
+// something) - if this exact value was Discovered before, at any point,
+// its resolution list comes back immediately with no need to re-run
+// Discover just because you're switching back to a camera you already
+// checked.
+function onCameraDeviceInput() {
+  applyResolutionsForDevice(document.getElementById('cameraDeviceInput').value.trim(), null, null);
+}
+
+async function loadSettings() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+
+  const cam = data.config.camera || {};
+  knownCameraResolutions = data.config.camera_known_resolutions || {};
+  document.getElementById('cameraDeviceInput').value = cam.device ?? '0';
+  applyResolutionsForDevice(cam.device ?? '0', cam.width ?? 1280, cam.height ?? 720);
+  document.getElementById('cameraStreamerPortInput').value = cam.streamer_port ?? 8090;
+
+  const crop = cam.crop || {};
+  cropState = {
+    left: crop.left ?? 0, top: crop.top ?? 0,
+    width: crop.width ?? 1, height: crop.height ?? 1,
+  };
+  renderCropBox();
+  refreshCropPreview();
+}
+
+async function saveCameraSettings() {
+  const [resWidth, resHeight] = document.getElementById('cameraResolutionSelect').value.split('x').map(Number);
+  const body = {
+    device: document.getElementById('cameraDeviceInput').value.trim(),
+    width: resWidth,
+    height: resHeight,
+    streamer_port: parseInt(document.getElementById('cameraStreamerPortInput').value, 10),
+  };
+  const res = await fetch('/api/camera-settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  const msg = document.getElementById('cameraSettingsMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else if (data.restart_attempted && !data.restart_ok) {
+    msg.textContent = 'Saved, but the automatic restart failed - restart camera-streamer.service by hand';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = data.restart_attempted
+      ? 'Saved - camera-streamer restarted automatically'
+      : 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 4500);
+  }
+}
+
+// --- Live view crop editor ---
+// cropState is always the SAVED crop (fractions 0-1 of the full frame) -
+// renderCropBox() just draws it, and dragging updates it live as you
+// drag, same as any other form field that hasn't been saved yet. Pointer
+// Events (not separate mouse/touch handlers) so one code path drives
+// both a mouse drag on PC and a finger drag on mobile.
+let cropState = {left: 0, top: 0, width: 1, height: 1};
+let cropDrag = null;
+
+function clampNum(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+function renderCropBox() {
+  const box = document.getElementById('cropBox');
+  box.style.left = (cropState.left * 100) + '%';
+  box.style.top = (cropState.top * 100) + '%';
+  box.style.width = (cropState.width * 100) + '%';
+  box.style.height = (cropState.height * 100) + '%';
+}
+
+async function refreshCropPreview() {
+  const img = document.getElementById('cropPreviewImg');
+  const empty = document.getElementById('cropPreviewEmpty');
+  const box = document.getElementById('cropBox');
+  try {
+    const res = await fetch('/api/camera/status');
+    const data = await res.json();
+    if (!data.available || !data.snapshot_url) throw new Error('camera unavailable');
+    img.onload = () => { box.style.display = 'block'; empty.style.display = 'none'; };
+    img.onerror = () => { box.style.display = 'none'; empty.style.display = 'block'; };
+    img.src = data.snapshot_url + '?t=' + Date.now();
+  } catch (e) {
+    box.style.display = 'none';
+    img.removeAttribute('src');
+    empty.style.display = 'block';
+  }
+}
+
+function resetCrop() {
+  cropState = {left: 0, top: 0, width: 1, height: 1};
+  renderCropBox();
+}
+
+async function saveCameraCrop() {
+  const res = await fetch('/api/camera-crop', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cropState)
+  });
+  const data = await res.json();
+  const msg = document.getElementById('cameraCropMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
+
+const CROP_MIN_FRACTION = 0.05;
+
+function onCropPointerDown(e) {
+  const handle = e.target.closest('.crop-handle');
+  const mode = handle ? handle.dataset.handle : 'move';
+  const wrap = document.getElementById('cropPreviewWrap');
+  cropDrag = {
+    mode, rect: wrap.getBoundingClientRect(),
+    startX: e.clientX, startY: e.clientY,
+    start: {...cropState},
+  };
+  e.preventDefault();
+  document.addEventListener('pointermove', onCropPointerMove);
+  document.addEventListener('pointerup', onCropPointerUp);
+}
+
+function onCropPointerMove(e) {
+  if (!cropDrag) return;
+  const dx = (e.clientX - cropDrag.startX) / cropDrag.rect.width;
+  const dy = (e.clientY - cropDrag.startY) / cropDrag.rect.height;
+  const s = cropDrag.start;
+  const mode = cropDrag.mode;
+  if (mode === 'move') {
+    cropState = {
+      left: clampNum(s.left + dx, 0, 1 - s.width),
+      top: clampNum(s.top + dy, 0, 1 - s.height),
+      width: s.width, height: s.height,
+    };
+  } else {
+    let {left, top, width, height} = s;
+    if (mode.includes('w')) {
+      const right = s.left + s.width;
+      left = clampNum(s.left + dx, 0, right - CROP_MIN_FRACTION);
+      width = right - left;
+    }
+    if (mode.includes('e')) {
+      width = clampNum(s.width + dx, CROP_MIN_FRACTION, 1 - s.left);
+    }
+    if (mode.includes('n')) {
+      const bottom = s.top + s.height;
+      top = clampNum(s.top + dy, 0, bottom - CROP_MIN_FRACTION);
+      height = bottom - top;
+    }
+    if (mode.includes('s')) {
+      height = clampNum(s.height + dy, CROP_MIN_FRACTION, 1 - s.top);
+    }
+    cropState = {left, top, width, height};
+  }
+  renderCropBox();
+}
+
+function onCropPointerUp() {
+  cropDrag = null;
+  document.removeEventListener('pointermove', onCropPointerMove);
+  document.removeEventListener('pointerup', onCropPointerUp);
+}
+
+document.getElementById('cropBox').addEventListener('pointerdown', onCropPointerDown);
+
+async function discoverCameras() {
+  const btn = document.getElementById('cameraDiscoverBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Scanning... (stops the camera service briefly)';
+  const resultsEl = document.getElementById('cameraDiscoverResults');
+  const gridEl = document.getElementById('cameraDiscoverGrid');
+  const emptyEl = document.getElementById('cameraDiscoverEmpty');
+  const hintEl = document.getElementById('cameraDiscoverHint');
+  try {
+    const res = await fetch('/api/camera-discover', {method: 'POST'});
+    const data = await res.json();
+    resultsEl.style.display = 'block';
+    if (!res.ok) {
+      gridEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = data.error || 'Discovery failed - see the Logs page or try again.';
+      hintEl.style.display = 'none';
+      return;
+    }
+    const devices = data.devices || [];
+    if (devices.length === 0) {
+      gridEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+      emptyEl.textContent = 'No camera found on indices 0-9.';
+      hintEl.style.display = data.hint ? 'block' : 'none';
+      hintEl.textContent = data.hint || '';
+    } else {
+      emptyEl.style.display = 'none';
+      hintEl.style.display = 'none';
+      lastDiscoveredCameras = {};
+      devices.forEach(d => { lastDiscoveredCameras[d.index] = d; });
+      gridEl.innerHTML = devices.map(d => `
+        <div class="camera-discover-item" id="cam-discover-${d.index}" onclick="selectCameraIndex(${d.index})">
+          <img src="data:image/jpeg;base64,${d.image_b64}" alt="/dev/video${d.index} sample frame">
+          <div class="idx-label">#${d.index} · ${d.width}x${d.height}</div>
+        </div>
+      `).join('');
+    }
+  } catch (e) {
+    resultsEl.style.display = 'block';
+    gridEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = 'Discovery failed - see the Logs page or try again.';
+    hintEl.style.display = 'none';
+  }
+  btn.disabled = false;
+  btn.textContent = originalText;
+}
+
+let lastDiscoveredCameras = {};
+
+function selectCameraIndex(index) {
+  document.getElementById('cameraDeviceInput').value = index;
+  // discover_camera.py actually tests a list of common resolutions
+  // against this specific device (see probe_supported_resolutions) and
+  // reports back only the ones it genuinely supports - applyResolutionsForDevice()
+  // prefers this session's own fresh lastDiscoveredCameras entry over
+  // the persisted cache, so a just-run Discover always wins even if it
+  // found something different than last time.
+  const device = lastDiscoveredCameras[index];
+  applyResolutionsForDevice(String(index), device ? device.width : null, device ? device.height : null);
+  document.querySelectorAll('.camera-discover-item').forEach(el => el.classList.remove('selected'));
+  const chosen = document.getElementById(`cam-discover-${index}`);
+  if (chosen) chosen.classList.add('selected');
+}
+
+loadSettings();
+</script>
+{% endblock %}

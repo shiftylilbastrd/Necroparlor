@@ -2743,3 +2743,42 @@ that aren't obvious from reading the code cold.
   history" confirmation dialog both call it too, and would have hit the same silent failure the moment either
   was actually exercised (the video gallery likely never rendered a real video card before today, since no
   compile had succeeded since September - see the entry above). This one fix covers all of those at once.
+
+- **[2026-10-06, same day] Split the Settings page into Sensors/Camera/System, moved Logs back to the top-level
+  nav.** Ryan's follow-up to the "narrow the mobile nav" change above: once Settings had grown a sub-nav, he
+  wanted Logs un-grouped again (back to a top-level tab) and the grab-bag "Settings" page itself broken up by
+  topic instead of staying one long page of unrelated cards. Concretely:
+  - `templates/base.html`: `nav.topnav` is now 4 tabs - Home, Timelapse, Settings, Logs. `settings_group`
+    dropped `'logs'` and gained `'camera'`/`'system'`. The sub-nav under Settings/Camera/System/Config/
+    Notifications/Data now reads Sensors · Camera · Config · Notifications · Data · System (the first link
+    still points at `/settings` - it's the page's own URL, just relabeled "Sensors" since that's all it holds
+    now). The global update banner's "go to Settings to apply it" link now points at `/system`, where the
+    update controls actually live.
+  - `templates/settings.html` (now "Sensors"): kept only the Internal/Fallback/External calibration + BLE
+    cards and their supporting JS (`loadSettings()` narrowed to just the BLE/calibration fields,
+    `populateBleSensorTypes`, `saveCalibration`, `updateSignalDisplay` + its 5s poll, `saveBleMac`,
+    `discoverBleSensors`/`selectBleAddress`). Dropped the `camera-discover-grid`/`crop-*` CSS entirely - no
+    longer used on this page.
+  - `templates/camera.html` (new): USB webcam + Live view crop cards, with their own `loadSettings()` (camera/
+    crop fields only, separate `/api/status` fetch from the Sensors page - same "each page fetches what it
+    needs" pattern already used elsewhere, e.g. Home's own polling), the resolution-list/Discover machinery
+    (`COMMON_RESOLUTIONS`, `populateResolutionOptions`, `knownCameraResolutions`, `applyResolutionsForDevice`,
+    `onCameraDeviceInput`, `discoverCameras`, `lastDiscoveredCameras`, `selectCameraIndex`), `saveCameraSettings`,
+    and the whole crop editor (`cropState`/`cropDrag`, `renderCropBox`, `refreshCropPreview`, `resetCrop`,
+    `saveCameraCrop`, the pointer-drag handlers). New route: `@app.route("/camera")` → `camera.html`,
+    `active_page="camera"`.
+  - `templates/system.html` (new): Software updates, Retention, Clear history, and Restart cards - i.e.
+    everything from the old Settings page that wasn't sensor- or camera-related. `clearHistory()` still calls
+    the shared `escapeHtml()`/`confirmDanger()` from `base.html` (unaffected by this split - both stay global).
+    New route: `@app.route("/system")` → `system.html`, `active_page="system"`.
+  - `webapp.py`: added the two new routes right after `/settings`; no existing route changed shape, no API
+    endpoints touched - this was purely a template/nav reorganization, same data still comes from the same
+    `/api/status`, `/api/history/*`, `/api/update-*`, `/api/camera-*` endpoints as before, just split across
+    more pages that each fetch only what they show.
+  - Two stale doc comments fixed for accuracy: `home.html`'s crop-editor comment now says "Camera page"
+    instead of "Settings page", `notifications.html`'s branch-select comment now says "System page".
+  **Verified**: Jinja2 parsed all 10 templates; every route (`/`, `/timelapse`, `/settings`, `/camera`,
+  `/system`, `/logs`, `/data`, `/config`, `/notifications`) returned 200 via Flask test client and every
+  inline `<script>` block extracted from the real rendered HTML passed `node --check`; confirmed via the
+  rendered nav markup itself that each page gets the right "active" tab/sub-tab and that Logs no longer
+  appears in the sub-nav on any of the grouped pages.

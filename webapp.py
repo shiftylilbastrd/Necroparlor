@@ -81,6 +81,16 @@ def settings_page():
     return render_template("settings.html", active_page="settings")
 
 
+@app.route("/camera")
+def camera_page():
+    return render_template("camera.html", active_page="camera")
+
+
+@app.route("/system")
+def system_page():
+    return render_template("system.html", active_page="system")
+
+
 @app.route("/timelapse")
 def timelapse_page():
     return render_template("timelapse.html", active_page="timelapse")

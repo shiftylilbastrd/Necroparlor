@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+{% block title %}System - Necroparlor{% endblock %}
+{% block content %}
+
+<h1>System</h1>
+<div class="subtitle">Software updates, data retention, and the Pi itself - things you set up once and rarely touch</div>
+
+<div class="section-title">Software updates</div>
+<div class="grid">
+  <div class="card" style="max-width:420px;">
+    <h2>Software updates</h2>
+    <div class="field">
+      <label>Branch to track</label>
+      <!-- Auto-saves on change (see onBranchSelectChange below) - no
+           separate click needed, same as the Internal source select on
+           the Settings page. The button underneath is just a manual
+           fallback (retry after a failed auto-save, or re-run the check
+           without actually changing the selection). -->
+      <select id="updateBranchSelect" onchange="onBranchSelectManualChange()"></select>
+      <div class="stat-sub" id="updateBranchWarning" style="margin-top:6px; display:none; color:var(--warn);">
+        ⚠ Non-main branches are for deliberate testing - running code that hasn't gone through the same scrutiny as main. Switching back to main after testing is recommended, not something to leave changed long-term. A branch switch also can't automatically handle deeper structural changes (like a renamed systemd service) - check that branch's own notes for any manual steps.
+      </div>
+    </div>
+    <button class="save-btn" style="margin-top:8px;" onclick="saveUpdateBranch()">Save branch</button>
+    <div class="save-msg" id="updateBranchMsg"></div>
+
+    <div class="field" style="margin-top:14px;">
+      <label>Check for updates every (minutes)</label>
+      <input type="number" id="updateIntervalInput" min="1" max="1440">
+    </div>
+    <button class="save-btn" onclick="saveUpdateInterval()">Save interval</button>
+    <div class="save-msg" id="updateIntervalMsg"></div>
+
+    <div class="stat-sub" id="updateStatusText" style="margin-top:14px;">Checking...</div>
+    <button class="save-btn" id="checkNowBtn" onclick="checkForUpdateNow()" style="margin-top:10px;">Check now</button>
+    <button class="save-btn" id="applyUpdateBtn" onclick="applyUpdate()" style="margin-top:10px; display:none;">Update now</button>
+    <div class="save-msg" id="applyUpdateMsg"></div>
+  </div>
+</div>
+
+<div class="section-title">Data history</div>
+<div class="grid">
+  <div class="card" style="max-width:420px;">
+    <h2>Retention</h2>
+    <div class="stat-sub" id="historyStats" style="margin-bottom:12px;">Loading...</div>
+    <div class="field">
+      <label>Keep sensor readings &amp; event log for (days, 0 = forever)</label>
+      <input type="number" id="historyRetentionInput" min="0" max="3650">
+    </div>
+    <button class="save-btn" onclick="saveHistoryRetention()">Save</button>
+    <div class="save-msg" id="historyRetentionMsg"></div>
+    <div class="stat-sub" style="margin-top:6px;">
+      Older rows are trimmed automatically once an hour. 7&ndash;3650 days, or 0 to keep everything.
+      Settings, timelapse videos and frames are never affected.
+    </div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Clear history</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">
+      Wipes history now - e.g. benchtop test data before moving into the enclosure. Download a copy first if you
+      might want it:
+      <a href="/api/readings/download" style="color:var(--accent);">readings (.csv)</a> &middot;
+      <a href="/api/events/download" style="color:var(--accent);">event log (.txt)</a>
+    </div>
+    <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+      <input type="checkbox" id="clearReadingsCheck" checked> Sensor readings
+    </label>
+    <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+      <input type="checkbox" id="clearEventsCheck"> Event log
+    </label>
+    <button class="danger-btn" id="clearHistoryBtn" onclick="clearHistory()">Clear selected history</button>
+    <div class="save-msg" id="clearHistoryMsg"></div>
+  </div>
+</div>
+
+<div class="section-title">System</div>
+<div class="grid">
+  <div class="card" style="max-width:420px;">
+    <h2>Restart</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">Reboots the Raspberry Pi itself, not just one service. Climate control, the camera, and this dashboard will all be briefly unreachable (typically under a minute) while it comes back up.</div>
+    <button class="danger-btn" id="restartPiBtn" onclick="restartPi()">Restart Pi</button>
+    <div class="save-msg" id="restartPiMsg"></div>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+let lastHistoryStats = null;
+
+function fmtBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fmtSince(ts) {
+  return ts ? new Date(ts * 1000).toLocaleDateString([], {year: 'numeric', month: 'short', day: 'numeric'}) : null;
+}
+
+function describeTable(t, noun) {
+  const since = fmtSince(t.oldest_ts);
+  const word = t.count === 1 ? noun.replace(/s$/, '') : noun;
+  return `${t.count.toLocaleString()} ${word}${since ? ` since ${since}` : ''}`;
+}
+
+async function loadHistoryStats() {
+  try {
+    const res = await fetch('/api/history/stats');
+    const data = await res.json();
+    lastHistoryStats = data;
+    document.getElementById('historyStats').textContent =
+      `${describeTable(data.readings, 'sensor readings')} · ${describeTable(data.events, 'log events')} · ` +
+      `database ${fmtBytes(data.db_bytes)}`;
+    const input = document.getElementById('historyRetentionInput');
+    if (document.activeElement !== input) input.value = data.retention_days;
+  } catch (e) {
+    document.getElementById('historyStats').textContent = 'Could not load history stats.';
+  }
+}
+
+async function saveHistoryRetention() {
+  const days = parseInt(document.getElementById('historyRetentionInput').value, 10);
+  const msg = document.getElementById('historyRetentionMsg');
+  const res = await fetch('/api/history/retention', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({days})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = data.retention_days === 0 ? 'Saved - keeping everything' : `Saved - keeping ${data.retention_days} days`;
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  }
+}
+
+async function clearHistory() {
+  const readings = document.getElementById('clearReadingsCheck').checked;
+  const events = document.getElementById('clearEventsCheck').checked;
+  const msg = document.getElementById('clearHistoryMsg');
+  msg.textContent = '';
+  if (!readings && !events) {
+    msg.textContent = 'Tick at least one of the boxes above.';
+    msg.className = 'save-msg err';
+    return;
+  }
+  await loadHistoryStats();
+  const s = lastHistoryStats;
+  const what = [];
+  if (readings && s) what.push(`<strong>${escapeHtml(describeTable(s.readings, 'sensor readings'))}</strong>`);
+  if (events && s) what.push(`<strong>${escapeHtml(describeTable(s.events, 'log events'))}</strong>`);
+  const ok = await confirmDanger('Clear history?', [
+    `This permanently deletes ${what.join(' and ')}.`,
+    'Settings, timelapse videos and pending frames aren\'t affected. The database file stays the same size on ' +
+      'the SD card - the freed space is reused for new history. This can\'t be undone.'
+  ], 'Clear history');
+  if (!ok) return;
+  const btn = document.getElementById('clearHistoryBtn');
+  btn.disabled = true;
+  msg.textContent = 'Clearing...';
+  msg.className = 'save-msg';
+  try {
+    const res = await fetch('/api/history/clear', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({readings, events})
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      msg.textContent = data.error || 'Clear failed';
+      msg.className = 'save-msg err';
+    } else {
+      const parts = [];
+      if ('readings' in data.deleted) parts.push(`${data.deleted.readings.toLocaleString()} readings`);
+      if ('events' in data.deleted) parts.push(`${data.deleted.events.toLocaleString()} events`);
+      msg.textContent = `Cleared ${parts.join(' and ')}.`;
+      msg.className = 'save-msg ok';
+    }
+  } catch (e) {
+    msg.textContent = 'Clear failed - dashboard unreachable.';
+    msg.className = 'save-msg err';
+  }
+  btn.disabled = false;
+  loadHistoryStats();
+}
+
+loadHistoryStats();
+setInterval(loadHistoryStats, 60000);
+
+async function loadUpdateStatus() {
+  const res = await fetch('/api/update-status');
+  const data = await res.json();
+  document.getElementById('updateIntervalInput').value = data.check_interval_minutes;
+  await populateUpdateBranches(data.update_branch);
+  renderUpdateStatus(data.status);
+}
+
+async function populateUpdateBranches(currentTarget) {
+  const select = document.getElementById('updateBranchSelect');
+  try {
+    const res = await fetch('/api/update-branches');
+    const branches = await res.json();
+    if (!res.ok) throw new Error(branches.error || 'could not list branches');
+    select.innerHTML = branches.map(b => `<option value="${b}">${b}</option>`).join('');
+    select.value = currentTarget || 'main';
+  } catch (e) {
+    select.innerHTML = `<option value="${currentTarget || 'main'}">${currentTarget || 'main'}</option>`;
+  }
+  onBranchSelectChange();
+}
+
+function onBranchSelectChange() {
+  const select = document.getElementById('updateBranchSelect');
+  document.getElementById('updateBranchWarning').style.display = select.value === 'main' ? 'none' : 'block';
+}
+
+// The select's own onchange handler - separate from onBranchSelectChange()
+// above because that one ALSO runs once at page load (from
+// populateUpdateBranches, just to set the warning for whatever's already
+// saved) and firing a save then would re-save the branch that's already
+// saved, on every page load, for no reason. This one only runs on an
+// actual user-driven change, and auto-saves it - same "pick it, it's
+// saved" pattern the Settings page's Internal source select already
+// uses, instead of requiring a separate click on "Save branch" too.
+function onBranchSelectManualChange() {
+  onBranchSelectChange();
+  saveUpdateBranch();
+}
+
+async function saveUpdateBranch() {
+  const branch = document.getElementById('updateBranchSelect').value;
+  const msg = document.getElementById('updateBranchMsg');
+  msg.textContent = 'Saving and checking...';
+  msg.className = 'save-msg';
+  // The backend now runs a real git fetch+compare against the new
+  // branch before responding (same check "Check now" does), so the
+  // update-status text below reflects the branch you just picked
+  // immediately, not whatever the background checker last found for
+  // the PREVIOUS branch up to update_check_interval_minutes ago.
+  const res = await fetch('/api/update-branch', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({branch})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+    document.getElementById('updateIntervalInput').value = data.check_interval_minutes;
+    renderUpdateStatus(data.status);
+  }
+}
+
+function renderUpdateStatus(status) {
+  const text = document.getElementById('updateStatusText');
+  const btn = document.getElementById('applyUpdateBtn');
+  if (!status || !status.checked_at) {
+    text.textContent = 'No check has run yet - first check happens shortly after the web service starts.';
+    btn.style.display = 'none';
+    return;
+  }
+  const checkedAgo = Math.round((Date.now() / 1000 - status.checked_at) / 60);
+  const agoText = checkedAgo < 1 ? 'just now' : `${checkedAgo}m ago`;
+  const branchMismatch = status.current_branch && status.target_branch && status.current_branch !== status.target_branch;
+  if (branchMismatch) {
+    text.textContent = `Branch switch pending: ${status.current_branch} → ${status.target_branch} (checked ${agoText})`;
+    btn.style.display = 'inline-block';
+  } else if (status.is_available) {
+    const msgPart = status.remote_message ? `: "${status.remote_message}"` : '';
+    text.textContent = `Update available on ${status.target_branch || 'main'}${msgPart} (checked ${agoText})`;
+    btn.style.display = 'inline-block';
+  } else {
+    text.textContent = `Up to date on ${status.target_branch || 'main'} (checked ${agoText})`;
+    btn.style.display = 'none';
+  }
+}
+
+async function saveUpdateInterval() {
+  const minutes = parseInt(document.getElementById('updateIntervalInput').value, 10);
+  const res = await fetch('/api/update-check-interval', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({minutes})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('updateIntervalMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
+
+async function applyUpdate() {
+  const btn = document.getElementById('applyUpdateBtn');
+  const msg = document.getElementById('applyUpdateMsg');
+  btn.disabled = true;
+  msg.textContent = 'Applying update - this page will stop responding for a few seconds while services restart, then reload automatically.';
+  msg.className = 'save-msg';
+  try {
+    await fetch('/api/apply-update', { method: 'POST' });
+  } catch (e) {
+    // The web service can restart before this request's response makes
+    // it back - that looks like a network error in the browser but
+    // isn't actually a failure, so it's deliberately not surfaced as one.
+  }
+  setTimeout(() => { window.location.reload(); }, 8000);
+}
+
+async function checkForUpdateNow() {
+  const btn = document.getElementById('checkNowBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  try {
+    const res = await fetch('/api/check-for-update-now', { method: 'POST' });
+    const data = await res.json();
+    document.getElementById('updateIntervalInput').value = data.check_interval_minutes;
+    renderUpdateStatus(data.status);
+  } catch (e) {
+    const text = document.getElementById('updateStatusText');
+    text.textContent = 'Check failed - see the Logs page or try again in a moment.';
+  }
+  btn.disabled = false;
+  btn.textContent = originalText;
+}
+
+// Confirmation dialog first - this reboots the whole Pi, not just a
+// service, so it's worth one deliberate extra click before it's
+// irreversible. Same detached-restart reasoning as applyUpdate() above
+// for why the fetch's response may never actually arrive: unlike that
+// one, a full Pi reboot also means climate.py/ble_listener.py/camera-
+// streamer all go down too, not just dermestid-web.service, and takes
+// noticeably longer to come back - so this deliberately does NOT
+// auto-reload the page the way applyUpdate() does; the message just
+// tells you to check back, since guessing a reload delay that's right
+// for both a Pi 3 and a Pi 4/5 isn't realistic.
+async function restartPi() {
+  if (!confirm('Restart the Raspberry Pi? Climate control, the camera, and this dashboard will all be briefly unreachable while it reboots.')) {
+    return;
+  }
+  const btn = document.getElementById('restartPiBtn');
+  const msg = document.getElementById('restartPiMsg');
+  btn.disabled = true;
+  msg.textContent = 'Restarting - this page (and everything else) will go unreachable shortly, then come back on its own in a minute or two.';
+  msg.className = 'save-msg';
+  try {
+    await fetch('/api/restart-pi', { method: 'POST' });
+  } catch (e) {
+    // Same deal as applyUpdate() above - the connection can drop before
+    // the browser ever sees a response once the reboot actually starts,
+    // which looks like a network error but isn't a real failure.
+  }
+}
+
+loadUpdateStatus();
+setInterval(loadUpdateStatus, 30000);
+</script>
+{% endblock %}
