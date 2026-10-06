@@ -54,20 +54,15 @@
     </div>
     <button class="save-btn" onclick="saveHistoryRetention()">Save</button>
     <div class="save-msg" id="historyRetentionMsg"></div>
-    <div class="stat-sub" style="margin-top:6px;">
-      Older rows are trimmed automatically once an hour. 7&ndash;3650 days, or 0 to keep everything. This
-      also controls how long sensor readings (see the Data page) are kept - it's one shared setting, not a
-      separate one per table. Also editable from the System page.
-    </div>
   </div>
 
   <div class="card" style="max-width:420px;">
     <h2>Clear event log</h2>
-    <div class="stat-sub" style="margin-bottom:10px;">
-      Wipes the event log now. Download a copy first if you might want it:
-      <a href="/api/events/download" style="color:var(--accent);">event log (.txt)</a>
+    <div class="stat-sub" style="margin-bottom:10px;">Wipes the event log now.</div>
+    <div style="display:flex; gap:8px;">
+      <a class="save-btn" href="/api/events/download" style="text-decoration:none; display:inline-block;">Download</a>
+      <button class="danger-btn" id="clearEventsBtn" onclick="clearEvents()" style="margin-top:0;">Clear event log</button>
     </div>
-    <button class="danger-btn" id="clearEventsBtn" onclick="clearEvents()">Clear event log</button>
     <div class="save-msg" id="clearEventsMsg"></div>
   </div>
 </div>
@@ -222,12 +217,19 @@ async function clearEvents() {
   await loadHistoryStats();
   const s = lastHistoryStats;
   const what = s ? `<strong>${escapeHtml(describeTable(s.events, 'log events'))}</strong>` : 'the whole event log';
-  const ok = await confirmDanger('Clear event log?', [
+  const choice = await confirmDanger('Clear event log?', [
     `This permanently deletes ${what}.`,
     'Sensor readings, timelapse videos and pending frames aren\'t affected. The database file stays the same ' +
       'size on the SD card - the freed space is reused for new history. This can\'t be undone.'
-  ], 'Clear event log');
-  if (!ok) return;
+  ], 'Clear event log', 'Download & clear');
+  if (choice === 'cancel') return;
+  if (choice === 'extra') {
+    // Same plain-navigation download trick downloadLog() above uses -
+    // /api/events/download sets Content-Disposition: attachment, so this
+    // just saves the file and stays on this page, letting the clear
+    // below proceed right after.
+    window.location.href = '/api/events/download';
+  }
   const btn = document.getElementById('clearEventsBtn');
   btn.disabled = true;
   msg.textContent = 'Clearing...';

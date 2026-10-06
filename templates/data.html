@@ -102,20 +102,15 @@
     </div>
     <button class="save-btn" onclick="saveHistoryRetention()">Save</button>
     <div class="save-msg" id="historyRetentionMsg"></div>
-    <div class="stat-sub" style="margin-top:6px;">
-      Older rows are trimmed automatically once an hour. 7&ndash;3650 days, or 0 to keep everything. This
-      also controls how long the event log (see the Logs page) is kept - it's one shared setting, not a
-      separate one per table. Also editable from the System page.
-    </div>
   </div>
 
   <div class="card" style="max-width:420px;">
     <h2>Clear readings</h2>
-    <div class="stat-sub" style="margin-bottom:10px;">
-      Wipes sensor readings now - e.g. benchtop test data before moving into the enclosure. Download a copy
-      first if you might want it: <a href="/api/readings/download" style="color:var(--accent);">readings (.csv)</a>
+    <div class="stat-sub" style="margin-bottom:10px;">Wipes sensor readings now - e.g. benchtop test data before moving into the enclosure.</div>
+    <div style="display:flex; gap:8px;">
+      <a class="save-btn" href="/api/readings/download" style="text-decoration:none; display:inline-block;">Download</a>
+      <button class="danger-btn" id="clearReadingsBtn" onclick="clearReadings()" style="margin-top:0;">Clear readings</button>
     </div>
-    <button class="danger-btn" id="clearReadingsBtn" onclick="clearReadings()">Clear readings</button>
     <div class="save-msg" id="clearReadingsMsg"></div>
   </div>
 </div>
@@ -302,12 +297,19 @@ async function clearReadings() {
   await loadHistoryStats();
   const s = lastHistoryStats;
   const what = s ? `<strong>${escapeHtml(describeTable(s.readings, 'sensor readings'))}</strong>` : 'all sensor readings';
-  const ok = await confirmDanger('Clear readings?', [
+  const choice = await confirmDanger('Clear readings?', [
     `This permanently deletes ${what}.`,
     'The event log, timelapse videos and pending frames aren\'t affected. The database file stays the same ' +
       'size on the SD card - the freed space is reused for new history. This can\'t be undone.'
-  ], 'Clear readings');
-  if (!ok) return;
+  ], 'Clear readings', 'Download & clear');
+  if (choice === 'cancel') return;
+  if (choice === 'extra') {
+    // A plain navigation (not fetch+blob), same trick downloadLog() uses
+    // on the Logs page - /api/readings/download sets Content-Disposition:
+    // attachment, so the browser just saves the file and stays on this
+    // page, letting the clear below proceed right after.
+    window.location.href = '/api/readings/download';
+  }
   const btn = document.getElementById('clearReadingsBtn');
   btn.disabled = true;
   msg.textContent = 'Clearing...';

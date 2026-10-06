@@ -2861,3 +2861,48 @@ that aren't obvious from reading the code cold.
   `/api/events`' `before` cursor correctly returns the next 50-row page with no overlap, that
   `/api/history/clear` with only `{readings: true}` or only `{events: true}` leaves the other table
   untouched, and that `/api/history/retention` still saves correctly from here.
+
+- **[2026-10-06, same day] Removed the "Data history" block (Retention + Clear history cards) from the
+  System page.** Ryan's follow-up to the previous entry (duplicating Retention/Clear onto Data and Logs) -
+  now that each of those has its own scoped version, the old combined cards on System were redundant.
+  Removed the HTML section and its JS entirely (`loadHistoryStats`, `fmtBytes`/`fmtSince`/`describeTable`,
+  `saveHistoryRetention`, `clearHistory`, `lastHistoryStats`, the 60s poll) - System now only has Software
+  updates and Restart. Also fixed two now-stale doc-comments in `base.html` that referenced the old
+  `clearHistory()` in `settings.html` (true before the Camera/System split, and double-stale now) -
+  `confirmDanger()`'s own comment and the `.confirm-overlay` CSS comment both now point at
+  `clearReadings()`/`clearEvents()` in `data.html`/`logs.html` instead.
+  **Verified**: Jinja2 parsed all 10 templates; every route's rendered `<script>` blocks still pass
+  `node --check`; confirmed the strings "Data history" and "Clear selected history" no longer appear
+  anywhere in `/system`'s rendered output (first pass of this check actually caught a stale reference in
+  one of those `base.html` comments, which is what prompted fixing them too).
+
+- **[2026-10-06, same day] Trimmed the Data/Logs Retention+Clear cards, added a real Download button, and
+  gave the clear confirmation a "Download & clear" option.** Follow-up polish on the cards added two entries
+  back. Three changes:
+  - Removed the long explanatory paragraph under each Retention card's Save button (the "trimmed
+    automatically once an hour... shared setting... also editable from System" text) - felt like too much
+    for what's meant to be a quick, scoped control now that the full explanation still lives on System.
+  - The inline "Download a copy first if you might want it: <link>" text in each Clear card is gone;
+    there's now an actual Download button next to the Clear button instead (same row, `<a class="save-btn"
+    href="/api/readings/download">`/`.../api/events/download` - a plain link, not a fetch, so the browser's
+    own Content-Disposition: attachment handling does the work, same as the Logs page's existing
+    `downloadLog()`).
+  - **`confirmDanger()` (base.html) now optionally takes a 4th argument, `extraLabel`**, which adds a third
+    button to the shared confirm modal (new `#confirmExtraBtn`, styled like `.save-btn`, hidden by default).
+    Passing it changes the resolved value from plain `true`/`false` to one of the strings
+    `'cancel'`/`'confirm'`/`'extra'` - deliberately a breaking change in that mode, not something hidden
+    behind the same boolean, since a caller asking for three choices needs to tell them apart. Every
+    pre-existing call site (`timelapse.html`'s three - delete-one-video, delete-selected-videos, purge
+    pending frames) doesn't pass it, so they're completely unaffected: unchanged signature, unchanged
+    `true`/`false` resolution, verified by inspection (none of them pass a 4th argument). `clearReadings()`
+    (data.html) and `clearEvents()` (logs.html) are the only two callers using it so far - "Clear
+    readings"/"Clear event log" now offer Cancel / **Download & clear** / Clear as three real buttons rather
+    than needing a second trip through the flow to grab a copy first. "Download & clear" triggers the same
+    plain-navigation download as the standalone Download button, then falls straight through into the
+    existing clear logic.
+  **Verified**: Jinja2 parsed all 10 templates; every route's `<script>` blocks still pass `node --check`;
+  confirmed in the rendered `/data` and `/logs` output that the old explanatory paragraph and inline
+  download links are gone, the new Download buttons point at the right endpoints, and "Download & clear"
+  appears in both pages' scripts. Didn't browser-test the three-button modal interaction itself (no browser
+  tool in this sandbox) - worth a quick look on a real device to confirm the extra button's styling/spacing
+  reads well next to the other two.

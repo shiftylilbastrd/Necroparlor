@@ -3,7 +3,7 @@
 {% block content %}
 
 <h1>System</h1>
-<div class="subtitle">Software updates, data retention, and the Pi itself - things you set up once and rarely touch</div>
+<div class="subtitle">Software updates and the Pi itself - things you set up once and rarely touch</div>
 
 <div class="section-title">Software updates</div>
 <div class="grid">
@@ -38,42 +38,6 @@
   </div>
 </div>
 
-<div class="section-title">Data history</div>
-<div class="grid">
-  <div class="card" style="max-width:420px;">
-    <h2>Retention</h2>
-    <div class="stat-sub" id="historyStats" style="margin-bottom:12px;">Loading...</div>
-    <div class="field">
-      <label>Keep sensor readings &amp; event log for (days, 0 = forever)</label>
-      <input type="number" id="historyRetentionInput" min="0" max="3650">
-    </div>
-    <button class="save-btn" onclick="saveHistoryRetention()">Save</button>
-    <div class="save-msg" id="historyRetentionMsg"></div>
-    <div class="stat-sub" style="margin-top:6px;">
-      Older rows are trimmed automatically once an hour. 7&ndash;3650 days, or 0 to keep everything.
-      Settings, timelapse videos and frames are never affected.
-    </div>
-  </div>
-
-  <div class="card" style="max-width:420px;">
-    <h2>Clear history</h2>
-    <div class="stat-sub" style="margin-bottom:10px;">
-      Wipes history now - e.g. benchtop test data before moving into the enclosure. Download a copy first if you
-      might want it:
-      <a href="/api/readings/download" style="color:var(--accent);">readings (.csv)</a> &middot;
-      <a href="/api/events/download" style="color:var(--accent);">event log (.txt)</a>
-    </div>
-    <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
-      <input type="checkbox" id="clearReadingsCheck" checked> Sensor readings
-    </label>
-    <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
-      <input type="checkbox" id="clearEventsCheck"> Event log
-    </label>
-    <button class="danger-btn" id="clearHistoryBtn" onclick="clearHistory()">Clear selected history</button>
-    <div class="save-msg" id="clearHistoryMsg"></div>
-  </div>
-</div>
-
 <div class="section-title">System</div>
 <div class="grid">
   <div class="card" style="max-width:420px;">
@@ -87,106 +51,6 @@
 {% endblock %}
 {% block scripts %}
 <script>
-let lastHistoryStats = null;
-
-function fmtBytes(bytes) {
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function fmtSince(ts) {
-  return ts ? new Date(ts * 1000).toLocaleDateString([], {year: 'numeric', month: 'short', day: 'numeric'}) : null;
-}
-
-function describeTable(t, noun) {
-  const since = fmtSince(t.oldest_ts);
-  const word = t.count === 1 ? noun.replace(/s$/, '') : noun;
-  return `${t.count.toLocaleString()} ${word}${since ? ` since ${since}` : ''}`;
-}
-
-async function loadHistoryStats() {
-  try {
-    const res = await fetch('/api/history/stats');
-    const data = await res.json();
-    lastHistoryStats = data;
-    document.getElementById('historyStats').textContent =
-      `${describeTable(data.readings, 'sensor readings')} · ${describeTable(data.events, 'log events')} · ` +
-      `database ${fmtBytes(data.db_bytes)}`;
-    const input = document.getElementById('historyRetentionInput');
-    if (document.activeElement !== input) input.value = data.retention_days;
-  } catch (e) {
-    document.getElementById('historyStats').textContent = 'Could not load history stats.';
-  }
-}
-
-async function saveHistoryRetention() {
-  const days = parseInt(document.getElementById('historyRetentionInput').value, 10);
-  const msg = document.getElementById('historyRetentionMsg');
-  const res = await fetch('/api/history/retention', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({days})
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    msg.textContent = data.error || 'Save failed';
-    msg.className = 'save-msg err';
-  } else {
-    msg.textContent = data.retention_days === 0 ? 'Saved - keeping everything' : `Saved - keeping ${data.retention_days} days`;
-    msg.className = 'save-msg ok';
-    setTimeout(() => { msg.textContent = ''; }, 3000);
-  }
-}
-
-async function clearHistory() {
-  const readings = document.getElementById('clearReadingsCheck').checked;
-  const events = document.getElementById('clearEventsCheck').checked;
-  const msg = document.getElementById('clearHistoryMsg');
-  msg.textContent = '';
-  if (!readings && !events) {
-    msg.textContent = 'Tick at least one of the boxes above.';
-    msg.className = 'save-msg err';
-    return;
-  }
-  await loadHistoryStats();
-  const s = lastHistoryStats;
-  const what = [];
-  if (readings && s) what.push(`<strong>${escapeHtml(describeTable(s.readings, 'sensor readings'))}</strong>`);
-  if (events && s) what.push(`<strong>${escapeHtml(describeTable(s.events, 'log events'))}</strong>`);
-  const ok = await confirmDanger('Clear history?', [
-    `This permanently deletes ${what.join(' and ')}.`,
-    'Settings, timelapse videos and pending frames aren\'t affected. The database file stays the same size on ' +
-      'the SD card - the freed space is reused for new history. This can\'t be undone.'
-  ], 'Clear history');
-  if (!ok) return;
-  const btn = document.getElementById('clearHistoryBtn');
-  btn.disabled = true;
-  msg.textContent = 'Clearing...';
-  msg.className = 'save-msg';
-  try {
-    const res = await fetch('/api/history/clear', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({readings, events})
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      msg.textContent = data.error || 'Clear failed';
-      msg.className = 'save-msg err';
-    } else {
-      const parts = [];
-      if ('readings' in data.deleted) parts.push(`${data.deleted.readings.toLocaleString()} readings`);
-      if ('events' in data.deleted) parts.push(`${data.deleted.events.toLocaleString()} events`);
-      msg.textContent = `Cleared ${parts.join(' and ')}.`;
-      msg.className = 'save-msg ok';
-    }
-  } catch (e) {
-    msg.textContent = 'Clear failed - dashboard unreachable.';
-    msg.className = 'save-msg err';
-  }
-  btn.disabled = false;
-  loadHistoryStats();
-}
-
-loadHistoryStats();
-setInterval(loadHistoryStats, 60000);
-
 async function loadUpdateStatus() {
   const res = await fetch('/api/update-status');
   const data = await res.json();

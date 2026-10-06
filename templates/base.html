@@ -148,8 +148,8 @@
   /* confirmDanger()'s modal (see the shared script block below) - a
      styled stand-in for the browser's native confirm(), used for an
      action whose consequences are worth spelling out in more than one
-     line (e.g. "Clear selected history" needs to say exactly how many
-     rows, since what's rejected to be cleared). */
+     line (e.g. "Clear readings"/"Clear event log" need to say exactly
+     how many rows are about to go). */
   .confirm-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     display: none; align-items: center; justify-content: center;
@@ -250,6 +250,7 @@
     <div id="confirmBody"></div>
     <div class="confirm-actions">
       <button class="confirm-cancel-btn" id="confirmCancelBtn">Cancel</button>
+      <button class="save-btn" id="confirmExtraBtn" style="display:none; margin-top:0;"></button>
       <button class="danger-btn" id="confirmOkBtn"></button>
     </div>
   </div>
@@ -278,40 +279,63 @@ function escapeHtml(str) {
 // level as every other innerHTML assignment already in these templates -
 // always built from this dashboard's own strings/numbers (row counts,
 // labels), never raw user input - so a caller can bold a number with
-// `<strong>` (see clearHistory() in settings.html) without it coming out
+// `<strong>` (see clearReadings()/clearEvents() in data.html/logs.html) without it coming out
 // as literal angle brackets. Single shared overlay element (markup is in
 // this file, right above this script block) rather than building one
 // fresh per call - simpler, and there's never more than one of these
 // open at a time anyway.
-function confirmDanger(title, lines, confirmLabel) {
+//
+// [2026-10-06] Optional `extraLabel` adds a third button (e.g. "Download
+// & clear" - see clearReadings()/clearEvents() in data.html/logs.html)
+// between Cancel and the main danger button. Passing it changes what the
+// promise resolves to, deliberately: with no extraLabel (every pre-
+// existing call site - timelapse.html's three), behavior is byte-for-byte
+// unchanged, resolving plain true/false exactly as before. WITH an
+// extraLabel, it resolves one of the strings 'cancel'/'confirm'/'extra'
+// instead, since a caller offering three choices needs to tell them
+// apart - a two-value boolean can't express that, and overloading false
+// to mean two different things (cancel vs. the non-extra confirm) would
+// be worse than just changing the contract for the callers that asked
+// for a third option in the first place.
+function confirmDanger(title, lines, confirmLabel, extraLabel) {
   return new Promise(resolve => {
     const overlay = document.getElementById('confirmOverlay');
     document.getElementById('confirmTitle').textContent = title;
     document.getElementById('confirmBody').innerHTML = lines.map(l => `<p>${l}</p>`).join('');
     const okBtn = document.getElementById('confirmOkBtn');
     const cancelBtn = document.getElementById('confirmCancelBtn');
+    const extraBtn = document.getElementById('confirmExtraBtn');
     okBtn.textContent = confirmLabel || 'Confirm';
+    if (extraLabel) {
+      extraBtn.textContent = extraLabel;
+      extraBtn.style.display = 'inline-block';
+    } else {
+      extraBtn.style.display = 'none';
+    }
     overlay.style.display = 'flex';
 
     function cleanup(result) {
       overlay.style.display = 'none';
       okBtn.removeEventListener('click', onOk);
       cancelBtn.removeEventListener('click', onCancel);
+      extraBtn.removeEventListener('click', onExtra);
       overlay.removeEventListener('click', onOverlayClick);
       document.removeEventListener('keydown', onKeydown);
-      resolve(result);
+      resolve(extraLabel ? result : result === 'confirm');
     }
-    function onOk() { cleanup(true); }
-    function onCancel() { cleanup(false); }
+    function onOk() { cleanup('confirm'); }
+    function onCancel() { cleanup('cancel'); }
+    function onExtra() { cleanup('extra'); }
     // Clicking the dimmed backdrop counts as Cancel - but only a click
     // that actually STARTS on the backdrop itself (e.target === overlay),
     // not one that merely bubbles up to it from the box - e.g. a
     // click-drag that starts while selecting text inside the dialog and
     // releases just outside it shouldn't silently dismiss the whole thing.
-    function onOverlayClick(e) { if (e.target === overlay) cleanup(false); }
-    function onKeydown(e) { if (e.key === 'Escape') cleanup(false); }
+    function onOverlayClick(e) { if (e.target === overlay) cleanup('cancel'); }
+    function onKeydown(e) { if (e.key === 'Escape') cleanup('cancel'); }
     okBtn.addEventListener('click', onOk);
     cancelBtn.addEventListener('click', onCancel);
+    extraBtn.addEventListener('click', onExtra);
     overlay.addEventListener('click', onOverlayClick);
     document.addEventListener('keydown', onKeydown);
   });
