@@ -132,9 +132,17 @@
     width: 100%; background: #10151a; border: 1px solid var(--panel-border);
     border-radius: 6px; color: var(--text); padding: 7px 9px; font-size: 16px;
   }
+  /* font/line-height are set explicitly (not left to inherit) because
+     .save-btn and .danger-btn are both also applied to <a> tags (e.g.
+     the Download link on the Data/Logs pages) alongside <button>s (e.g.
+     the Clear button next to it) - browsers don't give <button> the
+     page's own font by default the way an <a> gets it for free, so
+     without this an <a>/<button> pair with the same padding and the
+     same min-width would still render at different sizes. */
   .save-btn {
     margin-top: 6px; background: var(--accent); border: none; color: #0d1712;
-    font-weight: 600; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+    font-weight: 600; font-family: inherit; font-size: 1rem; line-height: 1.2;
+    padding: 8px 14px; border-radius: 6px; cursor: pointer;
   }
   /* Same shape as .save-btn, but for an action that's destructive/
      disruptive rather than a routine save (Settings page: "Clear
@@ -143,7 +151,8 @@
      actually rendered any differently from a bare, unstyled <button>. */
   .danger-btn {
     margin-top: 6px; background: var(--danger); border: none; color: #fff;
-    font-weight: 600; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+    font-weight: 600; font-family: inherit; font-size: 1rem; line-height: 1.2;
+    padding: 8px 14px; border-radius: 6px; cursor: pointer;
   }
   /* confirmDanger()'s modal (see the shared script block below) - a
      styled stand-in for the browser's native confirm(), used for an

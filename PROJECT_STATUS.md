@@ -3004,3 +3004,24 @@ that aren't obvious from reading the code cold.
   page competing for a section label. Removed both divs; the `.grid` of cards underneath is unaffected.
   **Verified**: Flask test-client hit `/settings` and `/camera` (200 on both); confirmed `section-title`
   no longer appears in either template.
+
+- **[2026-10-06, same day] Actually fixed the Download/Clear button size mismatch on Data/Logs.** Ryan
+  sent a screenshot showing Download still visibly smaller than Clear readings, even though both carried
+  `min-width:160px`. The real cause: Download is an `<a>` and Clear is a `<button>`, and browsers don't
+  give `<button>` the page's own font by default the way an `<a>` gets it for free - with no `font-family`/
+  `font-size` set on `.save-btn`/`.danger-btn`, the `<button>` was rendering in the browser's UA default
+  font, not the app's font, so the two elements measured differently even with identical padding and the
+  same `min-width`. Fixed in two places:
+  - `base.html`: `.save-btn` and `.danger-btn` now set `font-family: inherit; font-size: 1rem; line-height:
+    1.2;` explicitly, so every `<a>`/`<button>` using either class renders in the same font regardless of
+    tag type. (This also fixes every other plain `<button class="save-btn">`/`<button class="danger-btn">`
+    across the app, which were all silently in the wrong font too - purely cosmetic, no layout changes
+    needed anywhere else since they don't pair a `<button>` against an `<a>` the way Download/Clear do.)
+  - `data.html`/`logs.html`: replaced `min-width:160px` (a minimum, not a fixed size) with an explicit
+    `width:160px; height:38px; box-sizing:border-box; display:inline-flex; align-items:center;
+    justify-content:center;` on both the Download link and the Clear button, so they're pinned to the
+    exact same box instead of just sharing a floor.
+  **Verified**: Jinja2 parsed all 10 templates; Flask test-client hit every route (200 on all); `<script>`
+  blocks pass `node --check`; rendered `/data` in a headless Chromium (Playwright) and measured both
+  buttons' actual bounding boxes - Download and Clear readings both came back `{width: 160, height: 38}`,
+  pixel-identical.
