@@ -2613,14 +2613,7 @@ that aren't obvious from reading the code cold.
 - **[2026-10-06] REVERTED the H264/`/video` fix above** - it did stop the frozen-frame problem, but Ryan
   reported after deploying it that the whole dashboard got noticeably slower and the iOS live view started
   "frequently saying no frame" (the `cameraUnavailableBanner` text), with the HLS fallback never actually
-  winning when it did show something (`liveViewMode` kept landing on `snapshot-poll`, not `video`). Read
-  together, this means running the H264 encoder continuously - on top of the existing MJPEG capture, on the
-  same Pi 4 already running `climate.py` and `webapp.py` - is expensive enough to make
-  `/api/camera/status`'s own `/snapshot` reachability check start timing out intermittently (the flapping
-  "no frame" banner) and to starve the HLS segmenting badly enough that it never got fast enough for
-  `tryVideoFallback()`'s 4-second readiness check to catch on. **This is a worse real-world outcome than the
-  problem it was meant to fix** - a dashboard-wide slowdown on a safety-relevant climate controller, just to
-  get smoother video on one phone.
+  winning when it did show something (`liveViewMode` kept landing on `snapshot-poll`, not `video`).
   - `systemd/camera-streamer.service`: `--camera-video.*` tuning flags removed, replaced with an explicit
     `--camera-video.disabled=1` (not just omitting the flags - `disabled` defaults to 0/enabled, so leaving
     it unset would silently re-enable this on a future camera-streamer update). Same change mirrored in
@@ -2630,13 +2623,26 @@ that aren't obvious from reading the code cold.
     server-side. `tryVideoFallback()` itself, the `#homeLiveVideo` element, and `video_url` on
     `/api/camera/status` are all left in place (not ripped out) in case H264 output is worth a second attempt
     later with real headroom - just not wired up to run automatically right now.
-  - **If H264/`/video` is ever revisited**: measure actual CPU/temp under load (`top`, `vcgencmd
-    measure_temp`) while it's running BEFORE trusting that it plays back correctly - this entry is exactly
-    why "it plays" and "it's actually fine to run" turned out to be two different questions. Worth considering
-    separately: a lower resolution/bitrate specifically for the H264 encode (vs. the MJPEG capture's own
-    width/height), since 1280x720 @ 2Mbps continuous H264 may simply be too much to ask of this Pi alongside
-    everything else it's already doing - not evaluated here, since the decision was to back out rather than
-    tune further for now.
+  - **[2026-10-06, same day] CORRECTION - the CPU-overload explanation above was wrong**, caught by Ryan
+    exporting the Data History CSV (which logs `cpu_load_1m`/`cpu_temp_f` every reading) and pointing out the
+    load barely changed. Checked directly: across the whole export, `cpu_load_1m` averages 0.09 and never
+    exceeds 2.34 (on a 4-core Pi 4, nowhere near saturated); during the specific window the H264 encoder was
+    actually running, it only briefly touched the 0.3-1.5 range - a real but modest bump, not the "overloaded
+    the Pi" picture the original entry assumed. `cpu_temp_f` tops out at 112.6°F (~44.8°C) across the whole
+    export too, nowhere close to thermal throttling. **So raw CPU/thermal load was NOT what caused the
+    slowdown and the flapping "no frame" banner.** The revert still fixed the symptom (confirmed by Ryan), so
+    it was still the right call - but the mechanism needs a better theory than "encoder ate the CPU." Current
+    best guess, NOT confirmed: camera-streamer's own HTTP server may not handle its different endpoint types
+    (the long-lived `/stream` connection, `/video`'s HLS segment polling, and `/snapshot` requests) with
+    enough concurrency/worker threads - a slow-to-service HLS connection could end up blocking or queuing
+    behind `/snapshot` requests without that ever showing up as high CPU usage. This is a connection-handling
+    question, not a compute one, and it's genuinely unconfirmed - just more consistent with low CPU + real
+    latency than the original theory was.
+  - **If H264/`/video` is ever revisited**: given the correction above, checking `camera-streamer`'s own
+    concurrency/threading options (not just lower bitrate/resolution) is probably the more useful next step,
+    alongside still watching CPU/temp for completeness. The original "lower the H264 resolution/bitrate"
+    suggestion may not even address the real bottleneck if it's connection-handling rather than compute - not
+    evaluated either way, since the decision was to back out rather than chase this further for now.
   - **Needs the same deploy-and-verify step as always**: `git pull` + copy the updated
     `camera-streamer.service` + `daemon-reload` + restart on the real Pi, then confirm both that `/video`
     being disabled hasn't broken anything (it shouldn't - the dashboard never required it) and that overall
