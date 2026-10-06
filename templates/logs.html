@@ -35,7 +35,6 @@
     <option value="500">500 rows</option>
   </select>
   <button onclick="resetAndLoad()">Refresh</button>
-  <button onclick="downloadLog()">Download log</button>
   <button id="prevPageBtn" onclick="prevPage()" disabled>&larr; Newer</button>
   <span class="stat-sub" id="pageLabel" style="margin: 0 4px;">Page 1</span>
   <button id="nextPageBtn" onclick="nextPage()" disabled>Older &rarr;</button>
@@ -60,8 +59,8 @@
     <h2>Clear event log</h2>
     <div class="stat-sub" style="margin-bottom:10px;">Wipes the event log now.</div>
     <div style="display:flex; gap:8px;">
-      <a class="save-btn" href="/api/events/download" style="text-decoration:none; display:inline-block;">Download</a>
-      <button class="danger-btn" id="clearEventsBtn" onclick="clearEvents()" style="margin-top:0;">Clear event log</button>
+      <a class="save-btn" href="/api/events/download" style="text-decoration:none; display:inline-block; min-width:100px; text-align:center;">Download</a>
+      <button class="danger-btn" id="clearEventsBtn" onclick="clearEvents()" style="margin-top:0; min-width:160px;">Clear event log</button>
     </div>
     <div class="save-msg" id="clearEventsMsg"></div>
   </div>
@@ -145,18 +144,6 @@ async function prevPage() {
   await loadPage(currentPage - 1);
 }
 
-// A plain navigation (not fetch+blob) so the browser's own download
-// handling takes over - /api/events/download sets Content-Disposition:
-// attachment, which is all a GET needs to trigger a save-file prompt
-// instead of navigating away from the page. Respects whatever level
-// filter is currently selected, same as the on-screen list does.
-function downloadLog() {
-  const level = document.getElementById('levelFilter').value;
-  let url = '/api/events/download';
-  if (level) url += `?level=${level}`;
-  window.location.href = url;
-}
-
 // --- Retention / clear (events only - see the Data page for the
 // readings-table equivalent, and the System page for both combined).
 // history_retention_days is one shared setting that prunes both tables
@@ -224,10 +211,10 @@ async function clearEvents() {
   ], 'Clear event log', 'Download & clear');
   if (choice === 'cancel') return;
   if (choice === 'extra') {
-    // Same plain-navigation download trick downloadLog() above uses -
-    // /api/events/download sets Content-Disposition: attachment, so this
-    // just saves the file and stays on this page, letting the clear
-    // below proceed right after.
+    // A plain navigation (not fetch+blob) so the browser's own download
+    // handling takes over - /api/events/download sets Content-Disposition:
+    // attachment, so this just saves the file and stays on this page,
+    // letting the clear below proceed right after.
     window.location.href = '/api/events/download';
   }
   const btn = document.getElementById('clearEventsBtn');

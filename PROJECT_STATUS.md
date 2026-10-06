@@ -2906,3 +2906,35 @@ that aren't obvious from reading the code cold.
   appears in both pages' scripts. Didn't browser-test the three-button modal interaction itself (no browser
   tool in this sandbox) - worth a quick look on a real device to confirm the extra button's styling/spacing
   reads well next to the other two.
+
+- **[2026-10-06, same day] Removed the Logs page's old top "Download log" button; sized Download/Clear
+  buttons to match across Data and Logs.** Now that Clear readings/Clear event log each have their own
+  Download button right next to Clear (added two entries back), the Logs page's separate top-of-page
+  "Download log" button (which pre-dated that change, and respected the level filter - the new bottom
+  button doesn't) was redundant - removed it along with its now-unused `downloadLog()` function and fixed a
+  dangling comment in `clearEvents()` that referenced it by name. The Data page never had an equivalent top
+  button, so nothing to remove there.
+  Also gave the Download/Clear button pairs an explicit `min-width` (100px/160px) on both pages, since
+  "Clear readings" and "Clear event log" are different lengths and would otherwise size the buttons slightly
+  differently from each other depending on which page you're on.
+  **Verified**: Jinja2 parsed both templates; `<script>` blocks still pass `node --check`; confirmed
+  "Download log"/`downloadLog` no longer appear anywhere in `/logs`'s rendered output, and both pages'
+  Download/Clear buttons carry matching `min-width` values.
+
+- **[2026-10-06, same day] Logs and Settings swapped top-nav order; Logs became a group (Events + Data).**
+  Ryan's request: swap Logs/Settings order in the top nav, make Logs itself a grouped tab like Settings
+  (sub-nav: Events, Data), and move Data out of the Settings group into this new Logs group.
+  - `templates/base.html`: top nav is now Home, Timelapse, **Logs**, **Settings** (was Home, Timelapse,
+    Settings, Logs). Two separate group lists now instead of one: `logs_group = ['logs', 'data']`,
+    `settings_group = ['settings', 'camera', 'system', 'config', 'notifications']` (Data removed from this
+    one). The sub-nav block is now an if/elif on whichever group `active_page` belongs to: Logs shows
+    **Events · Data**, Settings shows the same five it had before minus Data (Setpoints · Sensors · Camera ·
+    Notifications · System).
+  - No route or template changes anywhere else - `/logs` still serves the exact same events-list page, just
+    relabeled "Events" in its own sub-nav now that Logs has more than one page under it (same "group tab
+    links straight to its own default page" pattern Settings/`/settings` already established); `/data` is
+    unchanged too, just reachable from a different parent tab. `webapp.py`'s routes, `active_page` values,
+    and every API endpoint are untouched.
+  **Verified**: Jinja2 parsed all 10 templates; every route's `<script>` blocks still pass `node --check`;
+  confirmed via the real rendered nav markup on every grouped page that Logs now comes before Settings, the
+  Logs sub-nav reads Events/Data with the right one "active," and the Settings sub-nav no longer lists Data.

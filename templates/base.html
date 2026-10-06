@@ -211,29 +211,39 @@
 </style>
 </head>
 <body>
-<!-- [2026-10-06] 4 top-level tabs. Logs was briefly folded into the
-     Settings sub-nav group (see PROJECT_STATUS.md's "Narrow the mobile
-     nav" entry) but moved back up here per Ryan's follow-up request, same
-     entry. Settings itself is both a top-level tab (linking straight to
-     /settings, now just the sensor-calibration cards - see the
-     Sensors/Camera/System split entry) AND the member of settings_group
-     whose own page it links to, so it's "active" up here whenever any
-     grouped page is open. -->
-{% set settings_group = ['settings', 'camera', 'system', 'data', 'config', 'notifications'] %}
+<!-- [2026-10-06] 4 top-level tabs, now TWO grouped ones: Logs and
+     Settings each have their own sub-nav, Logs now sitting before
+     Settings (swapped per Ryan's request - previously Settings came
+     first). Each group tab is both a top-level link (straight to that
+     group's own default page - /logs for Logs, /settings for Settings)
+     AND a member of its own group list, so it reads "active" up here
+     whenever any page in that group is open, same pattern as before,
+     just duplicated across two groups instead of one. Data moved out of
+     the Settings group into the Logs group (it's history alongside the
+     event log, not a one-time setup step like the rest of Settings);
+     the old standalone Logs page's content didn't move anywhere - it's
+     still served from /logs, just relabeled "Events" in the sub-nav now
+     that Logs is a group with more than one page under it. -->
+{% set logs_group = ['logs', 'data'] %}
+{% set settings_group = ['settings', 'camera', 'system', 'config', 'notifications'] %}
 <nav class="topnav">
   <a href="/" class="{{ 'active' if active_page == 'home' }}">Home</a>
   <a href="/timelapse" class="{{ 'active' if active_page == 'timelapse' }}">Timelapse</a>
+  <a href="/logs" class="{{ 'active' if active_page in logs_group }}">Logs</a>
   <a href="/settings" class="{{ 'active' if active_page in settings_group }}">Settings</a>
-  <a href="/logs" class="{{ 'active' if active_page == 'logs' }}">Logs</a>
   <div class="nav-pi-stats" id="navPiStats" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings. Useful while tuning the camera's capture/relay settings on the Camera page: watch this doesn't climb into the warning range as those get pushed faster."></div>
 </nav>
-{% if active_page in settings_group %}
+{% if active_page in logs_group %}
+<nav class="subnav">
+  <a href="/logs" class="{{ 'active' if active_page == 'logs' }}">Events</a>
+  <a href="/data" class="{{ 'active' if active_page == 'data' }}">Data</a>
+</nav>
+{% elif active_page in settings_group %}
 <nav class="subnav">
   <a href="/config" class="{{ 'active' if active_page == 'config' }}">Setpoints</a>
   <a href="/settings" class="{{ 'active' if active_page == 'settings' }}">Sensors</a>
   <a href="/camera" class="{{ 'active' if active_page == 'camera' }}">Camera</a>
   <a href="/notifications" class="{{ 'active' if active_page == 'notifications' }}">Notifications</a>
-  <a href="/data" class="{{ 'active' if active_page == 'data' }}">Data</a>
   <a href="/system" class="{{ 'active' if active_page == 'system' }}">System</a>
 </nav>
 {% endif %}
