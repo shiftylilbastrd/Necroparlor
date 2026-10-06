@@ -2938,3 +2938,21 @@ that aren't obvious from reading the code cold.
   **Verified**: Jinja2 parsed all 10 templates; every route's `<script>` blocks still pass `node --check`;
   confirmed via the real rendered nav markup on every grouped page that Logs now comes before Settings, the
   Logs sub-nav reads Events/Data with the right one "active," and the Settings sub-nav no longer lists Data.
+
+- **[2026-10-06, same day] Three small follow-ups: Refresh pushed right on Data/Logs, level filter moved to
+  the page's top-right, Settings now defaults to Setpoints.**
+  - `data.html`/`logs.html`: the Refresh button is now the last item in each filter-row, pushed to the far
+    right edge with `margin-left:auto` (that row is already `display:flex`, so this just claims the leftover
+    space instead of sitting wherever it happened to be in the row's source order).
+  - `logs.html`: the level filter (`#levelFilter`) moved out of the filter-row entirely, up next to the page
+    title - a `display:flex; justify-content:space-between` row with the `<h1>`/subtitle on the left and the
+    select on the right, same height as the heading rather than buried among the paging controls below.
+  - `base.html`: the top-level **Settings** tab now links to `/config` (Setpoints) instead of `/settings`
+    (Sensors) - Ryan wants Setpoints as the default landing page when Settings is clicked. Mirrors how Logs
+    already defaults to `/logs` (Events, also first in ITS sub-nav): both group tabs now consistently link
+    to whatever page is first in their own sub-nav, not to whichever page historically happened to live at
+    the group's own base URL. The Sensors page is unaffected and still reachable at `/settings` via the
+    sub-nav - only the top-level tab's default target changed.
+  **Verified**: Jinja2 parsed all 10 templates; `<script>` blocks still pass `node --check`; confirmed via
+  rendered output that the top-level Settings link's `href` is `/config`, and that both pages' Refresh
+  buttons carry the `margin-left:auto` that pushes them right.

@@ -11,10 +11,11 @@
 {% endblock %}
 {% block content %}
 
-<h1>Logs</h1>
-<div class="subtitle">Mode changes, relay activity, warnings, and alarms</div>
-
-<div class="filter-row">
+<div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+  <div>
+    <h1>Logs</h1>
+    <div class="subtitle">Mode changes, relay activity, warnings, and alarms</div>
+  </div>
   <!-- Values match get_recent_events' MINIMUM-severity filter (see
        shared_state.py) - selecting Warning also shows Error/Critical,
        not just Warning rows, same as most log viewers. "Info" is
@@ -27,6 +28,9 @@
     <option value="error">Error</option>
     <option value="critical">Critical</option>
   </select>
+</div>
+
+<div class="filter-row">
   <select id="pageSizeSelect" onchange="changePageSize()">
     <option value="25">25 rows</option>
     <option value="50" selected>50 rows</option>
@@ -34,10 +38,10 @@
     <option value="200">200 rows</option>
     <option value="500">500 rows</option>
   </select>
-  <button onclick="resetAndLoad()">Refresh</button>
   <button id="prevPageBtn" onclick="prevPage()" disabled>&larr; Newer</button>
   <span class="stat-sub" id="pageLabel" style="margin: 0 4px;">Page 1</span>
   <button id="nextPageBtn" onclick="nextPage()" disabled>Older &rarr;</button>
+  <button onclick="resetAndLoad()" style="margin-left:auto;">Refresh</button>
 </div>
 
 <div class="card events" id="eventsList"></div>
