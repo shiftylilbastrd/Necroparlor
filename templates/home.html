@@ -61,8 +61,24 @@
   .live-frame-wrap {
     position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden;
     border: 1px solid var(--panel-border); background: #000;
+    /* The live view owns its own pinch-zoom/drag-pan gestures (see
+       applyLiveCrop()/onLiveFrame* below) - touch-action:none stops the
+       browser's own page-scroll/pinch-zoom from fighting with those
+       pointer events on mobile. */
+    touch-action: none;
   }
-  .home-live-frame { width: 100%; height: 100%; display: block; object-fit: cover; }
+  /* [2026-10-05] Persistent crop + interactive zoom: object-fit can only
+     do aspect-ratio-preserving "cover"/"contain" crops, not an arbitrary
+     rectangle, so the crop itself is done with absolute positioning
+     instead - left/top/width/height are set in % by applyLiveCrop()
+     below from the camera's saved crop config (same crop the Settings
+     page editor and timelapse snapshots use). The zoom/pan layer is a
+     separate CSS transform stacked on top of that (see
+     updateZoomTransform()), so the two don't fight each other. */
+  .home-live-frame {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    display: block;
+  }
   .light-toggle-btn {
     position: absolute; top: 8px; left: 8px; z-index: 2;
     width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--panel-border);
@@ -94,12 +110,6 @@
     position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100vh;
     aspect-ratio: auto; border: none; border-radius: 0;
   }
-  /* object-fit switches from "cover" (fills the small dashboard tile,
-     cropping edges) to "contain" (shows the whole frame, letterboxed if
-     needed) in either fullscreen mode - cropping the one view meant for
-     actually looking closely at the enclosure would defeat the point. */
-  .live-frame-wrap:fullscreen .home-live-frame,
-  .live-frame-wrap.fullscreen-fallback .home-live-frame { object-fit: contain; }
   .live-frame-wrap:fullscreen { background: #000; }
 </style>
 {% endblock %}
@@ -501,11 +511,54 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
 // that connection actually drops (camera-streamer restarting mid-stream
 // is the main way that happens).
 let lastStreamUrl = null;
+let lastSnapshotUrl = null;
+
+// [2026-10-05] Not every browser can actually display an MJPEG
+// multipart/x-mixed-replace stream in an <img> - iOS Safari is the known
+// case (confirmed by Ryan: the backend check (`available`) succeeds, no
+// banner shows, but the live tile just never renders a frame on an
+// iPhone). Every browser on iOS is WebKit under the hood regardless of
+// its name, so this isn't a "use Chrome instead" problem, and WebKit
+// gives no error event to catch it by - the <img> just silently never
+// decodes a first frame. Rather than assume which browser/version is
+// affected by name (fragile, and wrong the moment it's fixed upstream),
+// checkStreamSupport() checks what ACTUALLY happened a few seconds after
+// pointing the <img> at the stream: did it ever get a real decoded
+// frame (naturalWidth > 0)? If not, falls back to startSnapshotPolling(),
+// which just repeatedly reloads a single JPEG from camera-streamer's
+// /snapshot endpoint instead (confirmed working everywhere, including
+// this - lower frame rate, but it actually shows up).
+let liveViewMode = 'stream';  // 'stream' (native MJPEG <img>) or 'snapshot-poll' (fallback)
+let streamSupportChecked = false;
+let snapshotPollTimer = null;
+const SNAPSHOT_POLL_MS = 600;
 
 function reconnectHomeStream() {
-  if (lastStreamUrl) {
+  if (liveViewMode === 'stream' && lastStreamUrl) {
     document.getElementById('homeLiveFrame').src = lastStreamUrl + '?t=' + Date.now();
   }
+}
+
+function checkStreamSupport() {
+  if (streamSupportChecked) return;
+  streamSupportChecked = true;
+  setTimeout(() => {
+    const img = document.getElementById('homeLiveFrame');
+    if (liveViewMode === 'stream' && img.naturalWidth === 0) {
+      startSnapshotPolling();
+    }
+  }, 3000);
+}
+
+function startSnapshotPolling() {
+  liveViewMode = 'snapshot-poll';
+  if (snapshotPollTimer) return;
+  const img = document.getElementById('homeLiveFrame');
+  const poll = () => {
+    if (lastSnapshotUrl) img.src = lastSnapshotUrl + '?t=' + Date.now();
+  };
+  poll();
+  snapshotPollTimer = setInterval(poll, SNAPSHOT_POLL_MS);
 }
 
 // Fullscreen for the live view, PC + mobile. Tries the real Fullscreen
@@ -538,6 +591,7 @@ function exitFallbackFullscreen() {
   document.querySelector('.live-frame-wrap').classList.remove('fullscreen-fallback');
   document.body.style.overflow = '';
   updateFullscreenButton();
+  resetZoom();
 }
 
 function toggleFullscreen() {
@@ -577,6 +631,142 @@ document.addEventListener('webkitfullscreenchange', () => {
   if (!document.webkitFullscreenElement) exitFallbackFullscreen();
   else updateFullscreenButton();
 });
+
+// Persistent crop + interactive zoom/pan for the live view (see "crop" in
+// shared_state's "camera" DEFAULT_CONFIG, validate_camera_crop(), and the
+// Settings page's crop editor - this applies the same saved rectangle to
+// the dashboard's live <img>, then layers pinch/scroll-zoom + drag-pan on
+// top of it).
+let camCropState = { left: 0, top: 0, width: 1, height: 1 };
+let lastCropSignature = null;
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 4;
+let zoomScale = 1;
+let panX = 0;
+let panY = 0;
+
+// Sizes/positions the <img> so only the saved crop rectangle shows
+// through the wrap's overflow:hidden box, by scaling the whole native
+// image up until the crop rectangle exactly fills the box, then shifting
+// it so the crop's top-left corner lands on the box's own origin. The
+// wrap's aspect-ratio is set to match the crop rectangle's native pixel
+// dimensions so the enlarged image is never stretched/distorted.
+function applyLiveCrop(camCfg) {
+  const crop = (camCfg && camCfg.crop) || { left: 0, top: 0, width: 1, height: 1 };
+  camCropState = crop;
+  const nativeW = (camCfg && camCfg.width) || 1280;
+  const nativeH = (camCfg && camCfg.height) || 720;
+  const cropW = Math.max(1, crop.width * nativeW);
+  const cropH = Math.max(1, crop.height * nativeH);
+  document.querySelector('.live-frame-wrap').style.aspectRatio = `${cropW} / ${cropH}`;
+  const img = document.getElementById('homeLiveFrame');
+  img.style.width = (100 / crop.width) + '%';
+  img.style.height = (100 / crop.height) + '%';
+  img.style.left = (-100 * crop.left / crop.width) + '%';
+  img.style.top = (-100 * crop.top / crop.height) + '%';
+  resetZoom();
+}
+
+function updateZoomTransform() {
+  document.getElementById('homeLiveFrame').style.transform =
+    `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+}
+
+function resetZoom() {
+  zoomScale = ZOOM_MIN;
+  panX = 0;
+  panY = 0;
+  updateZoomTransform();
+}
+
+// Clamps the current pan so the zoomed image can't be dragged past its
+// own edges. Measured against the actual rendered boxes (briefly
+// stripping the pan to measure the scaled-only size) rather than derived
+// from the crop/zoom numbers by hand - simpler, and avoids shipping
+// subtly-wrong closed-form math that can't be visually tested here.
+function clampPan() {
+  const wrap = document.querySelector('.live-frame-wrap');
+  const img = document.getElementById('homeLiveFrame');
+  const prevTransform = img.style.transform;
+  img.style.transform = `scale(${zoomScale})`;
+  const wrapRect = wrap.getBoundingClientRect();
+  const imgRect = img.getBoundingClientRect();
+  img.style.transform = prevTransform;
+  const maxOffsetX = Math.max(0, (imgRect.width - wrapRect.width) / 2);
+  const maxOffsetY = Math.max(0, (imgRect.height - wrapRect.height) / 2);
+  panX = Math.max(-maxOffsetX, Math.min(maxOffsetX, panX));
+  panY = Math.max(-maxOffsetY, Math.min(maxOffsetY, panY));
+}
+
+// Pointer Events (not separate mouse/touch handlers) so one code path
+// covers drag-to-pan on PC and both drag and pinch-to-zoom on mobile.
+const liveZoomPointers = new Map();
+let liveZoomPinchStartDist = null;
+let liveZoomPinchStartScale = 1;
+let liveZoomDragStart = null;
+
+function onLiveFramePointerDown(e) {
+  if (e.target.closest('button')) return;  // don't hijack the overlay buttons
+  const wrap = document.querySelector('.live-frame-wrap');
+  wrap.setPointerCapture && wrap.setPointerCapture(e.pointerId);
+  liveZoomPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (liveZoomPointers.size === 1) {
+    liveZoomDragStart = { x: e.clientX, y: e.clientY, panX, panY };
+  } else if (liveZoomPointers.size === 2) {
+    const pts = [...liveZoomPointers.values()];
+    liveZoomPinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    liveZoomPinchStartScale = zoomScale;
+    liveZoomDragStart = null;
+  }
+  e.preventDefault();
+}
+
+function onLiveFramePointerMove(e) {
+  if (!liveZoomPointers.has(e.pointerId)) return;
+  liveZoomPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (liveZoomPointers.size === 2 && liveZoomPinchStartDist) {
+    const pts = [...liveZoomPointers.values()];
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, liveZoomPinchStartScale * (dist / liveZoomPinchStartDist)));
+    clampPan();
+    updateZoomTransform();
+  } else if (liveZoomDragStart && zoomScale > ZOOM_MIN) {
+    panX = liveZoomDragStart.panX + (e.clientX - liveZoomDragStart.x);
+    panY = liveZoomDragStart.panY + (e.clientY - liveZoomDragStart.y);
+    clampPan();
+    updateZoomTransform();
+  }
+}
+
+function onLiveFramePointerEnd(e) {
+  liveZoomPointers.delete(e.pointerId);
+  if (liveZoomPointers.size < 2) liveZoomPinchStartDist = null;
+  if (liveZoomPointers.size === 1) {
+    const pt = [...liveZoomPointers.values()][0];
+    liveZoomDragStart = { x: pt.x, y: pt.y, panX, panY };
+  } else if (liveZoomPointers.size === 0) {
+    liveZoomDragStart = null;
+  }
+}
+
+function onLiveFrameWheel(e) {
+  e.preventDefault();
+  const factor = Math.exp(-e.deltaY * 0.001);
+  zoomScale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomScale * factor));
+  if (zoomScale <= ZOOM_MIN + 0.001) { panX = 0; panY = 0; }
+  clampPan();
+  updateZoomTransform();
+}
+
+function initLiveFrameZoom() {
+  const wrap = document.querySelector('.live-frame-wrap');
+  wrap.addEventListener('pointerdown', onLiveFramePointerDown);
+  wrap.addEventListener('pointermove', onLiveFramePointerMove);
+  wrap.addEventListener('pointerup', onLiveFramePointerEnd);
+  wrap.addEventListener('pointercancel', onLiveFramePointerEnd);
+  wrap.addEventListener('wheel', onLiveFrameWheel, { passive: false });
+  wrap.addEventListener('dblclick', () => resetZoom());
+}
 
 let lightOverrideActive = false;
 
@@ -619,11 +809,26 @@ async function refreshCameraStatus() {
     const data = await res.json();
     document.getElementById('cameraUnavailableBanner').style.display = data.available ? 'none' : 'block';
     document.getElementById('homeLiveStatus').textContent = data.available
-      ? 'Live'
+      ? (liveViewMode === 'snapshot-poll' ? 'Live (reduced frame rate - see docs/camera-streamer-setup.md)' : 'Live')
       : 'Camera feed unavailable';
+    if (data.snapshot_url) lastSnapshotUrl = data.snapshot_url;
     if (data.stream_url && data.stream_url !== lastStreamUrl) {
       lastStreamUrl = data.stream_url;
-      document.getElementById('homeLiveFrame').src = lastStreamUrl;
+      if (liveViewMode === 'stream') {
+        document.getElementById('homeLiveFrame').src = lastStreamUrl;
+        checkStreamSupport();
+      }
+    }
+    if (data.camera) {
+      // Only reapply (and reset zoom) when the saved crop/resolution
+      // actually changed - refreshCameraStatus polls every 5s and
+      // re-running this on every poll would reset the viewer's zoom/pan
+      // out from under them constantly.
+      const cropSig = JSON.stringify(data.camera.crop) + '|' + data.camera.width + '|' + data.camera.height;
+      if (cropSig !== lastCropSignature) {
+        lastCropSignature = cropSig;
+        applyLiveCrop(data.camera);
+      }
     }
   } catch (e) {
     document.getElementById('cameraUnavailableBanner').style.display = 'block';
@@ -631,6 +836,7 @@ async function refreshCameraStatus() {
   }
 }
 
+initLiveFrameZoom();
 refreshStatus();
 refreshHistory();
 refreshCameraStatus();

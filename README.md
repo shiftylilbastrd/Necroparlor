@@ -98,6 +98,14 @@ sudo apt install python3-pip python3-rpi.gpio
 pip3 install flask adafruit-circuitpython-sht31d adafruit-extended-bus --break-system-packages
 ```
 
+If you set a live-view/timelapse crop (see "Live view crop" on the Settings page), `camera_service.py` also needs Pillow to do the actual cropping:
+
+```bash
+pip3 install Pillow --break-system-packages
+```
+
+This is only imported when a crop is actually configured — with no crop set (the default), snapshots pass through uncropped and Pillow is never touched, so you can skip this unless you use that feature.
+
 Copy this whole folder to the Pi, e.g. `/home/pi/dermestid/`.
 
 ## Run manually (for testing)

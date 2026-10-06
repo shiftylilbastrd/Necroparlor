@@ -2450,3 +2450,87 @@ that aren't obvious from reading the code cold.
   documentation alone - next step is following `docs/camera-streamer-
   setup.md` on the actual Pi, start to finish, and correcting whatever
   in this entry turns out wrong once it's real.
+
+- **[2026-10-05]** Added a persistent crop + interactive zoom/pan for the live camera view, after Ryan asked
+  for both "permanently crop the frame" and "interactive zoom while viewing" (explicitly declined actual
+  optical/hardware zoom - there's no hardware to do that with anyway). Three pieces:
+  1. **Config + validation** (`shared_state.py`): a new `"crop"` key under `DEFAULT_CONFIG["camera"]`
+     (`{"left": 0.0, "top": 0.0, "width": 1.0, "height": 1.0}` - a software-only fraction rectangle, `0,0,1,1`
+     = full frame/no-op). `validate_camera_crop()` enforces 0-1 bounds, a `CAMERA_CROP_MIN_FRACTION = 0.05`
+     floor on width/height (can't crop down to nothing), and that `left+width`/`top+height` don't exceed 1.
+     `crop_jpeg_bytes(jpeg_bytes, crop)` does the actual Pillow crop, with a fast no-op path when the crop is
+     the full-frame default (so setting no crop costs nothing) and a `try/except` that falls back to the
+     uncropped frame + logs on any Pillow failure rather than ever breaking the camera feed.
+  2. **A new route, deliberately separate from `/api/camera-settings`** (`webapp.py`): `POST
+     /api/camera-crop` validates and saves just the `crop` key. Kept apart from the existing camera-settings
+     route (device/width/height/streamer_port) because that one triggers a camera-streamer restart
+     (interrupts live view) and this one must not - the crop is consumed entirely by this project's own code
+     (home.html's CSS + camera_service.py below), never sent to camera-streamer itself. **Found and fixed a
+     real bug in the existing route while adding this**: `api_set_camera_settings()` was doing `config["camera"]
+     = cleaned` (a full replace) instead of merging - since `validate_camera_settings()` only ever returns
+     device/width/height/streamer_port, saving the USB webcam card on the Settings page would have silently
+     wiped any saved crop every time. Now merges: `config["camera"] = {**config.get("camera", {}), **cleaned}`.
+  3. **Where the crop is actually applied**: `camera_service.py`'s periodic snapshot loop now runs every
+     frame through `state.crop_jpeg_bytes()` before saving, so timelapse frames match what the crop editor and
+     live view show rather than saving the uncropped full frame. The **Settings page** (`templates/settings.html`)
+     got a new "Live view crop" card: a live snapshot preview (`/api/camera/status`'s `snapshot_url`, refreshed
+     on demand) with a drag-to-move/drag-to-resize crop box overlay (Pointer Events, so one code path handles
+     both mouse and touch - same reasoning as the fullscreen button above), a "Reset to full frame" button, and
+     "Save crop" posting to the new route. The **dashboard's live view** (`templates/home.html`) is where this
+     actually shows up day to day: `applyLiveCrop(camCfg)` sizes/positions `#homeLiveFrame` with absolute
+     positioning (`width:(100/crop.width)%`, `left:(-100*crop.left/crop.width)%`, etc. - the only way to crop an
+     `<img>` to an *arbitrary* rectangle, since `object-fit` can only do aspect-ratio-preserving cover/contain)
+     and sets `.live-frame-wrap`'s `aspect-ratio` to match the crop rectangle's native pixel dimensions so the
+     enlarged image is never distorted. **This supersedes part of the fullscreen entry above**: the old
+     `object-fit: cover`/`contain` switching on `.home-live-frame` is gone entirely (incompatible with the
+     absolute-position crop scheme) - both the normal tile and fullscreen now just show the cropped rectangle,
+     sized to fill whichever box `.live-frame-wrap` currently is. On top of the crop, a separate `transform:
+     translate()/scale()` layer (`updateZoomTransform()`) does the interactive zoom: pinch-to-zoom and
+     drag-to-pan via Pointer Events (`onLiveFramePointerDown/Move/End`, tracking up to 2 active pointers for
+     pinch), plus mouse-wheel zoom and double-click-to-reset on desktop. Panning is clamped
+     (`clampPan()`) by actually measuring the rendered image/wrap boxes via `getBoundingClientRect()` after a
+     test transform, rather than computing the clamp bounds from the crop/zoom numbers by hand - deliberately
+     chosen since this couldn't be visually tested here, and measuring the real boxes can't be off by a sign
+     error the way hand-derived math could. Zoom resets automatically on fullscreen exit and whenever the
+     saved crop/resolution actually changes (tracked via a signature string compared each 5s status poll, so a
+     no-op poll doesn't reset the viewer's zoom out from under them).
+
+  Needs Pillow on the Pi (`pip3 install Pillow --break-system-packages`, now in README) - only actually
+  imported if a crop is configured, so existing installs with no crop set need no new dependency.
+  **Not yet verified against real hardware/browsers**: Jinja2 parse, `node --check` on the extracted inline
+  script, and a Flask test-client smoke test all pass, and the crop math/clamping were verified against the
+  derivation on paper, but nothing here has been visually tested in an actual browser (particularly the pinch-
+  zoom gesture on a real phone, and whether `touch-action: none` on `.live-frame-wrap` has any unwanted side
+  effects on page scroll near the live view on mobile).
+
+- **[2026-10-05] Fixed: live view was completely blank on iPhone/Safari**, reported by Ryan right after the
+  crop/zoom work above. The backend side was fine the whole time (`available: true`, no banner) - the `<img>`
+  pointed straight at camera-streamer's `/stream` endpoint just never rendered a frame. Root cause: no iOS
+  browser can display an MJPEG `multipart/x-mixed-replace` stream in an `<img>` tag - a known, long-standing
+  WebKit limitation (every browser on iOS is WebKit under the hood regardless of its name, so this isn't a
+  "try Chrome" problem), and WebKit gives no error event to catch it by - the image just silently never
+  decodes. This was always going to fail on an iPhone; it just hadn't been tried on one until now. Fixed with
+  a real-world capability check rather than UA-sniffing (which browser/version is affected could change under
+  us): `checkStreamSupport()` points the `<img>` at the stream as before, then checks 3 seconds later whether
+  it actually decoded a frame (`naturalWidth > 0`). If not, `startSnapshotPolling()` switches
+  `templates/home.html`'s live tile to repeatedly reloading a single JPEG from camera-streamer's own
+  `/snapshot` endpoint (confirmed working everywhere since 2026-09-17) every 600ms instead - real MJPEG
+  streaming stays the default and is untouched on browsers that can actually show it; only the detected
+  failure case falls back, automatically, with no setting to flip. The live-view status text says "Live
+  (reduced frame rate...)" when running in the fallback mode so it's visible at a glance which path a given
+  device ended up on. The crop + zoom/pan feature above works the same either way, since both just set CSS on
+  the same `<img>` regardless of what's feeding its `src`.
+
+  **Considered and deliberately not done (yet)**: camera-streamer documents an adaptive `/video` endpoint that
+  serves HLS or MP4 depending on the browser, which Safari (including iOS) has native `<video>` support for -
+  this would give smoother real streaming on iPhone instead of a polled snapshot. Not implemented here because
+  it needs H264 output enabled on camera-streamer (undocumented exactly how - `--camera-video.height`/
+  `--camera-video.options=bitrate=...` flags exist but nothing confirms whether H264 encoding needs to be
+  turned on explicitly, or what hardware/kernel requirements apply) and can't be verified without a real Pi to
+  test against. Worth revisiting once there's hands-on access to camera-streamer's actual `--help` output and
+  a device to test `/video` against - same "verify before trusting docs" approach the rest of this
+  camera-streamer rollout has followed.
+  **Not yet verified against real hardware/a real iPhone**: this was built and reasoned through based on
+  Ryan's report (no banner, blank tile) matching the known WebKit MJPEG limitation exactly, plus the Jinja/JS/
+  Flask smoke tests below - but the actual 3-second-timeout fallback trigger and the resulting polled-snapshot
+  view haven't been confirmed live against Ryan's iPhone yet.

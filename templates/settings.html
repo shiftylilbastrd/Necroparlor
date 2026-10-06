@@ -16,6 +16,23 @@
   .ble-discover-row { cursor: pointer; border-top: 1px solid var(--panel-border); }
   .ble-discover-row.selected { background: rgba(79,178,134,0.14); }
   .ble-discover-row.selected td:first-child { color: var(--accent); font-weight: 600; }
+  .crop-preview-wrap {
+    position: relative; width: 100%; background: #000; border-radius: 6px;
+    overflow: hidden; border: 1px solid var(--panel-border); min-height: 80px;
+    /* touch-action: none keeps a drag on the box/handles below from also
+       scrolling the page on a phone - without it, a touchmove here fights
+       the browser's own scroll gesture instead of just moving the box. */
+    touch-action: none; user-select: none;
+  }
+  #cropPreviewImg { width: 100%; display: block; }
+  .crop-box {
+    position: absolute; border: 2px solid var(--accent);
+    background: rgba(79,178,134,0.12); cursor: move; box-sizing: border-box;
+  }
+  .crop-handle {
+    position: absolute; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent); border: 2px solid #0d1712;
+  }
 </style>
 {% endblock %}
 {% block content %}
@@ -135,6 +152,33 @@
       Pi itself now (camera-streamer's own flags - see <code>docs/camera-streamer-setup.md</code>),
       not from this page.
     </div>
+  </div>
+
+  <div class="card" style="max-width:420px;">
+    <h2>Live view crop</h2>
+    <div class="stat-sub" style="margin-bottom:10px;">
+      Permanently crops the live view and timelapse frames to just this rectangle - for trimming
+      extra background/shelf out of the shot. Drag the box or its corner to adjust. This doesn't
+      touch camera-streamer or need a restart.
+    </div>
+    <div class="crop-preview-wrap" id="cropPreviewWrap">
+      <img id="cropPreviewImg" alt="Camera snapshot for cropping">
+      <div class="stat-sub" id="cropPreviewEmpty" style="display:none;">
+        No snapshot available yet - check camera-streamer is running, then click Refresh preview.
+      </div>
+      <div class="crop-box" id="cropBox" style="display:none;">
+        <div class="crop-handle" data-handle="nw" style="top:-5px; left:-5px; cursor:nwse-resize;"></div>
+        <div class="crop-handle" data-handle="ne" style="top:-5px; right:-5px; cursor:nesw-resize;"></div>
+        <div class="crop-handle" data-handle="sw" style="bottom:-5px; left:-5px; cursor:nesw-resize;"></div>
+        <div class="crop-handle" data-handle="se" style="bottom:-5px; right:-5px; cursor:nwse-resize;"></div>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="save-btn" onclick="refreshCropPreview()" id="cropRefreshBtn">Refresh preview</button>
+      <button class="save-btn" onclick="resetCrop()" id="cropResetBtn">Reset to full frame</button>
+    </div>
+    <button class="save-btn" style="margin-top:8px;" onclick="saveCameraCrop()">Save crop</button>
+    <div class="save-msg" id="cameraCropMsg"></div>
   </div>
 
   <div class="card" style="max-width:420px;">
@@ -302,6 +346,14 @@ async function loadSettings() {
   document.getElementById('cameraDeviceInput').value = cam.device ?? '0';
   applyResolutionsForDevice(cam.device ?? '0', cam.width ?? 1280, cam.height ?? 720);
   document.getElementById('cameraStreamerPortInput').value = cam.streamer_port ?? 8090;
+
+  const crop = cam.crop || {};
+  cropState = {
+    left: crop.left ?? 0, top: crop.top ?? 0,
+    width: crop.width ?? 1, height: crop.height ?? 1,
+  };
+  renderCropBox();
+  refreshCropPreview();
 }
 
 async function saveCameraSettings() {
@@ -331,6 +383,123 @@ async function saveCameraSettings() {
     setTimeout(() => { msg.textContent = ''; }, 4500);
   }
 }
+
+// --- Live view crop editor ---
+// cropState is always the SAVED crop (fractions 0-1 of the full frame) -
+// renderCropBox() just draws it, and dragging updates it live as you
+// drag, same as any other form field that hasn't been saved yet. Pointer
+// Events (not separate mouse/touch handlers) so one code path drives
+// both a mouse drag on PC and a finger drag on mobile.
+let cropState = {left: 0, top: 0, width: 1, height: 1};
+let cropDrag = null;
+
+function clampNum(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+function renderCropBox() {
+  const box = document.getElementById('cropBox');
+  box.style.left = (cropState.left * 100) + '%';
+  box.style.top = (cropState.top * 100) + '%';
+  box.style.width = (cropState.width * 100) + '%';
+  box.style.height = (cropState.height * 100) + '%';
+}
+
+async function refreshCropPreview() {
+  const img = document.getElementById('cropPreviewImg');
+  const empty = document.getElementById('cropPreviewEmpty');
+  const box = document.getElementById('cropBox');
+  try {
+    const res = await fetch('/api/camera/status');
+    const data = await res.json();
+    if (!data.available || !data.snapshot_url) throw new Error('camera unavailable');
+    img.onload = () => { box.style.display = 'block'; empty.style.display = 'none'; };
+    img.onerror = () => { box.style.display = 'none'; empty.style.display = 'block'; };
+    img.src = data.snapshot_url + '?t=' + Date.now();
+  } catch (e) {
+    box.style.display = 'none';
+    img.removeAttribute('src');
+    empty.style.display = 'block';
+  }
+}
+
+function resetCrop() {
+  cropState = {left: 0, top: 0, width: 1, height: 1};
+  renderCropBox();
+}
+
+async function saveCameraCrop() {
+  const res = await fetch('/api/camera-crop', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cropState)
+  });
+  const data = await res.json();
+  const msg = document.getElementById('cameraCropMsg');
+  if (!res.ok) {
+    msg.textContent = data.error || 'Save failed';
+    msg.className = 'save-msg err';
+  } else {
+    msg.textContent = 'Saved';
+    msg.className = 'save-msg ok';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+  }
+}
+
+const CROP_MIN_FRACTION = 0.05;
+
+function onCropPointerDown(e) {
+  const handle = e.target.closest('.crop-handle');
+  const mode = handle ? handle.dataset.handle : 'move';
+  const wrap = document.getElementById('cropPreviewWrap');
+  cropDrag = {
+    mode, rect: wrap.getBoundingClientRect(),
+    startX: e.clientX, startY: e.clientY,
+    start: {...cropState},
+  };
+  e.preventDefault();
+  document.addEventListener('pointermove', onCropPointerMove);
+  document.addEventListener('pointerup', onCropPointerUp);
+}
+
+function onCropPointerMove(e) {
+  if (!cropDrag) return;
+  const dx = (e.clientX - cropDrag.startX) / cropDrag.rect.width;
+  const dy = (e.clientY - cropDrag.startY) / cropDrag.rect.height;
+  const s = cropDrag.start;
+  const mode = cropDrag.mode;
+  if (mode === 'move') {
+    cropState = {
+      left: clampNum(s.left + dx, 0, 1 - s.width),
+      top: clampNum(s.top + dy, 0, 1 - s.height),
+      width: s.width, height: s.height,
+    };
+  } else {
+    let {left, top, width, height} = s;
+    if (mode.includes('w')) {
+      const right = s.left + s.width;
+      left = clampNum(s.left + dx, 0, right - CROP_MIN_FRACTION);
+      width = right - left;
+    }
+    if (mode.includes('e')) {
+      width = clampNum(s.width + dx, CROP_MIN_FRACTION, 1 - s.left);
+    }
+    if (mode.includes('n')) {
+      const bottom = s.top + s.height;
+      top = clampNum(s.top + dy, 0, bottom - CROP_MIN_FRACTION);
+      height = bottom - top;
+    }
+    if (mode.includes('s')) {
+      height = clampNum(s.height + dy, CROP_MIN_FRACTION, 1 - s.top);
+    }
+    cropState = {left, top, width, height};
+  }
+  renderCropBox();
+}
+
+function onCropPointerUp() {
+  cropDrag = null;
+  document.removeEventListener('pointermove', onCropPointerMove);
+  document.removeEventListener('pointerup', onCropPointerUp);
+}
+
+document.getElementById('cropBox').addEventListener('pointerdown', onCropPointerDown);
 
 async function populateBleSensorTypes(currentType) {
   const res = await fetch('/api/ble-sensor-types');

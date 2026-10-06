@@ -173,6 +173,20 @@ DEFAULT_CONFIG = {
         # itself is rejected outright by validate_camera_settings()
         # rather than just discouraged in a comment.
         "streamer_port": 8090,
+        # Persistent crop, as fractions (0-1) of the full captured frame -
+        # left/top is the crop rectangle's top-left corner, width/height
+        # its size, all relative to the full frame so this stays correct
+        # across a resolution change. {"left":0,"top":0,"width":1,
+        # "height":1} (the default) means no crop - the full frame.
+        # Deliberately saved separately from device/width/height/
+        # streamer_port above (see validate_camera_crop() and
+        # api_set_camera_crop() in webapp.py): this is a software-only
+        # crop, applied by this project's own code (the Settings page's
+        # live view CSS, and camera_service.py's timelapse capture - see
+        # crop_jpeg_bytes() below), never sent to camera-streamer itself,
+        # so saving it doesn't need camera-streamer restarted the way an
+        # actual capture-setting change does.
+        "crop": {"left": 0.0, "top": 0.0, "width": 1.0, "height": 1.0},
     },
     # Outbound alerting - see the "Notifications" section below
     # (EVENT_CATEGORIES, log_event()'s notify hook, _send_all_channels())
@@ -482,6 +496,87 @@ def validate_camera_settings(values):
         "height": height,
         "streamer_port": streamer_port,
     }, None
+
+
+CAMERA_CROP_MIN_FRACTION = 0.05  # smallest allowed crop width/height - 5% of the frame
+
+
+def validate_camera_crop(values):
+    """Validates a crop rectangle (left/top/width/height, each a 0-1
+    fraction of the full captured frame). Returns (cleaned_dict, None)
+    on success or (None, error) on failure. Kept separate from
+    validate_camera_settings() above - this is a software-only crop
+    (see the "camera" DEFAULT_CONFIG comment), not a camera-streamer
+    capture setting, so it's saved and validated independently and
+    doesn't require/trigger a camera-streamer restart."""
+    try:
+        left = float(values.get("left", 0.0))
+        top = float(values.get("top", 0.0))
+        width = float(values.get("width", 1.0))
+        height = float(values.get("height", 1.0))
+    except (TypeError, ValueError):
+        return None, "left/top/width/height must be numbers"
+    for name, val in (("left", left), ("top", top), ("width", width), ("height", height)):
+        if not (0.0 <= val <= 1.0):
+            return None, f"{name} must be between 0 and 1"
+    if width < CAMERA_CROP_MIN_FRACTION or height < CAMERA_CROP_MIN_FRACTION:
+        return None, f"width and height must be at least {CAMERA_CROP_MIN_FRACTION} (5% of the frame)"
+    # A small epsilon rather than a strict <= 1.0, since the crop editor's
+    # own drag/resize math can hand back e.g. left=0.7000000001 +
+    # width=0.3 from ordinary floating-point rounding - rejecting that as
+    # "out of bounds" would be more annoying than useful.
+    epsilon = 1e-6
+    if left + width > 1.0 + epsilon:
+        return None, "left + width can't exceed 1 (the crop extends past the right edge)"
+    if top + height > 1.0 + epsilon:
+        return None, "top + height can't exceed 1 (the crop extends past the bottom edge)"
+    return {
+        "left": min(left, 1.0 - width),
+        "top": min(top, 1.0 - height),
+        "width": width,
+        "height": height,
+    }, None
+
+
+def crop_jpeg_bytes(jpeg_bytes, crop):
+    """Applies a validate_camera_crop()-shaped fraction rectangle to a
+    JPEG's raw bytes using Pillow, returning new cropped JPEG bytes.
+    Used by camera_service.py so saved timelapse frames reflect the same
+    crop the live view shows (see crop in the "camera" DEFAULT_CONFIG
+    comment) - the live view itself is cropped separately, purely via
+    CSS on the dashboard, since re-encoding every frame of a continuous
+    MJPEG stream server-side is exactly the bottleneck this project
+    moved off of (see docs/camera-streamer-setup.md); a timelapse
+    snapshot is a single JPEG every few minutes at most, cheap to
+    re-encode by comparison.
+
+    A no-op crop (the default {"left":0,"top":0,"width":1,"height":1})
+    returns jpeg_bytes unchanged rather than round-tripping through
+    Pillow for nothing. Any decode/crop/encode failure (corrupt frame,
+    Pillow not installed) logs and returns the ORIGINAL bytes rather
+    than losing the snapshot entirely - a bad crop is better recovered
+    from by fixing the crop setting than by silently dropping frames."""
+    if (crop.get("left", 0.0) == 0.0 and crop.get("top", 0.0) == 0.0
+            and crop.get("width", 1.0) == 1.0 and crop.get("height", 1.0) == 1.0):
+        return jpeg_bytes
+    try:
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(jpeg_bytes))
+        w, h = img.size
+        box = (
+            round(crop["left"] * w),
+            round(crop["top"] * h),
+            round((crop["left"] + crop["width"]) * w),
+            round((crop["top"] + crop["height"]) * h),
+        )
+        cropped = img.crop(box)
+        out = io.BytesIO()
+        cropped.save(out, format="JPEG", quality=90)
+        return out.getvalue()
+    except Exception:
+        logging.exception("Failed to crop timelapse snapshot - saving the uncropped frame instead")
+        return jpeg_bytes
 
 
 def write_camera_streamer_env(cam_cfg):

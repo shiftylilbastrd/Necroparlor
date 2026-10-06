@@ -424,7 +424,12 @@ def api_set_camera_settings():
     if error:
         return jsonify({"error": error}), 400
     config = state.load_config()
-    config["camera"] = cleaned
+    # Merge rather than replace config["camera"] outright - validate_
+    # camera_settings() only returns device/width/height/streamer_port,
+    # and a bare replace would silently wipe out "crop" (saved
+    # separately via /api/camera-crop below) every time this card is
+    # saved.
+    config["camera"] = {**config.get("camera", {}), **cleaned}
     state.save_config(config)
     state.write_camera_streamer_env(cleaned)
     restarted = _restart_service("camera-streamer.service")
@@ -435,6 +440,27 @@ def api_set_camera_settings():
     response["restart_attempted"] = True
     response["restart_ok"] = restarted
     return jsonify(response)
+
+
+@app.route("/api/camera-crop", methods=["POST"])
+def api_set_camera_crop():
+    """Saves the persistent live-view/timelapse crop (see "crop" in
+    shared_state's "camera" DEFAULT_CONFIG and state.crop_jpeg_bytes()).
+    Deliberately separate from /api/camera-settings above - this is a
+    software-only crop, never sent to camera-streamer itself, so saving
+    it doesn't restart camera-streamer.service or interrupt live view the
+    way an actual device/resolution/port change does."""
+    body = request.get_json(force=True, silent=True) or {}
+    cleaned, error = state.validate_camera_crop(body)
+    if error:
+        return jsonify({"error": error}), 400
+    config = state.load_config()
+    cam = dict(config.get("camera", {}))
+    cam["crop"] = cleaned
+    config["camera"] = cam
+    state.save_config(config)
+    state.log_event("info", "Camera crop updated")
+    return jsonify(config)
 
 
 @app.route("/api/notification-categories")

@@ -531,6 +531,13 @@ def main():
                         state.log_event("info", "camera-streamer reachable again - "
                                                  "timelapse snapshots resuming")
                         streamer_was_reachable = True
+                    # Applies the same persistent crop the live view shows
+                    # (see "crop" in shared_state's "camera" DEFAULT_CONFIG,
+                    # and crop_jpeg_bytes() - a no-op/cheap return if no
+                    # crop is actually set) so timelapse frames match what
+                    # the dashboard's live view has been cropped down to,
+                    # rather than saving the uncropped full frame.
+                    jpeg_bytes = state.crop_jpeg_bytes(jpeg_bytes, cam_cfg.get("crop", {}))
                     _recent_snapshot_sizes.append(len(jpeg_bytes))
                     maybe_prune_for_disk_space()
                     state.save_camera_snapshot(current_mode, jpeg_bytes)
