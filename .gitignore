@@ -18,3 +18,4 @@ __pycache__/
 # Editor/OS cruft
 .DS_Store
 *.swp
+.git_update.lock

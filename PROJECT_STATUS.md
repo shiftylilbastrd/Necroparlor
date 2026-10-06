@@ -2782,3 +2782,43 @@ that aren't obvious from reading the code cold.
   inline `<script>` block extracted from the real rendered HTML passed `node --check`; confirmed via the
   rendered nav markup itself that each page gets the right "active" tab/sub-tab and that Logs no longer
   appears in the sub-nav on any of the grouped pages.
+
+- **[2026-10-06, same day] Fixed: dashboard kept showing "update available" for up to an hour after an
+  update had already applied successfully.** Ryan reported the System page's "Update now" button looked
+  like it wasn't working - "I believe the Pi may be crashing." It wasn't: `systemctl status`/`journalctl`
+  on the real Pi showed a single healthy `dermestid-web.service` process, no restarts, no errors anywhere
+  in the logs, and `git log -1` / `git status` confirmed `main` was already sitting exactly on
+  `origin/main`'s tip. The repo was genuinely caught up; only the dashboard's own displayed status was
+  stale - and the "checked Nm ago" timestamp shown matched almost exactly how long the current web service
+  process had been running, which was the key clue.
+  **Root cause**: a lock race between `auto_update.sh` and `update_checker_loop()`'s "check immediately on
+  startup" behavior (see that loop's own docstring - added specifically so the banner clears promptly
+  after an update, not waits out the old interval). Both share the same `.git_update.lock`, non-blocking on
+  the webapp side. `auto_update.sh` holds that lock for its ENTIRE run, including the
+  `systemctl restart dermestid-web.service` line near the end - which is exactly what spawns the new
+  process whose startup check is supposed to confirm the update landed. That new process's first check
+  fires before the script that restarted it has actually exited and released the lock, so it reliably loses
+  this race, gets silently skipped (`fcntl.flock(..., LOCK_NB)` raises `OSError`, logged at `info` level,
+  easy to miss), and - this was the actual bug - `update_checker_loop()` still recorded it as a completed
+  check (`last_check = time.time()` ran unconditionally). With a 60-minute check interval (what Ryan had
+  configured), that meant the dashboard kept showing whatever status was saved from BEFORE the final update
+  cycle - wrong commit message, "update available" for an update already applied - for up to a full hour
+  afterward, even though the Pi was already caught up the entire time.
+  **Fix**: `_git_check_for_update()` now returns `True`/`False` for whether it actually ran a check vs. was
+  skipped due to the lock (previously a bare `return`/implicit `None` either way - no way for the caller to
+  tell these apart). `update_checker_loop()` only advances `last_check` when it gets `True` back; a skipped
+  check leaves `last_check` untouched, so the loop's existing 30s tick just retries almost immediately
+  instead of waiting out the full configured interval - by then `auto_update.sh` has long since exited and
+  released the lock, so the retry succeeds and the banner clears within seconds of the restart instead of
+  up to an hour later. No change to `auto_update.sh` itself or to the locking strategy - this was purely
+  about the webapp side correctly distinguishing "I checked and we're current" from "I couldn't check."
+  **Verified**: wrote a standalone test that holds the lockfile open (simulating `auto_update.sh` mid-run)
+  and confirmed `_git_check_for_update()` returns `False` while it's held and `True` once released; all 9
+  page routes still render via Flask test client; `webapp.py` still compiles clean.
+  **Separately**: the same bug report also showed a one-off "Could not load history stats" error on the
+  System page. Nothing in the ~3 minutes of `journalctl` output Ryan captured shows a failed or even
+  attempted `/api/history/stats` request, and no exceptions appear anywhere in the service's logs from that
+  window - most likely a transient blip (a dropped request over Tailscale, or a brief SQLite lock during
+  the climate/BLE/camera restart cascade a few update-cycles earlier) rather than a reproducible bug. Not
+  otherwise investigated since it didn't recur and there's no server-side evidence of what happened; worth
+  revisiting if it comes back.

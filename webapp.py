@@ -1158,6 +1158,20 @@ def _git_check_for_update():
     trying to update the same git ref at the same time (a real error -
     "cannot lock ref ... is at X but expected Y" - that happened in
     practice when this background check and a manual run overlapped).
+
+    Returns True if a check actually ran (successfully or not - any
+    exception is caught and logged below), False if it was skipped
+    because the lock couldn't be acquired. update_checker_loop() uses
+    this to decide whether to count this as "checked" - see its own
+    comment for why that distinction matters: without it, the very
+    first startup check after an applied update reliably loses this
+    race (auto_update.sh is STILL holding the lock at that instant - it
+    restarts dermestid-web.service, which is what spawns this process
+    and its startup check, several lines before the script itself
+    actually exits and releases the lock), and the dashboard would then
+    show stale pre-update status for up to a full check interval
+    afterward even though the Pi is already caught up. Confirmed this
+    exact sequence on a real Pi - see PROJECT_STATUS.md.
     """
     lock_path = os.path.join(state.BASE_DIR, ".git_update.lock")
     lock_file = open(lock_path, "w")
@@ -1166,7 +1180,7 @@ def _git_check_for_update():
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             logging.info("Skipping this update check - auto_update.sh appears to be running")
-            return
+            return False
         config = state.load_config()
         target_branch = config.get("update_branch", "main")
         current_branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -1190,6 +1204,7 @@ def _git_check_for_update():
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
         lock_file.close()
+    return True
 
 
 def update_checker_loop():
@@ -1204,6 +1219,24 @@ def update_checker_loop():
     for the full interval at once, so shortening the interval via the
     Config page also takes effect promptly instead of waiting out
     whatever the old, longer interval happened to be.
+
+    [2026-10-06] last_check only advances when _git_check_for_update()
+    says it actually ran (see its own docstring) - NOT every time this
+    loop merely attempts one. The startup check this docstring talks
+    about reliably loses the lock race against auto_update.sh on every
+    applied update (confirmed on a real Pi): that script is still
+    running - mid-"systemctl restart dermestid-web.service", the very
+    line that spawns THIS process - when this loop's first iteration
+    fires, so the lock is still held and the check gets skipped. Before
+    this fix, that skip still counted as "checked," so the dashboard
+    kept showing the stale pre-update status (wrong commit message,
+    "update available" for an update already applied) for up to a full
+    check_interval_minutes afterward - 60 minutes, in the case that
+    surfaced this. Now a skipped check leaves last_check alone, so the
+    next 30s tick just tries again - by then auto_update.sh has long
+    since exited and released the lock, so it succeeds and the banner
+    clears within seconds of the restart instead of up to an hour
+    later.
     """
     last_check = None
     while True:
@@ -1211,8 +1244,8 @@ def update_checker_loop():
             config = state.load_config()
             interval_seconds = config.get("update_check_interval_minutes", 15) * 60
             if last_check is None or time.time() - last_check >= interval_seconds:
-                _git_check_for_update()
-                last_check = time.time()
+                if _git_check_for_update():
+                    last_check = time.time()
         except Exception:
             logging.exception("Unexpected error in update_checker_loop - will retry next tick")
         time.sleep(30)
