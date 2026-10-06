@@ -473,6 +473,8 @@ def api_timelapse_sessions():
         s["last_error"] = _preview_last_error.get(s["mode"])
     return jsonify({"sessions": sessions, "busy": bool(job),
                     "overlay": bool(config.get("timelapse_overlay", True)),
+                    "fps": state.timelapse_fps(),
+                    "fps_bounds": list(state.TIMELAPSE_FPS_BOUNDS),
                     "min_frames": 3})
 
 
@@ -510,14 +512,37 @@ def api_timelapse_preview_file(mode):
 
 @app.route("/api/timelapse/settings", methods=["POST"])
 def api_timelapse_settings():
+    """Saves the Timelapse page's "Progress preview" card settings -
+    overlay and/or fps. Both are optional and independent (the page
+    saves each one on its own onchange, not as a combined form), so
+    only the keys actually present in the body are validated/applied;
+    neither is required just because the other was sent."""
     body = request.get_json(force=True, silent=True) or {}
-    if not isinstance(body.get("overlay"), bool):
+    if "overlay" not in body and "fps" not in body:
+        return jsonify({"error": "nothing to save - provide overlay and/or fps"}), 400
+    if "overlay" in body and not isinstance(body["overlay"], bool):
         return jsonify({"error": "overlay must be true or false"}), 400
+    fps = None
+    if "fps" in body:
+        try:
+            fps = int(body["fps"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "fps must be a whole number"}), 400
+        lo, hi = state.TIMELAPSE_FPS_BOUNDS
+        if not (lo <= fps <= hi):
+            return jsonify({"error": f"fps must be between {lo} and {hi}"}), 400
+
     config = state.load_config()
-    config["timelapse_overlay"] = body["overlay"]
+    if "overlay" in body:
+        config["timelapse_overlay"] = body["overlay"]
+    if fps is not None:
+        config["timelapse_video_fps"] = fps
     state.save_config(config)
-    state.log_event("info", "Timelapse timestamp overlay " + ("enabled" if body["overlay"] else "disabled"))
-    return jsonify({"overlay": body["overlay"]})
+    if "overlay" in body:
+        state.log_event("info", "Timelapse timestamp overlay " + ("enabled" if body["overlay"] else "disabled"))
+    if fps is not None:
+        state.log_event("info", f"Timelapse playback speed set to {fps}fps")
+    return jsonify({"overlay": config.get("timelapse_overlay", True), "fps": state.timelapse_fps()})
 
 
 @app.route("/api/timelapse/pending/purge", methods=["POST"])

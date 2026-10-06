@@ -83,8 +83,8 @@ def _quote(value):
     return "'" + value.replace("'", "'\\''") + "'"
 
 
-def _write_list(path, mode, frames, overlay):
-    duration = 1.0 / state.TIMELAPSE_VIDEO_FPS
+def _write_list(path, mode, frames, overlay, fps):
+    duration = 1.0 / fps
     start_ts = frames[0]["ts"]
     with open(path, "w", encoding="utf-8") as f:
         for frame in frames:
@@ -180,13 +180,24 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
     means no limit. overlay: None = use the config setting.
     If an overlay encode fails for a reason other than a timeout, it's
     retried once without the overlay, so a font/filter problem on the Pi
-    costs the timestamps, never the video."""
+    costs the timestamps, never the video.
+
+    fps is resolved ONCE here (state.timelapse_fps()) and used for every
+    attempt within this single encode call, rather than re-read per
+    attempt - so a settings change that lands mid-encode (overlay retry)
+    can't produce a video with two different frame rates spliced
+    together. The resolved value is also returned in the result dict
+    (result["fps"]) so callers that compute a duration from frame count
+    afterwards (camera_service.py) use the exact rate this encode
+    actually ran at, immune to a config change between the encode
+    finishing and the caller reading it back."""
     if timeout_seconds == "auto":
         timeout_seconds = timeout_for(len(frames))
     if overlay is None:
         overlay = overlay_enabled()
+    fps = state.timelapse_fps()
     if not shutil.which("ffmpeg"):
-        return {"ok": False, "timed_out": False, "elapsed": 0, "overlay": False,
+        return {"ok": False, "timed_out": False, "elapsed": 0, "overlay": False, "fps": fps,
                 "error": "ffmpeg not installed (sudo apt install ffmpeg)"}
 
     present = [f for f in frames
@@ -194,9 +205,9 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
     skipped = len(frames) - len(present)
     if len(present) < 2:
         return {"ok": False, "timed_out": False, "elapsed": 0, "overlay": False, "skipped": skipped,
-                "frames_encoded": 0, "error": f"only {len(present)} of {len(frames)} frame files exist"}
+                "frames_encoded": 0, "fps": fps, "error": f"only {len(present)} of {len(frames)} frame files exist"}
     frames = present
-    expected_seconds = len(frames) / state.TIMELAPSE_VIDEO_FPS
+    expected_seconds = len(frames) / fps
 
     list_dir = os.path.dirname(video_path)
     os.makedirs(list_dir, exist_ok=True)
@@ -205,17 +216,17 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
     result = None
     for use_overlay in attempts:
         list_path = os.path.join(list_dir, f".list_{mode}_{os.getpid()}_{int(time.time() * 1000)}.txt")
-        _write_list(list_path, mode, frames, use_overlay)
+        _write_list(list_path, mode, frames, use_overlay, fps)
         cmd = ["nice", "-n", "19", "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                "-f", "concat", "-safe", "0", "-i", list_path]
         if use_overlay:
             cmd += ["-vf", _drawtext_filter()]
         # -r is an OUTPUT constant frame rate - deliberately NOT combined
         # with -vsync/-fps_mode vfr, which newer ffmpeg rejects as
-        # contradictory with an explicit -r. TIMELAPSE_VIDEO_FPS is the
-        # real playback-speed knob.
+        # contradictory with an explicit -r. fps (resolved above from
+        # state.timelapse_fps()) is the real playback-speed knob.
         cmd += ["-c:v", "libx264", "-preset", X264_PRESET, "-pix_fmt", "yuv420p",
-                "-r", str(state.TIMELAPSE_VIDEO_FPS),
+                "-r", str(fps),
                 # moov atom up front so the dashboard can start playing a
                 # big video before the whole file has downloaded
                 "-movflags", "+faststart"]
@@ -235,13 +246,13 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
         if ok:
             # Allow two frames of slack for ffmpeg's CFR rounding.
             actual = _probe_duration(video_path)
-            if actual is not None and actual < expected_seconds - 2.0 / state.TIMELAPSE_VIDEO_FPS:
+            if actual is not None and actual < expected_seconds - 2.0 / fps:
                 ok = False
-                got = int(round(actual * state.TIMELAPSE_VIDEO_FPS))
+                got = int(round(actual * fps))
                 error = (f"video came out truncated ({got} of {len(frames)} frames) - a frame file "
                          "went missing during the encode")
         result = {"ok": ok, "timed_out": timed_out, "overlay": use_overlay and ok, "error": error,
-                  "skipped": skipped, "frames_encoded": len(frames) if ok else 0}
+                  "skipped": skipped, "frames_encoded": len(frames) if ok else 0, "fps": fps}
         if not ok and os.path.exists(video_path):
             # A killed or failed ffmpeg leaves a truncated, unplayable file.
             os.remove(video_path)

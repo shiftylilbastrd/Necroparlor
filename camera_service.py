@@ -145,11 +145,12 @@ _disk_forecast_warned = False
 # invariant (see shared_state.py). No data is lost either way.
 MINIMUM_FRAMES_FOR_VIDEO = 3
 
-# Playback speed (fps) of a compiled session video - moved to
-# shared_state.py (state.TIMELAPSE_VIDEO_FPS) so webapp.py's
-# /api/timelapse/pending can estimate a pending session's video length
-# using this exact same number instead of a second, driftable copy of
-# it. Edit it there if you want a different pace.
+# Playback speed (fps) of a compiled session video - lives in
+# shared_state.py (state.timelapse_fps()) so webapp.py's /api/timelapse/
+# pending can estimate a pending session's video length using this same
+# number instead of a second, driftable copy of it. [2026-10-06] Now a
+# Timelapse-page setting rather than a fixed constant - see
+# shared_state.py's TIMELAPSE_VIDEO_FPS/timelapse_fps() comments.
 
 # Timeout budget, x264 preset and the ffmpeg command itself now live in
 # timelapse_encode.py, shared with the Timelapse page's preview builds so
@@ -315,7 +316,10 @@ def _compile_locked(mode, start_ts, end_ts, frames, timeout_seconds, show_progre
         # the video and their dangling rows cleaned up with the rest below.
         state.log_event("warning", f"Timelapse: {result['skipped']} {mode} frame(s) had no image file "
                                     "and were left out of the video", category="camera_issue")
-    duration_seconds = result["frames_encoded"] / state.TIMELAPSE_VIDEO_FPS
+    # result["fps"] (not state.timelapse_fps() again) - the exact rate
+    # this particular encode actually ran at, immune to a fps setting
+    # change landing in the gap between the encode finishing and here.
+    duration_seconds = result["frames_encoded"] / result["fps"]
     file_size_bytes = os.path.getsize(video_path)
     state.save_timelapse_video(mode, start_ts, end_ts, result["frames_encoded"], video_filename,
                                 poster_filename, duration_seconds, file_size_bytes)

@@ -113,6 +113,12 @@
     Burn date/time and elapsed time into new videos and previews
     <span class="save-msg" id="overlayMsg" style="margin:0;"></span>
   </label>
+  <div class="overlay-toggle">
+    <label for="fpsSelect" style="margin:0;">Playback speed</label>
+    <select id="fpsSelect" onchange="saveFps()"></select>
+    <span>- applies to new compiles and previews (rebuild a preview above to see the new pace)</span>
+    <span class="save-msg" id="fpsMsg" style="margin:0;"></span>
+  </div>
 </div>
 
 
@@ -369,6 +375,7 @@ async function refreshSessions() {
       : '<div class="stat-sub">No pending frames right now - nothing to preview.</div>';
     if (!overlayToggleLoaded) {
       document.getElementById('overlayToggle').checked = data.overlay;
+      populateFpsSelect(data.fps, data.fps_bounds);
       overlayToggleLoaded = true;
     }
   } catch (e) { /* try again next tick */ }
@@ -399,6 +406,37 @@ async function saveOverlay() {
   msg.textContent = res.ok ? 'Saved' : 'Save failed';
   msg.className = 'save-msg ' + (res.ok ? 'ok' : 'err');
   setTimeout(() => { msg.textContent = ''; }, 2000);
+}
+
+// A curated list of common speeds, but the server's actual saved value
+// (data.fps) is always included even if it's an unusual number someone
+// set directly in config.json or a previous session - never silently
+// swap the select to the nearest curated option on load.
+const FPS_PRESETS = [6, 12, 24, 30, 48, 60];
+
+function populateFpsSelect(current, bounds) {
+  const [lo, hi] = bounds || [1, 60];
+  const options = new Set(FPS_PRESETS.filter(f => f >= lo && f <= hi));
+  options.add(current);
+  const select = document.getElementById('fpsSelect');
+  select.innerHTML = [...options].sort((a, b) => a - b)
+    .map(f => `<option value="${f}">${f} fps</option>`).join('');
+  select.value = current;
+}
+
+async function saveFps() {
+  const fps = parseInt(document.getElementById('fpsSelect').value, 10);
+  const msg = document.getElementById('fpsMsg');
+  const res = await fetch('/api/timelapse/settings', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({fps})
+  });
+  msg.textContent = res.ok ? 'Saved' : 'Save failed';
+  msg.className = 'save-msg ' + (res.ok ? 'ok' : 'err');
+  setTimeout(() => { msg.textContent = ''; }, 2000);
+  // "Est. video length" above is computed from this exact setting - keep
+  // it in sync with what was just saved instead of waiting up to 15s for
+  // the next poll tick.
+  refreshPendingStats();
 }
 
 function openLightbox(id) {

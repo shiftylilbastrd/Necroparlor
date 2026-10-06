@@ -53,19 +53,49 @@ CAMERA_TIMELAPSE_DIR = os.path.join(CAMERA_DIR, "timelapse")
 CAMERA_TIMELAPSE_VIDEOS_DIR = os.path.join(CAMERA_DIR, "timelapse_videos")
 CAMERA_TIMELAPSE_PREVIEWS_DIR = os.path.join(CAMERA_DIR, "timelapse_previews")
 
-# Playback speed of a compiled session video, in frames per second of
-# OUTPUT video - unrelated to the capture cadence (snapshot_interval_
-# minutes), which is minutes between frames, not fps. Lives here
-# (rather than only in camera_service.py, which does the actual
-# compiling) so webapp.py's /api/timelapse/pending can estimate a
-# pending session's video length using the exact same number compiling
-# will actually use, instead of a second, driftable copy of the
-# constant. 12fps keeps even a several-day session down to a short,
-# actually-watchable clip (e.g. a 3-day Cleaning session on a 5-minute
-# interval is ~864 frames -> 72s of video) without needing to be a
-# dashboard setting; edit this constant directly if you want a
-# different pace.
+# Default playback speed of a compiled session video, in frames per
+# second of OUTPUT video - unrelated to the capture cadence (snapshot_
+# interval_minutes), which is minutes between frames, not fps. This is
+# only the FALLBACK now - [2026-10-06] fps became a Timelapse-page
+# setting (the "Progress preview" card, next to the overlay toggle),
+# saved as config.json's timelapse_video_fps. Use timelapse_fps() below
+# to get the effective value (saved override, or this default); nothing
+# should read this constant directly anymore except timelapse_fps()
+# itself. Still 12 by default: fine for a short session on a sparse
+# interval (e.g. a 3-day Cleaning session on a 5-minute interval is
+# ~864 frames -> 72s of video), but a dense interval over a long session
+# (e.g. one frame/minute over two weeks = 20,160 frames -> 28 minutes at
+# 12fps) needs a much higher fps to stay a quick clip - exactly why this
+# is a setting now instead of a fixed constant.
 TIMELAPSE_VIDEO_FPS = 12
+
+# Sane bounds for the timelapse_video_fps override - below 1fps isn't a
+# video anymore (ffmpeg's -r also just rejects 0), and above 60fps buys
+# nothing: these are time-lapse stills being played back fast, not real
+# motion footage, so there's no benefit to going past typical display
+# refresh rates, and it just makes for an oddly large -r on a static-
+# camera encode.
+TIMELAPSE_FPS_BOUNDS = (1, 60)
+
+
+def timelapse_fps():
+    """The fps a timelapse compile/preview should actually run at right
+    now: config.json's timelapse_video_fps if the user has saved one
+    from the Timelapse page, else TIMELAPSE_VIDEO_FPS above. Centralized
+    here (same idea as timelapse_encode.overlay_enabled()) so every
+    caller - the real compile, the on-demand preview, the pending-stats
+    estimate, and compile_timelapse.py's manual-recovery listing - always
+    agrees on the same number. Out-of-bounds or unparseable config values
+    fall back to the default rather than erroring, since this is read on
+    every page load/compile, not just right after a save (the /api/
+    timelapse/settings route is what actually rejects a bad value at
+    save time - see webapp.py)."""
+    try:
+        fps = int(load_config().get("timelapse_video_fps", TIMELAPSE_VIDEO_FPS))
+    except (TypeError, ValueError):
+        return TIMELAPSE_VIDEO_FPS
+    lo, hi = TIMELAPSE_FPS_BOUNDS
+    return fps if lo <= fps <= hi else TIMELAPSE_VIDEO_FPS
 
 # Where camera_service.py writes the small env file that
 # systemd/camera-streamer.service's EnvironmentFile= reads its
@@ -2206,10 +2236,10 @@ def get_pending_timelapse_stats():
     collection's true on-disk size, with no separate size column to
     keep in sync or risk drifting from reality.
 
-    estimated_video_seconds reuses TIMELAPSE_VIDEO_FPS - the exact
-    constant compile_session_video() will actually divide by - so this
-    estimate matches what compiling right now would really produce,
-    not an approximation of it."""
+    estimated_video_seconds reuses timelapse_fps() - the exact value
+    compile_session_video() will actually divide by - so this estimate
+    matches what compiling right now would really produce, not an
+    approximation of it."""
     count = get_camera_snapshot_count()
     disk_bytes = 0
     try:
@@ -2225,7 +2255,7 @@ def get_pending_timelapse_stats():
     return {
         "count": count,
         "disk_bytes": disk_bytes,
-        "estimated_video_seconds": (count / TIMELAPSE_VIDEO_FPS) if count else 0,
+        "estimated_video_seconds": (count / timelapse_fps()) if count else 0,
     }
 
 

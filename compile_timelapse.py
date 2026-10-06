@@ -69,7 +69,7 @@ def main():
             return 0
         print(f"Kept (uncompiled) timelapse frames - current mode is '{current_mode}':")
         for mode, count, first, last in rows:
-            est = count / state.TIMELAPSE_VIDEO_FPS
+            est = count / state.timelapse_fps()
             active = "  (ACTIVE - still recording)" if mode == current_mode else ""
             print(f"  {mode:<12} {count:>6} frames  {fmt_ts(first)} -> {fmt_ts(last)}  "
                   f"~{est:.0f}s of video{active}")

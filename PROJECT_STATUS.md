@@ -3059,3 +3059,50 @@ that aren't obvious from reading the code cold.
   blocks pass `node --check`; rendered both `/data` and `/logs` in headless Chromium and measured all four
   buttons' bounding boxes - Download and Clear now share the exact same `y` (and `x`, `width`, `height`) on
   both pages: no gap, fully lined up.
+
+- **[2026-10-06, same day] Made timelapse playback fps a dashboard setting instead of a fixed constant.**
+  Ryan pointed out that a 1-minute capture interval over a 2-week session is 20,160 frames, which at the
+  old hardcoded 12fps compiles to 28 minutes of video - nowhere near the "short, watchable clip" the
+  constant's own comment promised (that example assumed a 5-minute interval over 3 days, ~864 frames). Added
+  a playback-speed control to the Timelapse page's "Progress preview" card, right next to the existing
+  "Burn date/time" overlay toggle - same reasoning as that toggle: fps is used identically by the real
+  compile and the on-demand preview (the whole point of `timelapse_encode.py` existing is "a preview is
+  always encoded exactly like the final video"), and the "Est. video length" stat tile sits right above
+  both of them, so changing fps there gives immediate, correct feedback before even building a preview.
+  - `shared_state.py`: `TIMELAPSE_VIDEO_FPS` (still 12) is now only the *default* - added
+    `TIMELAPSE_FPS_BOUNDS = (1, 60)` and a new `timelapse_fps()` function that returns config.json's
+    `timelapse_video_fps` if saved, else the default, with out-of-bounds/unparseable values falling back
+    to the default rather than erroring (the `/api/timelapse/settings` route is what actually rejects a
+    bad value at save time). `get_pending_timelapse_stats()`'s `estimated_video_seconds` now calls
+    `timelapse_fps()` instead of reading the old constant directly.
+  - `timelapse_encode.py`: `encode()` now resolves fps ONCE per call (`state.timelapse_fps()`) and threads
+    it through `_write_list()`, the `-r` flag, and the truncation-detection math, instead of re-reading the
+    constant at each use site - this matters because `encode()` can retry once (the overlay-failure retry),
+    and resolving once means a settings change landing mid-encode can't produce a video with two different
+    frame rates spliced together. The resolved fps is also returned in the result dict (`result["fps"]`).
+  - `camera_service.py`: `compile_session_video()`'s `duration_seconds` now reads `result["fps"]` (the
+    exact rate that specific encode actually used) instead of re-reading the live setting - immune to a
+    fps change landing in the gap between the encode finishing and this line running.
+  - `compile_timelapse.py` (manual-recovery CLI): its per-mode video-length estimate now calls
+    `state.timelapse_fps()` instead of the old constant too.
+  - `webapp.py`: `/api/timelapse/settings` (POST) now accepts `overlay` and/or `fps` independently - either,
+    both, or (rejected) neither; `fps` is validated as a whole number within `TIMELAPSE_FPS_BOUNDS` before
+    saving as `config["timelapse_video_fps"]`. `/api/timelapse/sessions` (GET) now also returns `fps` and
+    `fps_bounds` so the page can populate/select the control on load.
+  - `templates/timelapse.html`: a second row under the overlay toggle, same `.overlay-toggle` styling - a
+    `<select id="fpsSelect">` populated from a curated preset list (6/12/24/30/48/60fps) PLUS whatever
+    value is actually saved (even an unusual one set by hand in `config.json` previously), so the select
+    never silently jumps to the nearest preset on load. Saving calls the same `/api/timelapse/settings`
+    endpoint and then `refreshPendingStats()` immediately, so "Est. video length" updates without waiting
+    for its normal 15s poll.
+  **Verified**: Jinja2 parsed all 10 templates; `webapp.py`/`shared_state.py`/`timelapse_encode.py`/
+  `camera_service.py`/`compile_timelapse.py` all compile; Flask test-client hit every route (200 on all),
+  `<script>` blocks pass `node --check`; exercised `/api/timelapse/settings` directly - default fps is 12,
+  saving `fps: 30` persists and is reflected back by `/api/timelapse/sessions`, fps 0/61/"abc" are all
+  rejected with 400, an overlay-only save leaves a previously-saved fps untouched, and an empty body is
+  rejected; confirmed `/api/timelapse/pending`'s `estimated_video_seconds` recalculates against the saved
+  fps (2 pending frames at 30fps -> 0.0667s, matching `2/30` exactly); ran a REAL ffmpeg encode via
+  `timelapse_encode.encode()` against 10 synthetic JPEG frames with `fps` saved as 24, and verified with
+  `ffprobe` that the actual output file's frame rate is `24/1` - not just that the code path didn't error;
+  rendered `/timelapse` in headless Chromium and confirmed `#fpsSelect` shows the saved value (30) correctly
+  pre-selected among its options on page load.
