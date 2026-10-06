@@ -2534,3 +2534,78 @@ that aren't obvious from reading the code cold.
   Ryan's report (no banner, blank tile) matching the known WebKit MJPEG limitation exactly, plus the Jinja/JS/
   Flask smoke tests below - but the actual 3-second-timeout fallback trigger and the resulting polled-snapshot
   view haven't been confirmed live against Ryan's iPhone yet.
+
+- **[2026-10-05] Added a middle tier to the fallback above: camera-streamer's adaptive `/video` endpoint
+  (HLS/MP4) via a real `<video>` tag**, requested by Ryan as a smoother alternative to the snapshot-polling
+  fallback's ~1-2fps. camera-streamer's own docs describe `/video` as serving either an HLS playlist or an
+  MP4, chosen server-side by request/browser - and Safari (iOS included) plays HLS natively through a plain
+  `<video src="...m3u8">`, no JS library needed, which is exactly the gap the snapshot-poll fallback existed
+  to paper over. The fallback chain in `templates/home.html` is now three tiers, each only tried once the one
+  before it is confirmed (not assumed) not to work: `stream` (MJPEG `<img>`, fast path, confirmed on desktop/
+  Android) → `video` (HLS/MP4 `<video>`, new) → `snapshot-poll` (confirmed-everywhere fallback of last
+  resort). `tryVideoFallback()` points a new `#homeLiveVideo` element (added alongside `#homeLiveFrame`,
+  `muted autoplay playsinline` - that combination is what iOS actually allows to autoplay without a tap, and
+  `playsinline` keeps it in the dashboard tile instead of taking over the screen) at `video_url` (new field on
+  `/api/camera/status`, same `http://<host>:<port>/video` pattern as `stream_url`/`snapshot_url`), then
+  watches for a real `loadeddata` event or a 4-second timeout with `readyState < 2` before giving up and
+  calling `startSnapshotPolling()`. `applyLiveCrop()`/`updateZoomTransform()` now apply to both
+  `.home-live-frame` elements (there are only ever two) instead of just the `<img>`, so the crop+zoom feature
+  above works identically regardless of which tier a given device lands on; `clampPan()`/`getActiveLiveEl()`
+  resolve to whichever element is actually visible. `webapp.py`'s `/api/camera/status` route builds and
+  returns `video_url` unconditionally (no extra reachability request, unlike `/snapshot`'s `available` check)
+  - deliberately left for the client-side `<video>` events to decide, since whether this actually works
+  depends on something NOT yet confirmed on this Pi (see below).
+
+  **The real unresolved question, flagged rather than guessed at**: whether camera-streamer is even producing
+  H264 output at all on this hardware. Its docs (fetched this session) describe `--camera-video.height` and
+  `--camera-video.options=bitrate=...` as existing tuning flags for the H264/`/video` path, but don't say
+  outright whether H264 encoding needs to be explicitly turned on or happens automatically whenever
+  camera-streamer runs (plausible either way - the project's own `camera-streamer` build already links
+  `libavformat`/`libavutil`/`libavcodec`, which is exactly the kind of dependency this would need, and the
+  Pi 4 8GB this project is now running on (see the 2026-09-13 migration entry) has a hardware H264 encoder via
+  V4L2 M2M). This is exactly why the fallback is built to verify for real (the `loadeddata`/timeout check)
+  rather than just assuming `/video` works once the URL exists - if H264 isn't actually being produced, the
+  `<video>` element's own `error` event or the 4-second `readyState` timeout should catch it and drop straight
+  through to `snapshot-poll`, same as before this change existed.
+  **Not yet verified against real hardware**: Jinja2 parse, `node --check`, and a Flask test-client smoke
+  test (confirmed `video_url` now comes back from `/api/camera/status`) all pass, but nothing here has
+  actually been tried against a running camera-streamer instance - not whether `/video` returns anything at
+  all, not which of HLS/MP4 it picks for Safari, not whether the 4-second timeout is generous enough for a
+  real HLS startup over Wi-Fi. Next real step: once the Pi's `camera-streamer` is confirmed running, open
+  `http://<pi-ip>:<streamer_port>/video` directly in Safari on Ryan's iPhone to see what it actually does
+  before trusting this end-to-end.
+
+- **[2026-10-06] Found and fixed the real cause of `/video` not working**, following directly from the
+  "unresolved question" flagged above - Ryan opened `/video` directly in Safari on his iPhone (per that
+  entry's own suggested next step) and got a real, diagnosable result: a video player with controls loaded,
+  but it froze on the first frame (`/stream` and `/snapshot` both still working fine on the same Pi, isolating
+  this to the H264/`/video` path specifically, not the service itself). `camera-streamer --help | grep -i -E
+  "h264|video"` on the real Pi showed the answer: `--camera-video.disabled` defaults to **enabled** (0 = not
+  disabled, so the previous entry's "maybe it needs an explicit flag to turn on" guess was half right, half
+  wrong) - what was actually missing is real H264 encoder tuning. `camera-streamer --help` prints its own
+  reference invocation with a full block of `--camera-video.options=...` flags (bitrate, bitrate mode,
+  keyframe interval via `repeat_sequence_header`/`h264_i_frame_period`, profile/level, QP range) that this
+  project's `systemd/camera-streamer.service` and `docs/camera-streamer-setup.md`'s standalone test command
+  never included - camera-streamer was running the H264 encoder on whatever internal default those options
+  fall back to without them, which produced exactly one valid frame and then stalled. Added the exact flag
+  block from `--help`'s own example (not guessed) to both `camera-streamer.service`'s `ExecStart=` and the
+  standalone test command in the setup doc:
+  ```
+  --camera-video.disabled=0
+  --camera-video.options=video_bitrate_mode=0
+  --camera-video.options=video_bitrate=2000000
+  --camera-video.options=repeat_sequence_header=5000000
+  --camera-video.options=h264_i_frame_period=30
+  --camera-video.options=h264_level=4
+  --camera-video.options=h264_profile=high
+  --camera-video.options=h264_minimum_qp_value=16
+  --camera-video.options=h264_maximum_qp_value=32
+  --camera-video.height=0
+  ```
+  **Not yet confirmed fixed**: this needs `git pull` + `sudo cp systemd/camera-streamer.service
+  /etc/systemd/system/` + `sudo systemctl daemon-reload && sudo systemctl restart camera-streamer.service` on
+  the real Pi, then re-opening `/video` in Safari to see whether it actually plays smoothly now rather than
+  just not-freezing. If this still doesn't produce a playable stream, the next thing to check is whether
+  `camera-streamer`'s build actually has V4L2 M2M (Pi hardware H264 encoder) support compiled in at all -
+  `--camera-video.disabled=0` being the default suggests it should, but that's inferred from `--help` text,
+  not confirmed against this build's actual behavior yet.

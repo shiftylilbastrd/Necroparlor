@@ -85,7 +85,17 @@ working on 2026-09-17:
 ```bash
 camera-streamer --camera-path=/dev/video0 --camera-type=v4l2 \
     --camera-format=MJPEG --camera-width=1280 --camera-height=720 \
-    --http-listen=0.0.0.0 --http-port=8090
+    --http-listen=0.0.0.0 --http-port=8090 \
+    --camera-video.disabled=0 \
+    --camera-video.options=video_bitrate_mode=0 \
+    --camera-video.options=video_bitrate=2000000 \
+    --camera-video.options=repeat_sequence_header=5000000 \
+    --camera-video.options=h264_i_frame_period=30 \
+    --camera-video.options=h264_level=4 \
+    --camera-video.options=h264_profile=high \
+    --camera-video.options=h264_minimum_qp_value=16 \
+    --camera-video.options=h264_maximum_qp_value=32 \
+    --camera-video.height=0
 ```
 
 (swap in whichever `/dev/videoN` `discover_camera.py` - or the Config
@@ -99,6 +109,18 @@ device on the same LAN:
 - `http://<pi-ip>:8090/snapshot` - should return a single JPEG.
   **Confirmed 2026-09-17**: real requests logged and handled correctly
   in camera-streamer's own console output.
+- `http://<pi-ip>:8090/video` - the adaptive HLS/MP4 endpoint (what
+  `templates/home.html` falls back to on iOS Safari, which can't show
+  `/stream` directly - see `PROJECT_STATUS.md`'s 2026-10-05/06
+  entries). **[2026-10-06] Without the `--camera-video.*` flags above,
+  this loaded a video player but froze on the first frame** - confirmed
+  on real hardware. Those flags are camera-streamer's own documented
+  example invocation (from `camera-streamer --help`), not guessed -
+  video was never actually *disabled* (that defaults to off), its H264
+  encoder just needed real bitrate/keyframe-interval/profile settings
+  instead of whatever internal default it falls back to without them.
+  Confirm `/video` actually plays smoothly (not just loads) before
+  trusting this is fully fixed.
 
 Ctrl-C it once confirmed working, before moving on to step 4.
 

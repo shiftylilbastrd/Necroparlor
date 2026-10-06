@@ -286,6 +286,22 @@ def api_camera_status():
     reach the dashboard is also how it can reach camera-streamer
     directly. This is what templates/home.html points its live-view
     <img> at.
+
+    [2026-10-05] Also returns video_url, pointed at camera-streamer's
+    adaptive /video endpoint (serves HLS or MP4 depending on the
+    requesting browser - camera-streamer picks which one server-side,
+    not something this route needs to decide). This exists specifically
+    for templates/home.html's fallback chain on browsers that can't
+    render the MJPEG /stream in an <img> (iOS Safari, confirmed - see
+    PROJECT_STATUS.md's 2026-10-05 entries): a real <video> tag playing
+    HLS is the smoother fix for that case, one step up from the
+    repeated-/snapshot-polling fallback. Deliberately NOT given its own
+    reachability check the way /snapshot gets for `available` above -
+    unlike /snapshot, /video's actual behavior (whether camera-streamer
+    is even producing H264 output at all on this Pi) hasn't been
+    confirmed against real hardware yet, so the client-side <video>
+    element's own loadeddata/error events are what actually decide
+    whether this URL works, not a check here.
     """
     config = state.load_config()
     cam_cfg = config.get("camera", {})
@@ -293,6 +309,7 @@ def api_camera_status():
     host = request.host.split(":")[0]
     snapshot_url = f"http://{host}:{port}/snapshot"
     stream_url = f"http://{host}:{port}/stream"
+    video_url = f"http://{host}:{port}/video"
 
     available = False
     try:
@@ -307,6 +324,7 @@ def api_camera_status():
         "available": available,
         "stream_url": stream_url,
         "snapshot_url": snapshot_url,
+        "video_url": video_url,
         "camera": cam_cfg,
         "current_mode": config.get("current_mode"),
         "snapshot_interval_minutes": config.get("modes", {}).get(config.get("current_mode"), {}).get("snapshot_interval_minutes", 0),

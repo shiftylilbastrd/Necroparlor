@@ -205,6 +205,18 @@
          old Flask-relayed MJPEG. -->
     <img class="home-live-frame" id="homeLiveFrame" alt="Live camera view"
          onerror="setTimeout(reconnectHomeStream, 2000)">
+    <!-- [2026-10-05] Fallback for browsers that can't render the MJPEG
+         /stream above in an <img> (iOS Safari - see checkStreamSupport()
+         below). Points at camera-streamer's adaptive /video endpoint,
+         which serves HLS or MP4 depending on the browser - Safari plays
+         HLS natively via a plain <video src>, no JS library needed.
+         Hidden unless liveViewMode is 'video' (see setLiveViewMode()).
+         muted+autoplay+playsinline is the combination iOS actually
+         allows to autoplay without a tap, and playsinline stops it from
+         taking over the whole screen natively instead of staying in
+         this tile. -->
+    <video class="home-live-frame" id="homeLiveVideo" muted autoplay playsinline
+           style="display:none;" onerror="setTimeout(reconnectHomeVideo, 2000)"></video>
     <button class="fullscreen-btn" id="fullscreenBtn" onclick="toggleFullscreen()"
             title="Fullscreen">⛶</button>
     <button class="light-toggle-btn" id="lightToggleBtn" onclick="toggleLight()"
@@ -512,6 +524,7 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
 // is the main way that happens).
 let lastStreamUrl = null;
 let lastSnapshotUrl = null;
+let lastVideoUrl = null;
 
 // [2026-10-05] Not every browser can actually display an MJPEG
 // multipart/x-mixed-replace stream in an <img> - iOS Safari is the known
@@ -522,20 +535,48 @@ let lastSnapshotUrl = null;
 // gives no error event to catch it by - the <img> just silently never
 // decodes a first frame. Rather than assume which browser/version is
 // affected by name (fragile, and wrong the moment it's fixed upstream),
-// checkStreamSupport() checks what ACTUALLY happened a few seconds after
-// pointing the <img> at the stream: did it ever get a real decoded
-// frame (naturalWidth > 0)? If not, falls back to startSnapshotPolling(),
-// which just repeatedly reloads a single JPEG from camera-streamer's
-// /snapshot endpoint instead (confirmed working everywhere, including
-// this - lower frame rate, but it actually shows up).
-let liveViewMode = 'stream';  // 'stream' (native MJPEG <img>) or 'snapshot-poll' (fallback)
+// each fallback step below checks what ACTUALLY happened a few seconds
+// after trying it, the same "measure, don't assume" approach as
+// clampPan() below. Three tiers, each only tried once the one before it
+// is confirmed not to work:
+//   1. 'stream'        - the MJPEG <img>, as fast/simple as it gets.
+//      Confirmed working on desktop/Android.
+//   2. 'video'          - camera-streamer's adaptive /video endpoint
+//      (HLS or MP4, camera-streamer picks server-side) played through
+//      a real <video> tag - smoother than polling, and Safari (iOS
+//      included) plays HLS natively. NOT yet confirmed against real
+//      hardware - depends on camera-streamer actually producing H264
+//      output, which hasn't been checked on this Pi (see
+//      PROJECT_STATUS.md's 2026-10-05 /video entry) - that's exactly
+//      why this is checked for real instead of assumed.
+//   3. 'snapshot-poll' - repeatedly reloading a single JPEG from
+//      camera-streamer's /snapshot endpoint. Confirmed working
+//      everywhere since 2026-09-17 - the guaranteed-to-display
+//      fallback of last resort if even /video doesn't pan out.
+let liveViewMode = 'stream';
 let streamSupportChecked = false;
+let videoSupportChecked = false;
 let snapshotPollTimer = null;
 const SNAPSHOT_POLL_MS = 600;
+const VIDEO_READY_TIMEOUT_MS = 4000;
+
+function setLiveViewMode(mode) {
+  liveViewMode = mode;
+  document.getElementById('homeLiveFrame').style.display = (mode === 'video') ? 'none' : 'block';
+  document.getElementById('homeLiveVideo').style.display = (mode === 'video') ? 'block' : 'none';
+}
 
 function reconnectHomeStream() {
   if (liveViewMode === 'stream' && lastStreamUrl) {
     document.getElementById('homeLiveFrame').src = lastStreamUrl + '?t=' + Date.now();
+  }
+}
+
+function reconnectHomeVideo() {
+  if (liveViewMode === 'video' && lastVideoUrl) {
+    const video = document.getElementById('homeLiveVideo');
+    video.src = lastVideoUrl + '?t=' + Date.now();
+    video.play().catch(() => {});
   }
 }
 
@@ -545,13 +586,45 @@ function checkStreamSupport() {
   setTimeout(() => {
     const img = document.getElementById('homeLiveFrame');
     if (liveViewMode === 'stream' && img.naturalWidth === 0) {
-      startSnapshotPolling();
+      tryVideoFallback();
     }
   }, 3000);
 }
 
+function tryVideoFallback() {
+  if (videoSupportChecked) return;
+  videoSupportChecked = true;
+  if (!lastVideoUrl) {
+    startSnapshotPolling();
+    return;
+  }
+  setLiveViewMode('video');
+  const video = document.getElementById('homeLiveVideo');
+  video.src = lastVideoUrl;
+  video.play().catch(() => {});  // autoplay can reject without a user gesture on some browsers; muted+playsinline is what iOS actually requires to allow it, this is just a safety net
+  let settled = false;
+  const onReady = () => {
+    if (settled) return;
+    settled = true;
+    video.removeEventListener('loadeddata', onReady);
+  };
+  video.addEventListener('loadeddata', onReady);
+  video.addEventListener('error', () => {
+    if (settled || liveViewMode !== 'video') return;
+    settled = true;
+    startSnapshotPolling();
+  });
+  setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    if (liveViewMode === 'video' && video.readyState < 2) {
+      startSnapshotPolling();
+    }
+  }, VIDEO_READY_TIMEOUT_MS);
+}
+
 function startSnapshotPolling() {
-  liveViewMode = 'snapshot-poll';
+  setLiveViewMode('snapshot-poll');
   if (snapshotPollTimer) return;
   const img = document.getElementById('homeLiveFrame');
   const poll = () => {
@@ -635,8 +708,14 @@ document.addEventListener('webkitfullscreenchange', () => {
 // Persistent crop + interactive zoom/pan for the live view (see "crop" in
 // shared_state's "camera" DEFAULT_CONFIG, validate_camera_crop(), and the
 // Settings page's crop editor - this applies the same saved rectangle to
-// the dashboard's live <img>, then layers pinch/scroll-zoom + drag-pan on
-// top of it).
+// the dashboard's live view, then layers pinch/scroll-zoom + drag-pan on
+// top of it). There are now two possible elements showing the feed (the
+// MJPEG/snapshot <img> and the HLS/MP4 <video> fallback - see
+// setLiveViewMode() below), so crop/zoom styles are applied to BOTH
+// `.home-live-frame` elements every time rather than just whichever one
+// happens to be visible right now - cheap (there are only ever two), and
+// means switching modes never leaves the newly-visible element with a
+// stale crop/zoom from before it was shown.
 let camCropState = { left: 0, top: 0, width: 1, height: 1 };
 let lastCropSignature = null;
 const ZOOM_MIN = 1;
@@ -645,12 +724,17 @@ let zoomScale = 1;
 let panX = 0;
 let panY = 0;
 
-// Sizes/positions the <img> so only the saved crop rectangle shows
-// through the wrap's overflow:hidden box, by scaling the whole native
-// image up until the crop rectangle exactly fills the box, then shifting
-// it so the crop's top-left corner lands on the box's own origin. The
-// wrap's aspect-ratio is set to match the crop rectangle's native pixel
-// dimensions so the enlarged image is never stretched/distorted.
+function getActiveLiveEl() {
+  return document.getElementById(liveViewMode === 'video' ? 'homeLiveVideo' : 'homeLiveFrame');
+}
+
+// Sizes/positions the live element(s) so only the saved crop rectangle
+// shows through the wrap's overflow:hidden box, by scaling the whole
+// native frame up until the crop rectangle exactly fills the box, then
+// shifting it so the crop's top-left corner lands on the box's own
+// origin. The wrap's aspect-ratio is set to match the crop rectangle's
+// native pixel dimensions so the enlarged frame is never stretched/
+// distorted.
 function applyLiveCrop(camCfg) {
   const crop = (camCfg && camCfg.crop) || { left: 0, top: 0, width: 1, height: 1 };
   camCropState = crop;
@@ -659,17 +743,18 @@ function applyLiveCrop(camCfg) {
   const cropW = Math.max(1, crop.width * nativeW);
   const cropH = Math.max(1, crop.height * nativeH);
   document.querySelector('.live-frame-wrap').style.aspectRatio = `${cropW} / ${cropH}`;
-  const img = document.getElementById('homeLiveFrame');
-  img.style.width = (100 / crop.width) + '%';
-  img.style.height = (100 / crop.height) + '%';
-  img.style.left = (-100 * crop.left / crop.width) + '%';
-  img.style.top = (-100 * crop.top / crop.height) + '%';
+  document.querySelectorAll('.home-live-frame').forEach((el) => {
+    el.style.width = (100 / crop.width) + '%';
+    el.style.height = (100 / crop.height) + '%';
+    el.style.left = (-100 * crop.left / crop.width) + '%';
+    el.style.top = (-100 * crop.top / crop.height) + '%';
+  });
   resetZoom();
 }
 
 function updateZoomTransform() {
-  document.getElementById('homeLiveFrame').style.transform =
-    `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+  const t = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+  document.querySelectorAll('.home-live-frame').forEach((el) => { el.style.transform = t; });
 }
 
 function resetZoom() {
@@ -686,7 +771,7 @@ function resetZoom() {
 // subtly-wrong closed-form math that can't be visually tested here.
 function clampPan() {
   const wrap = document.querySelector('.live-frame-wrap');
-  const img = document.getElementById('homeLiveFrame');
+  const img = getActiveLiveEl();
   const prevTransform = img.style.transform;
   img.style.transform = `scale(${zoomScale})`;
   const wrapRect = wrap.getBoundingClientRect();
@@ -808,10 +893,16 @@ async function refreshCameraStatus() {
     const res = await fetch('/api/camera/status');
     const data = await res.json();
     document.getElementById('cameraUnavailableBanner').style.display = data.available ? 'none' : 'block';
+    const liveStatusText = {
+      stream: 'Live',
+      video: 'Live (HLS/MP4 fallback)',
+      'snapshot-poll': 'Live (reduced frame rate - see docs/camera-streamer-setup.md)',
+    };
     document.getElementById('homeLiveStatus').textContent = data.available
-      ? (liveViewMode === 'snapshot-poll' ? 'Live (reduced frame rate - see docs/camera-streamer-setup.md)' : 'Live')
+      ? (liveStatusText[liveViewMode] || 'Live')
       : 'Camera feed unavailable';
     if (data.snapshot_url) lastSnapshotUrl = data.snapshot_url;
+    if (data.video_url) lastVideoUrl = data.video_url;
     if (data.stream_url && data.stream_url !== lastStreamUrl) {
       lastStreamUrl = data.stream_url;
       if (liveViewMode === 'stream') {
