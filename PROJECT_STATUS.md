@@ -557,7 +557,9 @@ that aren't obvious from reading the code cold.
   Ryan's local clone at `D:\GitHub\Necroparlor` (Windows laptop; moved
   there from a OneDrive-synced path that broke change detection) - Claude
   hands off changed files, Ryan copies them into that clone and commits/
-  pushes. Claude sessions can't push directly. Hand-offs should include 3
+  pushes. **[2026-10-06]** GitHub is now connected, so Claude can push
+  directly - it shows the commit message and waits for Ryan's go-ahead
+  before every push, since `main` is what the Pi auto-pulls. Hand-offs should include 3
   ready-to-paste commit summary options (lowercase, no `feat:`/`fix:`
   prefixes, terse, matching the repo's history style). Earlier entries in
   this file describe the older drag-into-GitHub's-web-UI workflow - the

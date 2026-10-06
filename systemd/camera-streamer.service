@@ -31,18 +31,18 @@ EnvironmentFile=/home/pi/dermestid/camera-streamer.env
 #     recommendation was simply wrong.
 # [2026-10-06] --camera-video.* H264 encoding was tried and REVERTED -
 # see PROJECT_STATUS.md's 2026-10-06 entries for the full story. It did
-# fix /video's frozen-frame problem, but running the H264 encoder
-# continuously alongside the MJPEG capture overloaded the Pi badly
-# enough to also slow down the rest of the dashboard and make
-# /api/camera/status's own availability check start flapping - a much
-# worse real-world outcome than the iOS frame-rate problem it was meant
-# to fix. --camera-video.disabled=1 explicitly turns the encoder back
-# off (it defaults to enabled otherwise) rather than just omitting the
-# flags, so a later change to camera-streamer's own defaults can't
-# silently re-enable this. If H264 output is revisited later, it needs
-# real resource measurements (CPU/temp under `top`/`vcgencmd
-# measure_temp` while it's running) before trying again, not just
-# confirming it produces a playable stream.
+# fix /video's frozen-frame problem, but the dashboard got noticeably
+# slower and /api/camera/status's availability check started flapping
+# while the browser was pulling /video. NOT a CPU problem: load stayed
+# low (~0.1 average, 0.02 with the encoder running alone), and the
+# encoder ran unnoticed for ~14h after the "revert" because this unit
+# was never re-installed on the Pi. Best guess, unconfirmed: a slow HLS
+# client tying up camera-streamer's HTTP connection handling.
+# --camera-video.disabled=1 explicitly turns the encoder off (it
+# defaults to enabled otherwise) rather than just omitting the flags, so
+# a later change to camera-streamer's own defaults can't silently
+# re-enable this. If H264 is revisited, look at camera-streamer's
+# connection/threading behavior first, not just bitrate or resolution.
 ExecStart=/usr/local/bin/camera-streamer \
     --camera-path=${CAMERA_PATH} \
     --camera-type=v4l2 --camera-format=MJPEG \
