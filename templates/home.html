@@ -448,9 +448,13 @@ function hexToRgba(hex, alpha) {
 // the visible mean line drawn last so it sits on top of its own band.
 function bandDatasets(label, mean, min, max, colorHex) {
   return [
-    { label: label + ' max', data: max, borderColor: 'transparent', backgroundColor: 'transparent', pointRadius: 0, fill: false, isBand: true, tension: 0.25 },
-    { label: label + ' min', data: min, borderColor: 'transparent', backgroundColor: hexToRgba(colorHex, 0.18), pointRadius: 0, fill: '-1', isBand: true, tension: 0.25 },
-    { label: label, data: mean, borderColor: colorHex, backgroundColor: 'transparent', pointRadius: 0, borderWidth: 2, fill: false, tension: 0.25 }
+    // `group` ties all three together so a legend click (see
+    // toggleSeriesGroup) hides the band WITH its line - the band
+    // datasets have no legend entry of their own, so Chart.js's default
+    // click left them visible, still holding the y-axis range open.
+    { label: label + ' max', data: max, borderColor: 'transparent', backgroundColor: 'transparent', pointRadius: 0, fill: false, isBand: true, group: label, tension: 0.25 },
+    { label: label + ' min', data: min, borderColor: 'transparent', backgroundColor: hexToRgba(colorHex, 0.18), pointRadius: 0, fill: '-1', isBand: true, group: label, tension: 0.25 },
+    { label: label, data: mean, borderColor: colorHex, backgroundColor: 'transparent', pointRadius: 0, borderWidth: 2, fill: false, group: label, tension: 0.25 }
   ];
 }
 
@@ -502,6 +506,18 @@ async function refreshHistory() {
 
 const chartInstances = {};
 
+// Legend click handler: hides/shows a series' mean line AND its min/max
+// band together. Hidden datasets are excluded from Chart.js's y-axis
+// auto-range, so the axis rescales to what's still visible.
+function toggleSeriesGroup(chart, datasetIndex) {
+  const group = chart.data.datasets[datasetIndex].group;
+  const show = !chart.isDatasetVisible(datasetIndex);
+  chart.data.datasets.forEach((d, i) => {
+    if (d.group === group) chart.setDatasetVisibility(i, show);
+  });
+  chart.update();
+}
+
 function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOptions) {
   const existing = chartInstances[instanceKey];
   if (existing && existing.data.datasets.length === datasets.length) {
@@ -511,6 +527,10 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
     existing.update();
     return;
   }
+  // Series the user hid via the legend - carried across a rebuild below
+  // so a dataset-count change (BLE data appearing/disappearing) doesn't
+  // silently un-hide them.
+  let hiddenGroups = [];
   if (existing) {
     // Dataset count changed since this chart was created (e.g. the
     // fallback series just appeared or disappeared) - the fast in-place
@@ -518,9 +538,13 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
     // data onto existing dataset objects by index. Rebuilding from
     // scratch here is simpler and safer than trying to patch Chart.js's
     // internal dataset list to add/remove one .
+    hiddenGroups = existing.data.datasets
+      .filter((d, i) => !d.isBand && !existing.isDatasetVisible(i))
+      .map(d => d.group);
     existing.destroy();
     delete chartInstances[instanceKey];
   }
+  datasets.forEach(d => { if (hiddenGroups.includes(d.group)) d.hidden = true; });
 
   if (typeof Chart === 'undefined') {
     document.getElementById(canvasId).closest('.chart-container').innerHTML =
@@ -541,7 +565,10 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
         y: { min: yRange.min, max: yRange.max, grace: 0, ticks: { color: '#93a0ab' }, grid: { color: '#2a323a' } }
       },
       plugins: {
-        legend: { labels: { color: '#e7ecef', filter: (item, data) => !data.datasets[item.datasetIndex].isBand } },
+        legend: {
+          labels: { color: '#e7ecef', filter: (item, data) => !data.datasets[item.datasetIndex].isBand },
+          onClick: (e, item, legend) => toggleSeriesGroup(legend.chart, item.datasetIndex)
+        },
         tooltip: { filter: (item) => !item.dataset.isBand }
       }
     }

@@ -594,6 +594,19 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-12, `dev`] Home chart legend: hiding a series now hides its band and rescales the axis.** Ryan:
+  "when filtering the chart values the line disappears but the range stays." Root cause: each series is THREE
+  datasets (`bandDatasets()`: invisible max, min-with-fill band, visible mean), and the legend deliberately lists
+  only the mean (band datasets filtered out). Chart.js's default legend click toggled just that one dataset, so the
+  shaded band stayed drawn and its min/max kept holding the y-axis open. Fix: all three carry a shared `group`; a
+  custom `legend.onClick` (`toggleSeriesGroup()`) toggles the whole group. `updateChart()`'s rebuild path (dataset
+  count change, e.g. External/BLE data appearing) now carries hidden groups across, so a rebuild doesn't silently
+  un-hide them. **Verified** in headless Chromium with the real Chart.js 4.4.4 (served locally in place of the CDN)
+  and synthetic history (Internal ~78°F, Fallback ~55°F), using real mouse clicks on the legend hitbox: original
+  code reproduces the bug (axis stays 50-80, Fallback band still visible); fixed code rescales to 77-80, hides line
+  and band, stays hidden through an in-place refresh and through a rebuild when External appears, second click
+  restores all three, legend still lists only the three mean lines, no JS errors. Same code drives the humidity chart.
+
 - **[2026-10-12, `dev`] Critical temperature/humidity alerts** - Ryan's request: notifications "for when the
   environment approaches extremes that endanger the health of the beetles," separate from the existing
   out-of-range warnings. Design choices, all Ryan's: (1) **one global set of limits for every mode**, not
