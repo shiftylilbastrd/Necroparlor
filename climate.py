@@ -56,8 +56,10 @@ HEATER_MAX_ON_SECONDS = 20 * 60     # hard cutoff regardless of temp reached
 HEATER_LOCKOUT_SECONDS = 5 * 60     # cooldown before heater may retry after a cutoff
 FAN_MAX_ON_SECONDS = 60 * 60        # motor protection / stuck-sensor guard
 FAN_LOCKOUT_SECONDS = 5 * 60
-EXTREME_TEMP_LOW_F = 45.0
-EXTREME_TEMP_HIGH_F = 95.0
+# [2026-10-12] EXTREME_TEMP_LOW_F/EXTREME_TEMP_HIGH_F (hardcoded 45/95F,
+# log-file-only warning every cycle) removed - superseded by the
+# configurable notifications.critical_limits check (check_critical_limits()),
+# which covers humidity too and actually notifies.
 
 # SHT31 condensation recovery: if internal humidity reads pegged near
 # 100% for a while, it's more likely condensation on the sensor than
@@ -186,6 +188,23 @@ temp_range_since = None
 temp_range_alert_sent = False
 humidity_range_since = None
 humidity_range_alert_sent = False
+
+# Critical-limit episode tracking (notifications.critical_limits, see
+# check_critical_limits() below). Each holds the loop_start time the last
+# critical alert for that reading was logged, or None while not in a
+# critical episode - so it doubles as both "are we in an episode" and
+# "when is the next repeat due."
+temp_critical_last_alert = None
+humidity_critical_last_alert = None
+
+# How far back inside a critical limit the reading has to come before the
+# episode counts as over. Without this, a reading sitting right on a limit
+# and wobbling by sensor noise (SHT31: ~0.1-0.2F) would end and restart an
+# episode every few cycles - and since there's no dwell time and these
+# categories bypass the generic cooldown, every restart would be a fresh
+# critical page. This only delays the CLEAR, never the alert.
+CRITICAL_CLEAR_HYSTERESIS_F = 1.0
+CRITICAL_CLEAR_HYSTERESIS_RH = 2.0
 
 
 class GracefulExit(Exception):
@@ -363,6 +382,76 @@ def emergency_shutdown_outputs(reason):
     servo_open = False
     turn_off(PIN_HUMIDITY)
     humidity_on = False
+
+
+def evaluate_critical_limit(value, low, high, hysteresis, last_alert, now, repeat_minutes):
+    """Pure decision logic for one reading against its critical limits -
+    no globals, no logging, so it can be exercised directly in tests.
+
+    Returns (new_last_alert, action, direction):
+      action is "alert" (new episode), "repeat" (still critical, repeat
+      due), "clear" (episode just ended), or None (nothing to log).
+      direction is "low"/"high" for alert/repeat, else None.
+
+    No dwell: the first reading at or past a limit alerts immediately.
+    The episode only clears once the reading is back inside the limit by
+    `hysteresis` (see CRITICAL_CLEAR_HYSTERESIS_*), so noise right at a
+    limit can't restart episodes back to back. repeat_minutes == 0 means
+    once per episode."""
+    if value <= low or value >= high:
+        direction = "low" if value <= low else "high"
+        if last_alert is None:
+            return now, "alert", direction
+        if repeat_minutes > 0 and (now - last_alert) >= repeat_minutes * 60:
+            return now, "repeat", direction
+        return last_alert, None, None
+    if last_alert is not None:
+        if low + hysteresis < value < high - hysteresis:
+            return None, "clear", None
+        # Back inside the limit but still within the hysteresis band -
+        # episode stays open (no repeats fire here, since the reading
+        # isn't actually past the limit right now).
+        return last_alert, None, None
+    return None, None, None
+
+
+def check_critical_limits(internal_temp, internal_humidity, config, now):
+    """Runs both critical checks for this cycle and logs whatever they
+    decide. Called from run_cycle() only once a validated internal
+    reading is in hand - the same guarantee the out-of-range check relies
+    on - so a dead/glitching internal sensor can't trip this (that case
+    is emergency_shutdown's job)."""
+    global temp_critical_last_alert, humidity_critical_last_alert
+    limits = config.get("notifications", {}).get(
+        "critical_limits", state.DEFAULT_CONFIG["notifications"]["critical_limits"])
+    repeat = limits.get("repeat_minutes", 30)
+
+    checks = (
+        ("temp", internal_temp, limits["low_temp_f"], limits["high_temp_f"],
+         CRITICAL_CLEAR_HYSTERESIS_F, "F", "temp_critical"),
+        ("humidity", internal_humidity, limits["low_humidity"], limits["high_humidity"],
+         CRITICAL_CLEAR_HYSTERESIS_RH, "%", "humidity_critical"),
+    )
+    for name, value, low, high, hyst, unit, category in checks:
+        last = temp_critical_last_alert if name == "temp" else humidity_critical_last_alert
+        new_last, action, direction = evaluate_critical_limit(value, low, high, hyst, last, now, repeat)
+        if action in ("alert", "repeat"):
+            limit = low if direction == "low" else high
+            word = "at or below" if direction == "low" else "at or above"
+            prefix = "CRITICAL" if action == "alert" else "STILL CRITICAL"
+            state.log_event("critical",
+                             f"{prefix}: internal {name} {value:.1f}{unit} is {word} the critical "
+                             f"limit ({limit:.1f}{unit}) - colony at risk",
+                             category=category)
+        elif action == "clear":
+            # info, not a categorized alert - it lands in the event log
+            # (and would notify only if min_level were ever "info", which
+            # the Notifications page doesn't offer).
+            state.log_event("info", f"Internal {name} {value:.1f}{unit} is back within critical limits")
+        if name == "temp":
+            temp_critical_last_alert = new_last
+        else:
+            humidity_critical_last_alert = new_last
 
 
 LIGHT_OVERRIDE_POLL_SECONDS = 1  # how often this loop re-reads config.json
@@ -699,6 +788,10 @@ def run_cycle():
     logging.info(f"External: {ext_temp_str}/{ext_hum_str} | "
                  f"Internal: {internal_temp:.1f}F/{internal_humidity:.1f}% | Mode: {mode}")
 
+    # === Critical-limit alerting (internal reading only) ===
+    # Global "colony at risk" limits, no dwell - see check_critical_limits().
+    check_critical_limits(internal_temp, internal_humidity, config, loop_start)
+
     # === Out-of-range alerting (internal reading only) ===
     # Deliberately separate from the heat/cool/humidify control decisions
     # above: those react to low_temp_f/high_temp_f/humidity_setpoint
@@ -856,10 +949,6 @@ def run_cycle():
         state.log_event("info", f"Humidity {internal_humidity:.1f}% low - dehumidifier OFF")
         turn_off(PIN_HUMIDITY)
         humidity_on = False
-
-    # === Emergency checks (informational - outputs already governed above) ===
-    if internal_temp < EXTREME_TEMP_LOW_F or internal_temp > EXTREME_TEMP_HIGH_F:
-        logging.warning(f"Extreme temperature: {internal_temp:.1f}F")
 
     logging.info(
         f"Servo: {'OPEN' if servo_open else 'CLOSED'} | Fan: {'ON' if fan_on else 'OFF'} | "

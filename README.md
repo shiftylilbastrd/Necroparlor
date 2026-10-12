@@ -260,6 +260,21 @@ event fire - meant to catch an actual problem (equipment failure, a stuck door, 
 cooling) rather than routine operation. External/BLE readings are not watched by this - it only looks at the
 internal sensor, the same one the control loop itself uses.
 
+**Critical limits** (Notifications page, "Critical limits" card) are the "colony is in danger" tier, separate
+from and wider than the out-of-range warning above. There is **one global set** - low/high °F and low/high
+%RH - applied in every mode, since what physically endangers the beetles doesn't change with the selected mode.
+There is **no dwell time**: the first validated internal reading at or past a limit fires a `critical`
+`temp_critical`/`humidity_critical` event immediately, which then **repeats every N minutes** (configurable,
+0 = once per episode) for as long as the reading stays there. Because they're `critical`, these get through
+quiet hours (if "Still notify for critical events" is checked) and go to Pushover as high priority; they're
+also exempt from the generic cooldown, since the repeat interval is their throttle. An episode only ends once
+the reading comes back inside the limit by 1°F / 2%RH, so a reading wobbling right on a limit can't restart
+episodes (and re-page) every few cycles; the recovery is logged as an `info` event. Every mode's setpoints
+must sit strictly inside these limits - saving either page rejects a value that would cross the other, since
+a setpoint inside critical territory would page you indefinitely with nothing wrong. **The default numbers
+(45-95°F, 20-80%RH, repeat 30 min) are placeholders, not researched dermestid tolerances** - set your own.
+Internal sensor only; a dead internal sensor is the emergency-shutdown alert's job, not this one's.
+
 Like every other setting on this dashboard, notification settings (including channel credentials) are saved
 to `config.json` in plain text and are visible to anything on your LAN that can reach the dashboard - see the
 "no login" note above. Don't put credentials here you wouldn't put anywhere else on this network.
@@ -341,7 +356,7 @@ The database file itself doesn't shrink on the SD card when rows are deleted (or
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
 - **Config** (`/config`) — per-mode setpoints, including each mode's out-of-range alert margins.
-- **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open and out-of-range alert timing.
+- **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open and out-of-range alert timing, and the global critical temp/humidity limits.
 - **Settings** (`/settings`) — sensor source/calibration, BLE and camera settings, software updates, data history retention/clearing, restarting the Pi.
 
 ## Activity modes

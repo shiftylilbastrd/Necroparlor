@@ -49,6 +49,12 @@ auto-summaries]**
   dashboard redesign, branch-selection in the update system, and
   several smaller fixes) has been merged into `main`, and the Pi has
   been switched back to tracking `main`.
+- **[2026-10-12] New standing workflow: all changes go on `dev`**, per Ryan
+  ("all changes will be done in the dev branch ... and then merged when
+  fully tested"). `dev` was created from `main` at `98cf477` and pushed.
+  `main` is only updated by merging a tested `dev`. To test on the Pi,
+  switch the dashboard's branch dropdown (System page) to `dev`; switch it
+  back to `main` after merging.
 - **`add-webcam` (started 2026-09-12) has been merged into `main`
   (2026-09-14).** Everything from the webcam work - live view + per-mode
   timelapse, the camera MJPG/fps fixes, the header/nav UI batch, the
@@ -205,6 +211,10 @@ pattern has been consistent: tie things to identity, never to role.
   above turned out to be the more impactful fix. The gap is harmless
   either way; just don't assume it was the thing that actually
   resolved the false-alarm pattern.
+  **[superseded 2026-10-05, noted 2026-10-12]** DHT22 support was
+  removed when both wired sensors became SHT31s (I2C) - `DHT_READ_RETRIES`/
+  `DHT_READ_GAP_SECONDS` no longer exist in the code. Kept here only as
+  history; the retry/gap reasoning doesn't apply to the SHT31 path.
 
 ### BLE sensor support
 - Brand is pluggable via `shared_state.BLE_SENSOR_LIBRARIES` (a
@@ -583,6 +593,53 @@ that aren't obvious from reading the code cold.
   can disagree about which branch is "current."
 
 ## Open threads / known issues
+
+- **[2026-10-12, `dev`] Critical temperature/humidity alerts** - Ryan's request: notifications "for when the
+  environment approaches extremes that endanger the health of the beetles," separate from the existing
+  out-of-range warnings. Design choices, all Ryan's: (1) **one global set of limits for every mode**, not
+  per-mode; (2) **no dwell** - first validated reading at/past a limit alerts; (3) **repeat every N minutes**
+  while still critical, configurable (0 = once per episode); (4) **temp AND humidity, internal sensor only**.
+  - `shared_state.py`: `notifications.critical_limits` (`low_temp_f`/`high_temp_f`/`low_humidity`/
+    `high_humidity`/`repeat_minutes`, defaults 45/95°F, 20/80%RH, 30 min), backfilled per-key by
+    `_merge_notifications()`; two new `critical` `EVENT_CATEGORIES`, `temp_critical`/`humidity_critical`, on by
+    default. **They carry `bypass_cooldown: True`**, and `_maybe_notify()` skips the generic cooldown for them -
+    deliberate: `repeat_minutes` is their throttle, and stacking the 15-min default cooldown on top would silently
+    eat a repeat shorter than it AND a fresh episode starting soon after the last one's alert (the worst possible
+    thing to suppress). Quiet hours/`allow_critical`, min_level, and the per-category toggle still apply normally.
+  - **Setpoints and critical limits can't overlap, enforced from both pages** (`critical_limits_conflict()`,
+    called from `validate_notification_settings(..., modes=)` and `validate_setpoints(..., critical_limits=)`;
+    webapp.py passes the saved config into both). Every mode's low/high temp and humidity setpoint must sit
+    strictly inside the critical limits. Why both sides: either save order leaves the control loop's normal
+    target inside critical territory, which would page critically every `repeat_minutes`, through quiet hours,
+    forever, with nothing wrong. **Known gap**: a config.json that ALREADY violates this (e.g. a setpoint edited
+    by hand past 95°F before this deployed) isn't caught until one of the two pages is saved - nothing re-checks
+    on load.
+  - `climate.py`: `evaluate_critical_limit()` (pure decision, testable) + `check_critical_limits()` (logs),
+    called in `run_cycle()` right before the out-of-range block - so only ever on a validated internal reading;
+    a dead internal sensor stays `emergency_shutdown`'s job. **Clear hysteresis** (`CRITICAL_CLEAR_HYSTERESIS_F =
+    1.0`, `_RH = 2.0`): an episode only ends once the reading is back inside the limit by that much. Not a dwell -
+    it never delays the ALERT, only the clear - but without it, no-dwell + cooldown-exempt means a reading
+    sitting on a limit and wobbling by sensor noise would re-page every few cycles. Recovery logs an `info` event
+    (not categorized, so it doesn't notify). Episode state is in-memory: a `climate.py` restart mid-episode
+    re-alerts on the next cycle, consistent with the notification-cooldown philosophy above.
+  - **Removed `EXTREME_TEMP_LOW_F`/`EXTREME_TEMP_HIGH_F`** (hardcoded 45/95°F, log-file-only `logging.warning`
+    every cycle, never notified) - superseded by this; two definitions of "extreme" would have drifted apart.
+  - `templates/notifications.html`: new "Critical limits" card next to General, explicit Save (number fields).
+    An empty field is sent as `null` and rejected server-side - plain `Number("")` would have silently saved 0,
+    a valid critical low humidity.
+  - **The default limits are placeholders, not researched dermestid tolerances** - Ryan to set real values.
+  - **Verified**: py_compile on all three Python files; `node --check` on the page's script; a 51-check
+    off-Pi suite (GPIO/board stubbed, temp config/DB) covering old-config backfill (missing block, partial
+    block), every validation path incl. both overlap directions through the real Flask endpoints, the pure episode
+    logic (alert at exactly the limit, repeat timing, repeat 0, hysteresis hold, clear), and the full
+    `check_critical_limits()` -> `log_event()` -> `_maybe_notify()` path with the queue captured: immediate
+    alert, 5-min repeat getting through a 60-min generic cooldown, new episode right after a clear not held back,
+    humidity independent of temp, non-critical categories still obeying cooldown, quiet hours honoring
+    `allow_critical` both ways, per-category mute, rows in the events table. Headless Chromium against the real
+    Flask app at phone width: defaults load, both categories appear under "Critical" in the checklist, Save
+    persists and reloads, overlap error and empty-field error shown in the card's own message line, no horizontal
+    scroll, no JS errors. **NOT verified**: a real `climate.py` run on the Pi, or a real Pushover delivery of
+    one of these alerts.
 
 - **[2026-10-06, later same day] Follow-ups to the verification pass below.**
   - **camera-streamer H264 revert: now actually installed** (09:12). Unit re-copied, `diff` clean, running

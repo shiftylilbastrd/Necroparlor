@@ -59,6 +59,40 @@
     <button class="save-btn" onclick="sendTestNotification()" style="margin-left:6px;">Send test</button>
     <div class="save-msg" id="notifySettingsMsg"></div>
   </div>
+
+  <!-- Critical limits: one global set for every mode (what endangers the
+       colony doesn't depend on the selected mode). Number fields, so an
+       explicit Save like the General card's numbers. -->
+  <div class="card">
+    <h2>Critical limits</h2>
+    <div class="stat-sub" style="margin-bottom:8px;">
+      Internal reading only, same limits in every mode. The first reading at or past a limit sends a
+      <strong>critical</strong> alert right away (no waiting period), then repeats while it stays there.
+      Critical alerts skip the cooldown above, still come through quiet hours if "Still notify for critical
+      events" is checked, and go to Pushover as high priority. Every mode's setpoints must sit inside these
+      limits.
+    </div>
+    <div class="field">
+      <label>Temperature (°F) - low / high</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" step="0.1" id="criticalLowTemp" style="width:50%;">
+        <input type="number" step="0.1" id="criticalHighTemp" style="width:50%;">
+      </div>
+    </div>
+    <div class="field">
+      <label>Humidity (%RH) - low / high</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" step="0.1" min="0" max="100" id="criticalLowHumidity" style="width:50%;">
+        <input type="number" step="0.1" min="0" max="100" id="criticalHighHumidity" style="width:50%;">
+      </div>
+    </div>
+    <div class="field">
+      <label>Repeat while still critical every (minutes, 0 = once per episode)</label>
+      <input type="number" min="0" max="1440" id="criticalRepeatInput">
+    </div>
+    <button class="save-btn" style="margin-top:10px;" onclick="saveNotificationSettings('criticalLimitsMsg')">Save</button>
+    <div class="save-msg" id="criticalLimitsMsg"></div>
+  </div>
 </div>
 
 <div class="section-title">Notification channels</div>
@@ -224,6 +258,13 @@ function applyNotificationSettings(n) {
   document.getElementById('notifyDoorOpenInput').value = n.door_open_alert_minutes ?? 15;
   document.getElementById('notifyRangeAlertInput').value = n.range_alert_minutes ?? 15;
 
+  const crit = n.critical_limits || {};
+  document.getElementById('criticalLowTemp').value = crit.low_temp_f ?? 45;
+  document.getElementById('criticalHighTemp').value = crit.high_temp_f ?? 95;
+  document.getElementById('criticalLowHumidity').value = crit.low_humidity ?? 20;
+  document.getElementById('criticalHighHumidity').value = crit.high_humidity ?? 80;
+  document.getElementById('criticalRepeatInput').value = crit.repeat_minutes ?? 30;
+
   const qh = n.quiet_hours || {};
   document.getElementById('notifyQuietEnabled').checked = !!qh.enabled;
   document.getElementById('notifyQuietStart').value = qh.start || '22:00';
@@ -308,6 +349,13 @@ function readWebhookFields() {
 // added after a real mix-up where credentials typed into the Pushover
 // card looked unsaved because the only Save button was all the way up
 // in the General card, easy to miss/skip after just editing one card.
+function readCriticalNumber(id) {
+  const raw = document.getElementById(id).value.trim();
+  if (raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function saveNotificationSettings(msgId) {
   msgId = msgId || 'notifySettingsMsg';
   // notifyCategoryState, not a DOM query - a category currently hidden
@@ -321,6 +369,16 @@ async function saveNotificationSettings(msgId) {
     cooldown_minutes: parseInt(document.getElementById('notifyCooldownInput').value, 10),
     door_open_alert_minutes: parseInt(document.getElementById('notifyDoorOpenInput').value, 10),
     range_alert_minutes: parseInt(document.getElementById('notifyRangeAlertInput').value, 10),
+    // readCriticalNumber(): an empty field is sent as null (server rejects
+    // it with a clear error) - plain Number("") would silently send 0,
+    // which is a VALID critical low humidity.
+    critical_limits: {
+      low_temp_f: readCriticalNumber('criticalLowTemp'),
+      high_temp_f: readCriticalNumber('criticalHighTemp'),
+      low_humidity: readCriticalNumber('criticalLowHumidity'),
+      high_humidity: readCriticalNumber('criticalHighHumidity'),
+      repeat_minutes: parseInt(document.getElementById('criticalRepeatInput').value, 10),
+    },
     quiet_hours: {
       enabled: document.getElementById('notifyQuietEnabled').checked,
       start: document.getElementById('notifyQuietStart').value || '22:00',

@@ -258,6 +258,8 @@ DEFAULT_CONFIG = {
             "control_loop_error": True,
             "temp_out_of_range": True,
             "humidity_out_of_range": True,
+            "temp_critical": True,
+            "humidity_critical": True,
         },
         # Per-category cooldown - the same category won't notify again
         # until this many minutes have passed since it last did, so a
@@ -294,6 +296,27 @@ DEFAULT_CONFIG = {
         # above, applied to climate.py's out-of-range check instead of the
         # door switch.
         "range_alert_minutes": 15,
+        # Absolute "the colony is in danger" limits for the INTERNAL
+        # reading - deliberately one global set, NOT per-mode like the
+        # setpoints/alert margins: what physically endangers the beetles
+        # doesn't change depending on which mode is selected. Separate
+        # from (and wider than) the out-of-range warning band above. No
+        # dwell time - the first validated reading at or past a limit
+        # fires a `critical` event immediately (see run_cycle() in
+        # climate.py), then repeats every repeat_minutes for as long as it
+        # stays there (0 = once per episode, same never-sentinel
+        # convention as range_alert_minutes). These two categories are
+        # exempt from cooldown_minutes above (see EVENT_CATEGORIES'
+        # bypass_cooldown) - repeat_minutes IS their throttle.
+        # The default numbers are placeholders, not researched dermestid
+        # tolerances - set real values on the Notifications page.
+        "critical_limits": {
+            "low_temp_f": 45.0,
+            "high_temp_f": 95.0,
+            "low_humidity": 20.0,
+            "high_humidity": 80.0,
+            "repeat_minutes": 30,
+        },
         "channels": {
             "pushover": {
                 "enabled": False,
@@ -421,6 +444,12 @@ CAMERA_STREAMER_FORBIDDEN_PORT = 8080
 NOTIFY_COOLDOWN_BOUNDS = (0, 1440)          # minutes; 0 = no cooldown (every match notifies)
 DOOR_OPEN_ALERT_BOUNDS = (1, 1440)          # minutes, when not 0/never (see DEFAULT_CONFIG)
 RANGE_ALERT_BOUNDS = (1, 1440)              # minutes, when not 0/never (see DEFAULT_CONFIG)
+# notifications.critical_limits - deliberately wider than TEMP_BOUNDS_F/
+# HUMIDITY_BOUNDS (the setpoint bounds), since a critical limit has to be
+# able to sit OUTSIDE any setpoint you're allowed to save.
+CRITICAL_TEMP_BOUNDS_F = (20.0, 130.0)
+CRITICAL_HUMIDITY_BOUNDS = (0.0, 100.0)
+CRITICAL_REPEAT_BOUNDS = (1, 1440)          # minutes, when not 0/once-per-episode
 SMTP_PORT_BOUNDS = (1, 65535)
 QUIET_HOURS_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")  # "HH:MM", 24h
 
@@ -640,11 +669,75 @@ def write_camera_streamer_env(cam_cfg):
     _atomic_write(CAMERA_STREAMER_ENV_PATH, "\n".join(lines) + "\n")
 
 
-def validate_notification_settings(values):
+def _validate_critical_limits(values):
+    """Shape/bounds check for notifications.critical_limits on its own.
+    Returns (cleaned_dict, None) or (None, error). Missing keys fall back
+    to DEFAULT_CONFIG's values (same as every other field in
+    validate_notification_settings), so an older page that doesn't send
+    this block at all saves the defaults rather than erroring."""
+    defaults = DEFAULT_CONFIG["notifications"]["critical_limits"]
+    try:
+        low_t = float(values.get("low_temp_f", defaults["low_temp_f"]))
+        high_t = float(values.get("high_temp_f", defaults["high_temp_f"]))
+        low_h = float(values.get("low_humidity", defaults["low_humidity"]))
+        high_h = float(values.get("high_humidity", defaults["high_humidity"]))
+    except (TypeError, ValueError):
+        return None, "critical limits must be numbers"
+    try:
+        repeat = int(values.get("repeat_minutes", defaults["repeat_minutes"]))
+    except (TypeError, ValueError):
+        return None, "critical repeat_minutes must be a whole number"
+
+    tb, hb, rb = CRITICAL_TEMP_BOUNDS_F, CRITICAL_HUMIDITY_BOUNDS, CRITICAL_REPEAT_BOUNDS
+    for name, v in (("low_temp_f", low_t), ("high_temp_f", high_t)):
+        if not (tb[0] <= v <= tb[1]):
+            return None, f"critical {name} must be between {tb[0]} and {tb[1]}"
+    for name, v in (("low_humidity", low_h), ("high_humidity", high_h)):
+        if not (hb[0] <= v <= hb[1]):
+            return None, f"critical {name} must be between {hb[0]} and {hb[1]}"
+    if low_t >= high_t:
+        return None, "critical low_temp_f must be less than critical high_temp_f"
+    if low_h >= high_h:
+        return None, "critical low_humidity must be less than critical high_humidity"
+    if repeat != 0 and not (rb[0] <= repeat <= rb[1]):
+        return None, f"critical repeat_minutes must be 0 (once per episode) or between {rb[0]} and {rb[1]}"
+    return {"low_temp_f": low_t, "high_temp_f": high_t, "low_humidity": low_h,
+            "high_humidity": high_h, "repeat_minutes": repeat}, None
+
+
+def critical_limits_conflict(critical, modes):
+    """Returns an error string if any mode's setpoints sit at or past a
+    critical limit, else None. Checked from BOTH sides - saving the
+    critical limits (validate_notification_settings) and saving a mode's
+    setpoints (validate_setpoints) - because either order produces the
+    same bad end state: the control loop's normal target sitting inside
+    critical territory, which would page a critical alert every
+    repeat_minutes indefinitely, through quiet hours, with nothing
+    actually wrong. Humidity compares against humidity_setpoint itself,
+    the one humidity number a mode has."""
+    for mode_name, sp in modes.items():
+        if sp["low_temp_f"] <= critical["low_temp_f"]:
+            return (f"{mode_name} mode's low temp setpoint ({sp['low_temp_f']}F) must be above the "
+                    f"critical low temp ({critical['low_temp_f']}F)")
+        if sp["high_temp_f"] >= critical["high_temp_f"]:
+            return (f"{mode_name} mode's high temp setpoint ({sp['high_temp_f']}F) must be below the "
+                    f"critical high temp ({critical['high_temp_f']}F)")
+        if sp["humidity_setpoint"] <= critical["low_humidity"]:
+            return (f"{mode_name} mode's humidity setpoint ({sp['humidity_setpoint']}%) must be above the "
+                    f"critical low humidity ({critical['low_humidity']}%)")
+        if sp["humidity_setpoint"] >= critical["high_humidity"]:
+            return (f"{mode_name} mode's humidity setpoint ({sp['humidity_setpoint']}%) must be below the "
+                    f"critical high humidity ({critical['high_humidity']}%)")
+    return None
+
+
+def validate_notification_settings(values, modes=None):
     """Validates the whole "notifications" block coming from the Config
     page's Notifications card. Returns (cleaned_dict, None) on success or
     (None, error) on failure - same shape as validate_camera_settings
-    above. Deliberately does NOT try to contact Pushover/SMTP/the webhook
+    above. `modes` (the saved config's per-mode setpoints) is optional -
+    when given, the critical limits are also checked against every mode's
+    setpoints (see critical_limits_conflict). Deliberately does NOT try to contact Pushover/SMTP/the webhook
     URL to confirm credentials actually work - that's what the Config
     page's "Send test" button (send_test_notification() below) is for;
     this just sanity-checks the shape of the input so a typo doesn't
@@ -687,6 +780,15 @@ def validate_notification_settings(values):
         return None, (f"range_alert_minutes must be 0 (never) or between "
                        f"{RANGE_ALERT_BOUNDS[0]} and {RANGE_ALERT_BOUNDS[1]}")
     cleaned["range_alert_minutes"] = range_minutes
+
+    critical, error = _validate_critical_limits(values.get("critical_limits", {}))
+    if error:
+        return None, error
+    if modes is not None:
+        error = critical_limits_conflict(critical, modes)
+        if error:
+            return None, error
+    cleaned["critical_limits"] = critical
 
     qh = values.get("quiet_hours", {})
     start = qh.get("start", "22:00")
@@ -898,6 +1000,7 @@ def _merge_notifications(defaults, saved):
     merged = {**defaults, **saved}
     merged["categories"] = {**defaults["categories"], **saved.get("categories", {})}
     merged["quiet_hours"] = {**defaults["quiet_hours"], **saved.get("quiet_hours", {})}
+    merged["critical_limits"] = {**defaults["critical_limits"], **saved.get("critical_limits", {})}
     saved_channels = saved.get("channels", {})
     merged["channels"] = {
         name: {**chan_defaults, **saved_channels.get(name, {})}
@@ -910,9 +1013,12 @@ def save_config(config):
     _atomic_write(CONFIG_PATH, json.dumps(config, indent=2))
 
 
-def validate_setpoints(mode, values):
+def validate_setpoints(mode, values, critical_limits=None):
     """Validate setpoint values coming from the web UI.
     Returns (cleaned_dict, None) on success or (None, error_message) on failure.
+    `critical_limits` (notifications.critical_limits from the saved config)
+    is optional - when given, the new setpoints must also sit strictly
+    inside them (see critical_limits_conflict).
     """
     if mode not in VALID_MODES:
         return None, f"Unknown mode '{mode}'"
@@ -933,6 +1039,11 @@ def validate_setpoints(mode, values):
         return None, f"humidity_setpoint must be between {HUMIDITY_BOUNDS[0]} and {HUMIDITY_BOUNDS[1]}"
 
     cleaned = {"low_temp_f": low, "high_temp_f": high, "humidity_setpoint": humidity}
+
+    if critical_limits is not None:
+        error = critical_limits_conflict(critical_limits, {mode: cleaned})
+        if error:
+            return None, error
 
     try:
         temp_margin = float(values.get("temp_alert_margin_f", 5.0))
@@ -1423,6 +1534,16 @@ EVENT_CATEGORIES = {
     "control_loop_error": {"label": "Unexpected error in the control loop", "level": "error"},
     "temp_out_of_range": {"label": "Internal temp stayed outside the acceptable range", "level": "warning"},
     "humidity_out_of_range": {"label": "Internal humidity stayed outside the acceptable range", "level": "warning"},
+    # bypass_cooldown: skips the generic per-category cooldown_minutes gate
+    # in _maybe_notify(). climate.py's own repeat_minutes (notifications.
+    # critical_limits) already throttles these - stacking the generic
+    # cooldown on top would silently eat repeats shorter than it, and
+    # worse, a brand-new episode starting within cooldown_minutes of the
+    # previous one's last alert.
+    "temp_critical": {"label": "Internal temp at a critical limit (colony at risk)", "level": "critical",
+                      "bypass_cooldown": True},
+    "humidity_critical": {"label": "Internal humidity at a critical limit (colony at risk)", "level": "critical",
+                          "bypass_cooldown": True},
 }
 
 
@@ -1563,7 +1684,8 @@ def _maybe_notify(level, message, category):
     quiet_hours = config.get("quiet_hours", {})
     if _in_quiet_hours(quiet_hours) and not (level == "critical" and quiet_hours.get("allow_critical", True)):
         return
-    if not _passes_cooldown(config.get("cooldown_minutes", 15), category or message):
+    bypass_cooldown = EVENT_CATEGORIES.get(category, {}).get("bypass_cooldown", False)
+    if not bypass_cooldown and not _passes_cooldown(config.get("cooldown_minutes", 15), category or message):
         return
     _ensure_notify_thread()
     _notify_queue.put((level, message))
