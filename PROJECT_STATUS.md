@@ -15,6 +15,10 @@ rather than just editing it silently.
 
 ## Current state (as of this writing)
 
+**[TOP PRIORITY, set by Ryan 2026-10-14] Timelapse compile makes the Pi unresponsive.** This comes before any
+other open work. Full details, suspects and diagnostics are in the 2026-10-14 entry at the top of "Open
+threads / known issues". Remove this banner only when that entry is resolved and verified on the Pi.
+
 **[STANDING CONTEXT, stated by Ryan 2026-09-14, items 1-2 UPDATED by Ryan
 2026-10-06 - re-read this every session, it keeps getting lost across
 auto-summaries]**
@@ -594,7 +598,7 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
-- **[2026-10-14, OPEN] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
+- **[2026-10-14, OPEN - TOP PRIORITY] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
   compile a video causes the device to become unresponsive." Logged only - no investigation or fix yet.
   **Still unknown (fill in on the next occurrence):** which path triggered it - the Timelapse page's
   "Build preview" (`webapp.py` -> `_build_preview()`, runs inside the dashboard process), the automatic
