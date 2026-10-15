@@ -594,6 +594,33 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-10-14, OPEN] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
+  compile a video causes the device to become unresponsive." Logged only - no investigation or fix yet.
+  **Still unknown (fill in on the next occurrence):** which path triggered it - the Timelapse page's
+  "Build preview" (`webapp.py` -> `_build_preview()`, runs inside the dashboard process), the automatic
+  mode-change compile (`camera_service.py` -> `maybe_compile_session()`), or a manual `compile_timelapse.py`;
+  whether the Pi recovers on its own once ffmpeg finishes or needs a power-cycle; whether "unresponsive" means
+  dashboard + SSH both dead or just the dashboard; frame count and capture resolution of the session.
+  **What the code currently does** (all paths share `timelapse_encode.encode()`): software ffmpeg, MJPEG
+  decode + `libx264 -preset veryfast`, run under `nice -n 19` only. Candidate causes, none confirmed:
+  1. **Disk I/O, not CPU.** `nice` lowers CPU priority but does nothing for I/O - ffmpeg reads every pending
+     JPEG off the SD card (thousands per session) with no `ionice`, which can starve sshd/Flask/sqlite writes
+     and look like a full hang. Cheapest thing to try first: add `ionice -c3` to the command.
+  2. **All four cores pinned -> thermal throttling.** The Pi is currently *inside* the container (~78°F
+     internal on 2026-10-06), and x264 uses every core by default. Check `vcgencmd measure_temp` /
+     `get_throttled` during a compile; a `-threads 2` cap would be the knob.
+  3. **Two encodes at once.** The preview build does not take `state.compile_lock_path()`, so a preview and a
+     mode-change compile (or a manual one) can run ffmpeg concurrently.
+  4. **Wi-Fi confound.** The `psm_watchdog` firmware resets from the in-container position (see the
+     2026-10-06 entries) already made the dashboard/PuTTY "very slow." A compile coinciding with a reset would
+     look identical - check `dmesg | grep psm_watchdog` for the same time window before blaming ffmpeg.
+  **Earlier data points that argue against plain CPU/memory:** 2026-09-29 measured 8048 frames in 583s on the
+  Pi 4 (0.072s/frame) without a reported hang, and on 2026-10-06 load average was 0.02 with 7.2GB free - so
+  OOM is unlikely on the 8GB Pi 4 unless something else changed.
+  **Diagnostics to grab next time** (from a second SSH session started *before* the compile): `htop`,
+  `vmstat 2`, `iostat -x 2` (sysstat), `vcgencmd measure_temp && vcgencmd get_throttled`; afterwards
+  `journalctl -u dermestid-web -u dermestid-camera --since "-30 min"` and `dmesg | tail -50`.
+
 - **[2026-10-12, `dev`] Home chart legend: hiding a series now hides its band and rescales the axis.** Ryan:
   "when filtering the chart values the line disappears but the range stays." Root cause: each series is THREE
   datasets (`bandDatasets()`: invisible max, min-with-fill band, visible mean), and the legend deliberately lists
