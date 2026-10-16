@@ -321,7 +321,11 @@ function escapeHtml(str) {
 // to mean two different things (cancel vs. the non-extra confirm) would
 // be worse than just changing the contract for the callers that asked
 // for a third option in the first place.
-function confirmDanger(title, lines, confirmLabel, extraLabel) {
+// [2026-10-16] Optional `okClass` swaps the main button's style (default
+// 'danger-btn', red) - e.g. 'save-btn' for a confirmation that isn't
+// destructive (the Home page's mode switch). Every existing call site
+// omits it, so nothing else changes.
+function confirmDanger(title, lines, confirmLabel, extraLabel, okClass) {
   return new Promise(resolve => {
     const overlay = document.getElementById('confirmOverlay');
     document.getElementById('confirmTitle').textContent = title;
@@ -330,6 +334,7 @@ function confirmDanger(title, lines, confirmLabel, extraLabel) {
     const cancelBtn = document.getElementById('confirmCancelBtn');
     const extraBtn = document.getElementById('confirmExtraBtn');
     okBtn.textContent = confirmLabel || 'Confirm';
+    okBtn.className = okClass || 'danger-btn';
     if (extraLabel) {
       extraBtn.textContent = extraLabel;
       extraBtn.style.display = 'inline-block';

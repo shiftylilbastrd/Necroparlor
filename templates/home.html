@@ -287,6 +287,9 @@ window.__doorStatusPolledElsewhere = true;
 
 let currentRangeHours = 24;
 let modeDropdownOpen = false;
+// The latest /api/status config - selectMode()'s confirmation reads the
+// current mode and the target mode's setpoints from it.
+let lastStatusConfig = null;
 const MODE_NAMES = {dormant: 'Dormant', breeding: 'Breeding', ready: 'Ready', cleaning: 'Cleaning'};
 
 function fmtTime(ts) {
@@ -312,8 +315,31 @@ function updateModeUI(mode) {
 
 function toggleModeDropdown() {
   modeDropdownOpen = !modeDropdownOpen;
-  document.getElementById('modeOptions').hidden = !modeDropdownOpen;
+  const panel = document.getElementById('modeOptions');
+  panel.hidden = !modeDropdownOpen;
+  if (modeDropdownOpen) positionModeOptions();
 }
+
+// [2026-10-16] Opens the panel toward whichever side has room. The CSS
+// default (right-anchored, extending left) is right when the trigger sits
+// at the far right of the header - but the header wraps well above the
+// 640px mobile breakpoint (exactly where depends on how wide the badges
+// are), and once wrapped the trigger is at the LEFT edge, so a
+// right-anchored 220px panel ran off-screen (Ryan's report). Below 640px
+// the CSS full-width rule handles it, so inline styles are cleared there.
+function positionModeOptions() {
+  const panel = document.getElementById('modeOptions');
+  panel.style.left = panel.style.right = panel.style.width = '';
+  if (window.matchMedia('(max-width: 640px)').matches) return;
+  const trigger = document.getElementById('modeTrigger').getBoundingClientRect();
+  const width = Math.min(220, window.innerWidth - 16);
+  panel.style.width = width + 'px';
+  if (trigger.right - width < 8) {
+    panel.style.left = '0';
+    panel.style.right = 'auto';
+  }
+}
+window.addEventListener('resize', () => { if (modeDropdownOpen) positionModeOptions(); });
 
 document.addEventListener('click', (e) => {
   if (!modeDropdownOpen) return;
@@ -324,9 +350,30 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// [2026-10-16] Mode switches now need confirming (Ryan) - a mis-tap changes
+// the control targets AND ends the current mode's timelapse session, which
+// kicks off a compile (see camera_service.maybe_compile_session). Picking
+// the mode that's already active just closes the menu.
+function fmtSetpointNum(v) { return (Math.round(v * 10) / 10).toString(); }
+
 async function selectMode(mode) {
   modeDropdownOpen = false;
   document.getElementById('modeOptions').hidden = true;
+  const from = lastStatusConfig ? lastStatusConfig.current_mode : null;
+  if (mode === from) return;
+  const sp = lastStatusConfig && lastStatusConfig.modes ? lastStatusConfig.modes[mode] : null;
+  const lines = [];
+  if (sp) {
+    lines.push(`Targets: <strong>${fmtSetpointNum(sp.low_temp_f)}–${fmtSetpointNum(sp.high_temp_f)}°F</strong>, ` +
+               `humidity up to <strong>${fmtSetpointNum(sp.humidity_setpoint)}%</strong>.`);
+  }
+  if (from) {
+    lines.push(`This ends the current ${escapeHtml(MODE_NAMES[from] || from)} timelapse session - if it captured ` +
+               `enough frames, they're compiled into a video.`);
+  }
+  const ok = await confirmDanger(`Switch to ${MODE_NAMES[mode] || mode}?`, lines,
+                                 `Switch to ${MODE_NAMES[mode] || mode}`, undefined, 'save-btn');
+  if (!ok) return;
   updateModeUI(mode); // optimistic - reconciled by the next refreshStatus regardless
   const res = await fetch('/api/mode', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({mode})
@@ -394,6 +441,7 @@ async function refreshStatus() {
     outputBadge('dehumBadge', !!data.latest.dehumidifier);
   }
 
+  lastStatusConfig = data.config;
   updateModeUI(data.config.current_mode);
 
   // Resyncs the light icon from config.json's own light_override_until

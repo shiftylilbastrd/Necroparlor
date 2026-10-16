@@ -640,6 +640,24 @@ that aren't obvious from reading the code cold.
   no path filtering. Offered a docs-only skip (`*.md`, `docs/`, `Claude outputs/`); **Ryan chose to keep the plain
   version check.** Don't add path filtering without asking.
 
+- **[2026-10-16, `dev`] Home mode dropdown: no longer cut off when the header wraps; mode switches now need
+  confirming.** Ryan: "if the page is narrowed the dropdown moves to the left side and then the options are cut
+  off", and asked for a confirmation before switching modes.
+  - **Cut-off:** the options panel is right-anchored (opens leftward) for the desktop layout, and the existing
+    `max-width: 640px` rule made it full-width on phones - but the header wraps ABOVE 640px (where exactly
+    depends on the badge widths), leaving the trigger at the left edge with a right-anchored panel. Measured on
+    the old code: panel starting at x=-30 at 641-720px wide. Fix: `positionModeOptions()` in `home.html` runs on
+    open (and on resize while open) and anchors left when there isn't room to the left of the trigger; below
+    640px it clears its inline styles and leaves the CSS rule in charge. Verified at 12 widths 360-1280px:
+    panel fully on-screen at every one.
+  - **Confirmation:** `selectMode()` now shows the shared `confirmDanger()` modal: "Switch to X?", the target
+    mode's temp range and humidity ceiling (from the last `/api/status` config), and a note that it ends the
+    current mode's timelapse session, which compiles if it has enough frames - relevant while the compile-hang
+    top-priority issue is open. Picking the already-active mode just closes the menu. `confirmDanger()` gained
+    an optional 5th arg `okClass` (default `danger-btn`) so this non-destructive confirm uses the green
+    `save-btn`; every existing caller is unchanged (Timelapse page re-checked: still red). Verified in headless
+    Chromium: Cancel and Escape leave the mode alone, Confirm switches, no JS errors.
+
 - **[2026-10-16, `dev`] Fourth mode: Breeding, plus researched default setpoints for all four.** Ryan's seasonal
   workflow: Dormant for the off-season (months) -> Breeding for the run-up to hunting season -> Ready (waiting
   for a specimen) <-> Cleaning (specimen in the box). Agreed in conversation: run Breeding 6-8 weeks, not ~1 month
