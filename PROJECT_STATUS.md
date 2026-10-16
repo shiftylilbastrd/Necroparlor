@@ -625,6 +625,15 @@ that aren't obvious from reading the code cold.
   `vmstat 2`, `iostat -x 2` (sysstat), `vcgencmd measure_temp && vcgencmd get_throttled`; afterwards
   `journalctl -u dermestid-web -u dermestid-camera --since "-30 min"` and `dmesg | tail -50`.
 
+- **[2026-10-16, `dev`] Removed the System page's "Save branch" button** (Ryan: the branch select already
+  auto-saves, so the button was superfluous). Its one real job - retrying a failed auto-save - is covered
+  differently now: `templates/system.html` tracks `savedUpdateBranch`, and a failed save (server error OR
+  unreachable Pi) snaps the select and its non-main warning back to the branch actually being tracked, with
+  "still tracking X. Pick the branch again to retry." Before this, a failed save left the select showing a branch
+  that wasn't saved. "Check now" covers re-running the check. **Verified** in headless Chromium with the update
+  endpoints mocked: auto-save, server-error snap-back, retry by re-picking, network-error snap-back, warning
+  visibility follows, no JS errors. Not verified on the Pi.
+
 - **[2026-10-16] Doc-only commits DO show as an update on the Pi - deliberate, keep it.** Ryan noticed the
   PROJECT_STATUS-only commit from 2026-10-14 triggered the dashboard's update notice. That's expected: the
   update check (`_git_check_for_update()` in `webapp.py`, and `auto_update.sh`) compares commit hashes only, with
