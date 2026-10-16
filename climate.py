@@ -798,20 +798,22 @@ def run_cycle():
     # immediately, every cycle, which is exactly what they're supposed to
     # do. Alerting on that same crossing would fire constantly during
     # perfectly normal hysteresis-driven swings the control loop is
-    # already correcting. Instead this watches a wider band - each
-    # mode's setpoints plus/minus a configurable margin - and only fires
-    # after staying outside that wider band for notifications.range_alert_minutes
-    # (same 0-disables-it / dwell-before-alerting pattern as the door-open
-    # alert in light_loop()), so it's meant to catch a genuine problem
-    # (equipment failure, a door that silently failed to close, a heat
-    # wave overwhelming the AC) rather than ordinary operation.
-    range_alert_minutes = config.get("notifications", {}).get("range_alert_minutes", 15)
-    temp_alert_margin = setpoints.get("temp_alert_margin_f", 5.0)
-    humidity_alert_margin = setpoints.get("humidity_alert_margin", 15.0)
-    alert_low_temp = LOW_TEMP_F - temp_alert_margin
-    alert_high_temp = HIGH_TEMP_F + temp_alert_margin
-    alert_low_humidity = HUMIDITY_SETPOINT - humidity_alert_margin
-    alert_high_humidity = HUMIDITY_SETPOINT + humidity_alert_margin
+    # already correcting. Instead this watches a wider band -
+    # notifications.range_limits, one global set of absolute limits for
+    # every mode (2026-10-16; was each mode's setpoints +/- a per-mode
+    # margin) - and only fires after staying outside it for
+    # notifications.range_alert_minutes (same 0-disables-it /
+    # dwell-before-alerting pattern as the door-open alert in
+    # light_loop()), so it's meant to catch a genuine problem (equipment
+    # failure, a door that silently failed to close, a heat wave
+    # overwhelming the AC) rather than ordinary operation.
+    notify_cfg = config.get("notifications", {})
+    range_alert_minutes = notify_cfg.get("range_alert_minutes", 15)
+    range_limits = notify_cfg.get("range_limits", state.DEFAULT_CONFIG["notifications"]["range_limits"])
+    alert_low_temp = range_limits["low_temp_f"]
+    alert_high_temp = range_limits["high_temp_f"]
+    alert_low_humidity = range_limits["low_humidity"]
+    alert_high_humidity = range_limits["high_humidity"]
 
     if internal_temp < alert_low_temp or internal_temp > alert_high_temp:
         if temp_range_since is None:

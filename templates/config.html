@@ -56,14 +56,6 @@ function renderSetpointPanels(config) {
         <label>Humidity setpoint %RH</label>
         <input type="number" step="1" id="${mode}-humidity_setpoint" value="${sp.humidity_setpoint}">
       </div>
-      <div class="field">
-        <label>Out-of-range alert margin, °F (how far past low/high temp before it's worth a push)</label>
-        <input type="number" step="0.5" min="0.5" id="${mode}-temp_alert_margin_f" value="${sp.temp_alert_margin_f ?? 5.0}">
-      </div>
-      <div class="field">
-        <label>Out-of-range alert margin, %RH (how far past the humidity setpoint before it's worth a push)</label>
-        <input type="number" step="1" min="1" id="${mode}-humidity_alert_margin" value="${sp.humidity_alert_margin ?? 15.0}">
-      </div>
       ${extraFields}
       <div class="field">
         <label>Timelapse snapshot interval, minutes (0 = never)</label>
@@ -82,8 +74,6 @@ async function saveSetpoints(mode) {
     low_temp_f: parseFloat(document.getElementById(`${mode}-low_temp_f`).value),
     high_temp_f: parseFloat(document.getElementById(`${mode}-high_temp_f`).value),
     humidity_setpoint: parseFloat(document.getElementById(`${mode}-humidity_setpoint`).value),
-    temp_alert_margin_f: parseFloat(document.getElementById(`${mode}-temp_alert_margin_f`).value),
-    humidity_alert_margin: parseFloat(document.getElementById(`${mode}-humidity_alert_margin`).value),
   };
   if (mode === 'cleaning') {
     body.vent_interval_minutes = parseInt(document.getElementById(`${mode}-vent_interval_minutes`).value, 10);

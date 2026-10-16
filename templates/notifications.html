@@ -38,11 +38,6 @@
       <label>Alert if the door stays open longer than (minutes, 0 = never)</label>
       <input type="number" min="0" max="1440" id="notifyDoorOpenInput">
     </div>
-    <div class="field">
-      <label>Alert if internal temp/humidity stays outside its mode's acceptable range for longer than (minutes, 0 = never)</label>
-      <input type="number" min="0" max="1440" id="notifyRangeAlertInput">
-      <div class="stat-sub" style="margin-top:4px;">"Acceptable range" is each mode's low/high temp and humidity setpoint (set on the Setpoints tab) widened by that mode's own alert margin - not the same moment the heater/fan/dehumidifier kicks in, which would fire this constantly during normal operation.</div>
-    </div>
     <div class="field" style="margin-top:14px;">
       <label><input type="checkbox" id="notifyQuietEnabled" style="width:auto; margin-right:6px;" onchange="saveNotificationSettings('notifySettingsMsg')">Quiet hours</label>
       <div style="display:flex; gap:8px; margin-top:6px;">
@@ -51,13 +46,47 @@
       </div>
       <label style="margin-top:8px;"><input type="checkbox" id="notifyQuietAllowCritical" style="width:auto; margin-right:6px;" onchange="saveNotificationSettings('notifySettingsMsg')">Still notify for critical events during quiet hours</label>
     </div>
-    <!-- Cooldown/door-open-alert/range-alert (numbers) and the quiet-hours
+    <!-- Cooldown/door-open-alert (numbers) and the quiet-hours
          start/end times still need an explicit Save - those benefit from a
          deliberate commit the way a toggle or dropdown doesn't (typing
          "9" on the way to "90" shouldn't fire a save of "9"). -->
     <button class="save-btn" style="margin-top:10px;" onclick="saveNotificationSettings('notifySettingsMsg')">Save</button>
     <button class="save-btn" onclick="sendTestNotification()" style="margin-left:6px;">Send test</button>
     <div class="save-msg" id="notifySettingsMsg"></div>
+  </div>
+
+  <!-- Out-of-range warning: one global set of absolute limits for every
+       mode, sitting inside the critical limits (2026-10-16 - replaced the
+       per-mode alert margins on the Setpoints page). Explicit Save, same
+       as the critical card. -->
+  <div class="card">
+    <h2>Out-of-range warning</h2>
+    <div class="stat-sub" style="margin-bottom:8px;">
+      Internal reading only, same limits in every mode. Sends a <strong>warning</strong> once the reading has
+      stayed outside these limits for the time below (once per episode). Must sit inside the critical limits,
+      and every mode's setpoints must sit inside these - so they need to be wide enough for both dormant's and
+      ready's targets.
+    </div>
+    <div class="field">
+      <label>Temperature (°F) - low / high</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" step="0.1" id="rangeLowTemp" style="width:50%;">
+        <input type="number" step="0.1" id="rangeHighTemp" style="width:50%;">
+      </div>
+    </div>
+    <div class="field">
+      <label>Humidity (%RH) - low / high</label>
+      <div style="display:flex; gap:8px;">
+        <input type="number" step="0.1" min="0" max="100" id="rangeLowHumidity" style="width:50%;">
+        <input type="number" step="0.1" min="0" max="100" id="rangeHighHumidity" style="width:50%;">
+      </div>
+    </div>
+    <div class="field">
+      <label>Warn after staying outside for (minutes, 0 = never)</label>
+      <input type="number" min="0" max="1440" id="notifyRangeAlertInput">
+    </div>
+    <button class="save-btn" style="margin-top:10px;" onclick="saveNotificationSettings('rangeLimitsMsg')">Save</button>
+    <div class="save-msg" id="rangeLimitsMsg"></div>
   </div>
 
   <!-- Critical limits: one global set for every mode (what endangers the
@@ -69,7 +98,7 @@
       Internal reading only, same limits in every mode. The first reading at or past a limit sends a
       <strong>critical</strong> alert right away (no waiting period), then repeats while it stays there.
       Critical alerts skip the cooldown above, still come through quiet hours if "Still notify for critical
-      events" is checked, and go to Pushover as high priority. Every mode's setpoints must sit inside these
+      events" is checked, and go to Pushover as high priority. Must sit outside the out-of-range warning
       limits.
     </div>
     <div class="field">
@@ -258,6 +287,12 @@ function applyNotificationSettings(n) {
   document.getElementById('notifyDoorOpenInput').value = n.door_open_alert_minutes ?? 15;
   document.getElementById('notifyRangeAlertInput').value = n.range_alert_minutes ?? 15;
 
+  const rng = n.range_limits || {};
+  document.getElementById('rangeLowTemp').value = rng.low_temp_f ?? 50;
+  document.getElementById('rangeHighTemp').value = rng.high_temp_f ?? 90;
+  document.getElementById('rangeLowHumidity').value = rng.low_humidity ?? 25;
+  document.getElementById('rangeHighHumidity').value = rng.high_humidity ?? 75;
+
   const crit = n.critical_limits || {};
   document.getElementById('criticalLowTemp').value = crit.low_temp_f ?? 45;
   document.getElementById('criticalHighTemp').value = crit.high_temp_f ?? 95;
@@ -371,7 +406,13 @@ async function saveNotificationSettings(msgId) {
     range_alert_minutes: parseInt(document.getElementById('notifyRangeAlertInput').value, 10),
     // readCriticalNumber(): an empty field is sent as null (server rejects
     // it with a clear error) - plain Number("") would silently send 0,
-    // which is a VALID critical low humidity.
+    // which is a VALID critical low humidity. Same for range_limits.
+    range_limits: {
+      low_temp_f: readCriticalNumber('rangeLowTemp'),
+      high_temp_f: readCriticalNumber('rangeHighTemp'),
+      low_humidity: readCriticalNumber('rangeLowHumidity'),
+      high_humidity: readCriticalNumber('rangeHighHumidity'),
+    },
     critical_limits: {
       low_temp_f: readCriticalNumber('criticalLowTemp'),
       high_temp_f: readCriticalNumber('criticalHighTemp'),

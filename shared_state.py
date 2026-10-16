@@ -288,14 +288,29 @@ DEFAULT_CONFIG = {
         # specific check - same never sentinel convention as
         # snapshot_interval_minutes elsewhere in this file.
         "door_open_alert_minutes": 15,
-        # How long the internal reading can sit outside its mode's
-        # acceptable range (low_temp_f/high_temp_f/humidity_setpoint,
-        # widened by that mode's temp_alert_margin_f/humidity_alert_margin
-        # below) before it's worth a push - same dwell-before-alerting
+        # How long the internal reading can sit outside range_limits
+        # (below) before it's worth a push - same dwell-before-alerting
         # purpose and 0-disables-it convention as door_open_alert_minutes
         # above, applied to climate.py's out-of-range check instead of the
         # door switch.
         "range_alert_minutes": 15,
+        # [2026-10-16, Ryan] The out-of-range WARNING band - one global set
+        # of absolute limits for every mode, edited next to critical_limits
+        # on the Notifications page. Replaces the old per-mode
+        # temp_alert_margin_f/humidity_alert_margin (setpoints +/- a
+        # margin). Tradeoff accepted when choosing this: a fixed band has
+        # to be wide enough for every mode's setpoints (dormant's cold
+        # target AND ready's warm one), so it won't catch e.g. ready
+        # drifting down to dormant temperatures. Must sit strictly inside
+        # critical_limits, and every mode's setpoints strictly inside it
+        # (see setpoint_limits_conflict). Placeholder defaults, like the
+        # critical ones.
+        "range_limits": {
+            "low_temp_f": 50.0,
+            "high_temp_f": 90.0,
+            "low_humidity": 25.0,
+            "high_humidity": 75.0,
+        },
         # Absolute "the colony is in danger" limits for the INTERNAL
         # reading - deliberately one global set, NOT per-mode like the
         # setpoints/alert margins: what physically endangers the beetles
@@ -365,15 +380,6 @@ DEFAULT_CONFIG = {
             "low_temp_f": 55.0,
             "high_temp_f": 60.0,
             "humidity_setpoint": 40.0,
-            # How far outside [low_temp_f, high_temp_f] / humidity_setpoint
-            # the INTERNAL reading has to drift before climate.py's
-            # out-of-range alert (see run_cycle()) even starts its dwell
-            # timer - deliberately wider than the setpoints themselves,
-            # which the control loop is already reacting to every cycle.
-            # Per-mode, like the setpoints, since how tight a band is
-            # "normal" varies by mode.
-            "temp_alert_margin_f": 5.0,
-            "humidity_alert_margin": 15.0,
             # Timelapse snapshot cadence for this mode - 0 means never
             # (no snapshots captured while in this mode). Per-mode
             # rather than a single global setting, since a mode you
@@ -386,8 +392,6 @@ DEFAULT_CONFIG = {
             "low_temp_f": 78.0,
             "high_temp_f": 85.0,
             "humidity_setpoint": 50.0,
-            "temp_alert_margin_f": 5.0,
-            "humidity_alert_margin": 15.0,
             "snapshot_interval_minutes": 0
         },
         "cleaning": {
@@ -398,8 +402,6 @@ DEFAULT_CONFIG = {
             "low_temp_f": 78.0,
             "high_temp_f": 85.0,
             "humidity_setpoint": 50.0,
-            "temp_alert_margin_f": 5.0,
-            "humidity_alert_margin": 15.0,
             "vent_interval_minutes": 30,
             "vent_duration_minutes": 5,
             "snapshot_interval_minutes": 0
@@ -418,11 +420,6 @@ VENT_DURATION_BOUNDS = (1, 60)    # minutes
 SNAPSHOT_INTERVAL_BOUNDS = (1, 1440)  # minutes, when not 0/never
 HISTORY_RETENTION_BOUNDS = (7, 3650)  # days, when not 0/forever (see DEFAULT_CONFIG)
 
-# Bounds for the out-of-range alert margins (how far past low_temp_f/
-# high_temp_f/humidity_setpoint the internal reading has to drift before
-# climate.py's alert dwell timer starts - see DEFAULT_CONFIG["modes"] above).
-TEMP_ALERT_MARGIN_BOUNDS_F = (0.5, 30.0)
-HUMIDITY_ALERT_MARGIN_BOUNDS = (1.0, 50.0)
 
 CAMERA_WIDTH_BOUNDS = (160, 1920)
 CAMERA_HEIGHT_BOUNDS = (120, 1080)
@@ -705,30 +702,86 @@ def _validate_critical_limits(values):
             "high_humidity": high_h, "repeat_minutes": repeat}, None
 
 
-def critical_limits_conflict(critical, modes):
-    """Returns an error string if any mode's setpoints sit at or past a
-    critical limit, else None. Checked from BOTH sides - saving the
-    critical limits (validate_notification_settings) and saving a mode's
-    setpoints (validate_setpoints) - because either order produces the
-    same bad end state: the control loop's normal target sitting inside
-    critical territory, which would page a critical alert every
-    repeat_minutes indefinitely, through quiet hours, with nothing
-    actually wrong. Humidity compares against humidity_setpoint itself,
-    the one humidity number a mode has."""
-    for mode_name, sp in modes.items():
-        if sp["low_temp_f"] <= critical["low_temp_f"]:
-            return (f"{mode_name} mode's low temp setpoint ({sp['low_temp_f']}F) must be above the "
-                    f"critical low temp ({critical['low_temp_f']}F)")
-        if sp["high_temp_f"] >= critical["high_temp_f"]:
-            return (f"{mode_name} mode's high temp setpoint ({sp['high_temp_f']}F) must be below the "
-                    f"critical high temp ({critical['high_temp_f']}F)")
-        if sp["humidity_setpoint"] <= critical["low_humidity"]:
-            return (f"{mode_name} mode's humidity setpoint ({sp['humidity_setpoint']}%) must be above the "
-                    f"critical low humidity ({critical['low_humidity']}%)")
-        if sp["humidity_setpoint"] >= critical["high_humidity"]:
-            return (f"{mode_name} mode's humidity setpoint ({sp['humidity_setpoint']}%) must be below the "
-                    f"critical high humidity ({critical['high_humidity']}%)")
+def _validate_range_limits(values):
+    """Shape/bounds check for notifications.range_limits (the global
+    out-of-range warning band) on its own - same rules and fallbacks as
+    _validate_critical_limits, minus repeat_minutes (the warning's dwell
+    is range_alert_minutes). Returns (cleaned_dict, None) or (None, error)."""
+    defaults = DEFAULT_CONFIG["notifications"]["range_limits"]
+    try:
+        low_t = float(values.get("low_temp_f", defaults["low_temp_f"]))
+        high_t = float(values.get("high_temp_f", defaults["high_temp_f"]))
+        low_h = float(values.get("low_humidity", defaults["low_humidity"]))
+        high_h = float(values.get("high_humidity", defaults["high_humidity"]))
+    except (TypeError, ValueError):
+        return None, "out-of-range limits must be numbers"
+    tb, hb = CRITICAL_TEMP_BOUNDS_F, CRITICAL_HUMIDITY_BOUNDS
+    for name, v in (("low_temp_f", low_t), ("high_temp_f", high_t)):
+        if not (tb[0] <= v <= tb[1]):
+            return None, f"out-of-range {name} must be between {tb[0]} and {tb[1]}"
+    for name, v in (("low_humidity", low_h), ("high_humidity", high_h)):
+        if not (hb[0] <= v <= hb[1]):
+            return None, f"out-of-range {name} must be between {hb[0]} and {hb[1]}"
+    if low_t >= high_t:
+        return None, "out-of-range low temp must be less than out-of-range high temp"
+    if low_h >= high_h:
+        return None, "out-of-range low humidity must be less than out-of-range high humidity"
+    return {"low_temp_f": low_t, "high_temp_f": high_t, "low_humidity": low_h,
+            "high_humidity": high_h}, None
+
+
+def range_inside_critical_conflict(range_limits, critical):
+    """The warning band has to sit strictly inside the critical limits -
+    otherwise the reading would go critical before (or at the same moment)
+    it ever counted as merely out of range, and the "warning first,
+    critical if it gets worse" ordering means nothing."""
+    if range_limits["low_temp_f"] <= critical["low_temp_f"]:
+        return (f"out-of-range low temp ({range_limits['low_temp_f']}F) must be above the "
+                f"critical low temp ({critical['low_temp_f']}F)")
+    if range_limits["high_temp_f"] >= critical["high_temp_f"]:
+        return (f"out-of-range high temp ({range_limits['high_temp_f']}F) must be below the "
+                f"critical high temp ({critical['high_temp_f']}F)")
+    if range_limits["low_humidity"] <= critical["low_humidity"]:
+        return (f"out-of-range low humidity ({range_limits['low_humidity']}%) must be above the "
+                f"critical low humidity ({critical['low_humidity']}%)")
+    if range_limits["high_humidity"] >= critical["high_humidity"]:
+        return (f"out-of-range high humidity ({range_limits['high_humidity']}%) must be below the "
+                f"critical high humidity ({critical['high_humidity']}%)")
     return None
+
+
+def setpoint_limits_conflict(limits, modes, label):
+    """Returns an error string if any mode's setpoints sit at or past one
+    of `limits` (critical_limits or range_limits - `label` names which in
+    the message), else None. Checked from BOTH sides - saving the limits
+    (validate_notification_settings) and saving a mode's setpoints
+    (validate_setpoints) - because either order produces the same bad end
+    state: the control loop's normal target sitting inside alert
+    territory, which would alert indefinitely with nothing actually
+    wrong. Humidity compares against humidity_setpoint itself, the one
+    humidity number a mode has."""
+    for mode_name, sp in modes.items():
+        if sp["low_temp_f"] <= limits["low_temp_f"]:
+            return (f"{mode_name} mode's low temp setpoint ({sp['low_temp_f']}F) must be above the "
+                    f"{label} low temp ({limits['low_temp_f']}F)")
+        if sp["high_temp_f"] >= limits["high_temp_f"]:
+            return (f"{mode_name} mode's high temp setpoint ({sp['high_temp_f']}F) must be below the "
+                    f"{label} high temp ({limits['high_temp_f']}F)")
+        if sp["humidity_setpoint"] <= limits["low_humidity"]:
+            return (f"{mode_name} mode's humidity setpoint ({sp['humidity_setpoint']}%) must be above the "
+                    f"{label} low humidity ({limits['low_humidity']}%)")
+        if sp["humidity_setpoint"] >= limits["high_humidity"]:
+            return (f"{mode_name} mode's humidity setpoint ({sp['humidity_setpoint']}%) must be below the "
+                    f"{label} high humidity ({limits['high_humidity']}%)")
+    return None
+
+
+def critical_limits_conflict(critical, modes):
+    return setpoint_limits_conflict(critical, modes, "critical")
+
+
+def range_limits_conflict(range_limits, modes):
+    return setpoint_limits_conflict(range_limits, modes, "out-of-range")
 
 
 def validate_notification_settings(values, modes=None):
@@ -736,8 +789,8 @@ def validate_notification_settings(values, modes=None):
     page's Notifications card. Returns (cleaned_dict, None) on success or
     (None, error) on failure - same shape as validate_camera_settings
     above. `modes` (the saved config's per-mode setpoints) is optional -
-    when given, the critical limits are also checked against every mode's
-    setpoints (see critical_limits_conflict). Deliberately does NOT try to contact Pushover/SMTP/the webhook
+    when given, the critical AND out-of-range limits are also checked
+    against every mode's setpoints (see setpoint_limits_conflict). Deliberately does NOT try to contact Pushover/SMTP/the webhook
     URL to confirm credentials actually work - that's what the Config
     page's "Send test" button (send_test_notification() below) is for;
     this just sanity-checks the shape of the input so a typo doesn't
@@ -789,6 +842,18 @@ def validate_notification_settings(values, modes=None):
         if error:
             return None, error
     cleaned["critical_limits"] = critical
+
+    range_limits, error = _validate_range_limits(values.get("range_limits", {}))
+    if error:
+        return None, error
+    error = range_inside_critical_conflict(range_limits, critical)
+    if error:
+        return None, error
+    if modes is not None:
+        error = range_limits_conflict(range_limits, modes)
+        if error:
+            return None, error
+    cleaned["range_limits"] = range_limits
 
     qh = values.get("quiet_hours", {})
     start = qh.get("start", "22:00")
@@ -1001,6 +1066,7 @@ def _merge_notifications(defaults, saved):
     merged["categories"] = {**defaults["categories"], **saved.get("categories", {})}
     merged["quiet_hours"] = {**defaults["quiet_hours"], **saved.get("quiet_hours", {})}
     merged["critical_limits"] = {**defaults["critical_limits"], **saved.get("critical_limits", {})}
+    merged["range_limits"] = {**defaults["range_limits"], **saved.get("range_limits", {})}
     saved_channels = saved.get("channels", {})
     merged["channels"] = {
         name: {**chan_defaults, **saved_channels.get(name, {})}
@@ -1013,12 +1079,17 @@ def save_config(config):
     _atomic_write(CONFIG_PATH, json.dumps(config, indent=2))
 
 
-def validate_setpoints(mode, values, critical_limits=None):
+def validate_setpoints(mode, values, critical_limits=None, range_limits=None):
     """Validate setpoint values coming from the web UI.
     Returns (cleaned_dict, None) on success or (None, error_message) on failure.
-    `critical_limits` (notifications.critical_limits from the saved config)
-    is optional - when given, the new setpoints must also sit strictly
-    inside them (see critical_limits_conflict).
+    `critical_limits` / `range_limits` (notifications.critical_limits /
+    notifications.range_limits from the saved config) are optional - when
+    given, the new setpoints must also sit strictly inside them (see
+    setpoint_limits_conflict). The out-of-range alert margins that used to
+    be validated here are gone - the warning band is global now
+    (notifications.range_limits); a saved mode still carrying the old
+    margin keys just loses them on its next save, since this returns
+    only the keys it knows.
     """
     if mode not in VALID_MODES:
         return None, f"Unknown mode '{mode}'"
@@ -1044,20 +1115,10 @@ def validate_setpoints(mode, values, critical_limits=None):
         error = critical_limits_conflict(critical_limits, {mode: cleaned})
         if error:
             return None, error
-
-    try:
-        temp_margin = float(values.get("temp_alert_margin_f", 5.0))
-        humidity_margin = float(values.get("humidity_alert_margin", 15.0))
-    except (TypeError, ValueError):
-        return None, "temp_alert_margin_f and humidity_alert_margin must be numbers"
-    if not (TEMP_ALERT_MARGIN_BOUNDS_F[0] <= temp_margin <= TEMP_ALERT_MARGIN_BOUNDS_F[1]):
-        return None, (f"temp_alert_margin_f must be between "
-                       f"{TEMP_ALERT_MARGIN_BOUNDS_F[0]} and {TEMP_ALERT_MARGIN_BOUNDS_F[1]}")
-    if not (HUMIDITY_ALERT_MARGIN_BOUNDS[0] <= humidity_margin <= HUMIDITY_ALERT_MARGIN_BOUNDS[1]):
-        return None, (f"humidity_alert_margin must be between "
-                       f"{HUMIDITY_ALERT_MARGIN_BOUNDS[0]} and {HUMIDITY_ALERT_MARGIN_BOUNDS[1]}")
-    cleaned["temp_alert_margin_f"] = temp_margin
-    cleaned["humidity_alert_margin"] = humidity_margin
+    if range_limits is not None:
+        error = range_limits_conflict(range_limits, {mode: cleaned})
+        if error:
+            return None, error
 
     if mode == "cleaning":
         try:

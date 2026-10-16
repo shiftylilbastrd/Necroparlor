@@ -625,6 +625,37 @@ that aren't obvious from reading the code cold.
   `vmstat 2`, `iostat -x 2` (sysstat), `vcgencmd measure_temp && vcgencmd get_throttled`; afterwards
   `journalctl -u dermestid-web -u dermestid-camera --since "-30 min"` and `dmesg | tail -50`.
 
+- **[2026-10-16] Doc-only commits DO show as an update on the Pi - deliberate, keep it.** Ryan noticed the
+  PROJECT_STATUS-only commit from 2026-10-14 triggered the dashboard's update notice. That's expected: the
+  update check (`_git_check_for_update()` in `webapp.py`, and `auto_update.sh`) compares commit hashes only, with
+  no path filtering. Offered a docs-only skip (`*.md`, `docs/`, `Claude outputs/`); **Ryan chose to keep the plain
+  version check.** Don't add path filtering without asking.
+
+- **[2026-10-16, `dev`] Out-of-range warning is now one global set of fixed limits, next to Critical limits.**
+  Ryan: "make the out of range setpoints be global and move them with the critical limits." Asked which kind of
+  global - **Ryan chose fixed absolute limits** (low/high °F, low/high %RH) over one shared ± margin. Known
+  tradeoff, accepted when choosing: the band has to be wide enough for every mode's setpoints, so it won't catch
+  e.g. ready mode sagging to dormant temperatures - don't "fix" that by quietly going back to per-mode margins.
+  - `shared_state.py`: new `notifications.range_limits` (defaults 50/90°F, 25/75%RH - placeholders like the
+    critical ones), backfilled per-key by `_merge_notifications()`. `range_alert_minutes` kept its key/meaning.
+    Per-mode `temp_alert_margin_f`/`humidity_alert_margin` and their bounds removed; a saved mode still holding
+    them simply drops them on its next Setpoints save (`validate_setpoints` only returns keys it knows), and
+    `climate.py` ignores them in the meantime. Ordering rules, enforced on BOTH saves (Notifications and
+    Setpoints): every mode's setpoints strictly inside the range band, and the range band strictly inside the
+    critical limits. `critical_limits_conflict` is now a thin wrapper over a shared `setpoint_limits_conflict`.
+  - `climate.py`: out-of-range check reads `range_limits` directly; dwell / once-per-episode logic unchanged.
+  - `templates/notifications.html`: new "Out-of-range warning" card between General and Critical limits, with
+    the four limits plus the "warn after N minutes" field (moved out of General). `templates/config.html`: margin
+    fields removed. README updated.
+  - **Verified** off-Pi (GPIO/board stubbed, temp config/DB): 37 checks - old-config backfill, every validation
+    path both directions through the real Flask endpoints, and real `run_cycle()` runs: ready at 70°F no longer
+    warns (old per-mode margin would have), 91°F for 20 min -> exactly one warning, humidity independent, same
+    band in dormant, 0 disables. Headless Chromium at phone width: card loads/saves/reloads, conflict and
+    empty-field errors shown in the card, Setpoints save still works, no horizontal scroll, no JS errors.
+    **NOT verified**: on the Pi. **Check after deploying:** if any of Ryan's real saved setpoints sit outside
+    50-90°F / 25-75%RH, Notifications saves will be refused until the band is widened - and `climate.py` would
+    warn in that mode meanwhile.
+
 - **[2026-10-12, `dev`] Home chart legend: hiding a series now hides its band and rescales the axis.** Ryan:
   "when filtering the chart values the line disappears but the range stays." Root cause: each series is THREE
   datasets (`bandDatasets()`: invisible max, min-with-fill band, visible mean), and the legend deliberately lists
