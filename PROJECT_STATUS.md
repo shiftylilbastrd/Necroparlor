@@ -567,6 +567,11 @@ that aren't obvious from reading the code cold.
 
 ## Established workflows / things that look like bugs but aren't
 
+- **[2026-10-16] Ryan tests every commit on the Pi as soon as it's pushed** (the Pi tracks `dev` during
+  development, so each push shows up as an update he applies right away). So "not yet verified on the Pi" is
+  only true for the minutes between a push and his check - when he says a change looks good, mark that entry
+  confirmed on the Pi rather than leaving it flagged as unverified for a future session to re-check.
+
 - **[updated 2026-10-06]** Deployment is via **GitHub Desktop** from
   Ryan's local clone at `D:\GitHub\Necroparlor` (Windows laptop; moved
   there from a OneDrive-synced path that broke change detection) - Claude
@@ -641,7 +646,7 @@ that aren't obvious from reading the code cold.
   "still tracking X. Pick the branch again to retry." Before this, a failed save left the select showing a branch
   that wasn't saved. "Check now" covers re-running the check. **Verified** in headless Chromium with the update
   endpoints mocked: auto-save, server-error snap-back, retry by re-picking, network-error snap-back, warning
-  visibility follows, no JS errors. Not verified on the Pi.
+  visibility follows, no JS errors. **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands.
 
 - **[2026-10-16] Doc-only commits DO show as an update on the Pi - deliberate, keep it.** Ryan noticed the
   PROJECT_STATUS-only commit from 2026-10-14 triggered the dashboard's update notice. That's expected: the
@@ -667,13 +672,14 @@ that aren't obvious from reading the code cold.
     moved from climate.py to `shared_state.HUMIDITY_HYSTERESIS` (climate.py reads it from there, behaviour
     unchanged) and `/api/status` returns it as `humidity_hysteresis`, so the chart never hard-codes it.
     Re-verified: climate suite (50 checks) and chart checks (13) pass; band steps 47-53% -> 42-48% at the switch.
+    **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands.
   - **Known limitations, accepted:** uses each mode's CURRENT setpoints (past setpoint values aren't stored), so
     changing a mode's range redraws its older stretches; on the 7d/30d views a switch lands on the nearest
     6h/1-day bucket; the y-axis now always stretches to include the range.
   - **Verified** in headless Chromium with the real Chart.js 4.4.4 served locally and 24h of synthetic readings
     (Ready, then Cleaning at 3 AM): legend order on both charts at 1100 and 390px, band values step 75->80°F and
     ceiling 50->45%, drawn behind the data, not in tooltips, legend tap hides it, a refresh keeps it, no JS errors.
-    Not verified on the Pi.
+    **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands.
 
 - **[2026-10-16, `dev`] Timelapse is now start/stop RECORDINGS, separate from the climate mode; compiling is
   manual.** Ryan asked whether timelapse should be "started and controlled separately from the mode switch";
@@ -714,8 +720,8 @@ that aren't obvious from reading the code cold.
     mode switch and a restart; no compile from the loop; one-at-a-time; compile/preview/delete/lock conflicts
     through Flask; real ffmpeg compile; download headers; CLI list/refusal/compile); 28-check headless Chromium
     run of the whole flow at phone width (incl. the Cleaning prompt's three choices); the earlier 50-check
-    settings/modes suite still passes. **NOT verified on the Pi.** After updating: check the Timelapse page shows
-    the carried-over recording with the right frame count, and that new frames keep landing in it.
+    settings/modes suite still passes. **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands. ("everything looks good" after the update, incl.
+    the carried-over recording.) This does NOT mean the compile-hang issue is resolved - see its own entry.
   - **Startup race fixed along the way (pre-existing pattern).** The concurrent-`init_db()` test also caught that
     every "add a missing column" migration was check-then-ALTER, so two services starting together could both
     try to add it and one would crash with "duplicate column name" (systemd's `Restart=on-failure` would bring it
@@ -742,7 +748,7 @@ that aren't obvious from reading the code cold.
     top-priority issue is open. Picking the already-active mode just closes the menu. `confirmDanger()` gained
     an optional 5th arg `okClass` (default `danger-btn`) so this non-destructive confirm uses the green
     `save-btn`; every existing caller is unchanged (Timelapse page re-checked: still red). Verified in headless
-    Chromium: Cancel and Escape leave the mode alone, Confirm switches, no JS errors.
+    Chromium: Cancel and Escape leave the mode alone, Confirm switches, no JS errors. **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands.
 
 - **[2026-10-16, `dev`] Fourth mode: Breeding, plus researched default setpoints for all four.** Ryan's seasonal
   workflow: Dormant for the off-season (months) -> Breeding for the run-up to hunting season -> Ready (waiting
@@ -764,8 +770,8 @@ that aren't obvious from reading the code cold.
     switch, setpoint save and critical-band rejection for Breeding through Flask; preview route accepts it;
     `run_cycle()` in Breeding warns at its own band) and headless Chromium at phone width (Home dropdown order +
     selecting Breeding, Setpoints panels/defaults/save, Notifications preview lists all four, Timelapse page
-    loads, no JS errors). **NOT verified on the Pi** - check the Home dropdown, then set the Pi's real setpoints
-    for all four modes (they won't change on their own).
+    loads, no JS errors). **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands. Reminder: existing saved setpoints don't change on their own - the
+    new per-mode defaults only apply to a fresh install (or the newly added Breeding mode).
 
 - **[2026-10-16, `dev`] Critical-limit defaults are now researched: 35-104°F, 10-95%RH** (were placeholder
   45-95°F / 20-80%RH). Ryan's framing: "what are the truly critical limits that will affect the colony in say 3
@@ -776,7 +782,7 @@ that aren't obvious from reading the code cold.
   disaster; chronic drift is the out-of-range warning's job. Sources: FAO stored-product pest notes, UF/IFAS EDIS
   IN836, NHCOLL-L museum reports. **Defaults only** - an existing `config.json` keeps whatever is saved, so Ryan
   has to enter these on the Pi's Notifications page himself. Verified: 39 backend checks (incl. default modes +
-  margins passing the new defaults) and the Notifications page in headless Chromium showing them.
+  margins passing the new defaults) and the Notifications page in headless Chromium showing them. **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands.
   - **Minor, pre-existing, not fixed:** on a brand-new install with no `config.json`, two concurrent requests can
     both hit `load_config()`'s create-on-first-read, and `_atomic_write`'s fixed `config.json.tmp` name makes the
     loser's rename fail (one 500 on `/api/status`). Seen only in test harnesses; irrelevant once the file exists.
@@ -799,8 +805,8 @@ that aren't obvious from reading the code cold.
   - **Verified** off-Pi: 37 checks incl. real `run_cycle()` runs (ready warns below 73°F/above 65%RH, dormant
     follows its own setpoints - 72°F warns in dormant, which the fixed 50-90 band would have missed; stale
     per-mode 0.5 margin ignored; 0 disables). Headless Chromium at phone width: defaults, live preview, save/
-    reload, critical-conflict and empty-field errors in the card, no horizontal scroll, no JS errors. NOT
-    verified on the Pi.
+    reload, critical-conflict and empty-field errors in the card, no horizontal scroll, no JS errors.
+    **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands.
 
 - **[2026-10-16, `dev`, SUPERSEDED same day by the margin entry above] Out-of-range warning is now one global set
   of fixed limits, next to Critical limits.**
