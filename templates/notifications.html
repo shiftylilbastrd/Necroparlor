@@ -287,10 +287,10 @@ function applyNotificationSettings(n) {
   renderRangePreview();
 
   const crit = n.critical_limits || {};
-  document.getElementById('criticalLowTemp').value = crit.low_temp_f ?? 45;
-  document.getElementById('criticalHighTemp').value = crit.high_temp_f ?? 95;
-  document.getElementById('criticalLowHumidity').value = crit.low_humidity ?? 20;
-  document.getElementById('criticalHighHumidity').value = crit.high_humidity ?? 80;
+  document.getElementById('criticalLowTemp').value = crit.low_temp_f ?? 35;
+  document.getElementById('criticalHighTemp').value = crit.high_temp_f ?? 104;
+  document.getElementById('criticalLowHumidity').value = crit.low_humidity ?? 10;
+  document.getElementById('criticalHighHumidity').value = crit.high_humidity ?? 95;
   document.getElementById('criticalRepeatInput').value = crit.repeat_minutes ?? 30;
 
   const qh = n.quiet_hours || {};

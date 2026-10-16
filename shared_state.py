@@ -321,13 +321,23 @@ DEFAULT_CONFIG = {
         # convention as range_alert_minutes). These two categories are
         # exempt from cooldown_minutes above (see EVENT_CATEGORIES'
         # bypass_cooldown) - repeat_minutes IS their throttle.
-        # The default numbers are placeholders, not researched dermestid
-        # tolerances - set real values on the Notifications page.
+        # [2026-10-16] Defaults researched for a "harm within ~3 hours"
+        # standard (Ryan's framing), assuming Dermestes maculatus. HEAT is
+        # the real acute risk: development stops at 40C/104F and museums
+        # kill all stages at ~50C/122F for 4h. Cold is slow - below
+        # ~64F development just stops, and even pest-kill freezing takes
+        # days at -20C - so 35F is a conservative "the enclosure is
+        # freezing" alarm, not a kill line. Humidity has no 3-hour danger
+        # point (its effects - development, mold, mites - play out over
+        # days), so 10/95%RH only catches a broken sensor or a disaster;
+        # chronic humidity drift is the out-of-range warning's job.
+        # Deliberately wide so setpoints + range_margins never collide
+        # with them in normal use.
         "critical_limits": {
-            "low_temp_f": 45.0,
-            "high_temp_f": 95.0,
-            "low_humidity": 20.0,
-            "high_humidity": 80.0,
+            "low_temp_f": 35.0,
+            "high_temp_f": 104.0,
+            "low_humidity": 10.0,
+            "high_humidity": 95.0,
             "repeat_minutes": 30,
         },
         "channels": {

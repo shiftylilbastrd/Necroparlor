@@ -640,6 +640,20 @@ that aren't obvious from reading the code cold.
   no path filtering. Offered a docs-only skip (`*.md`, `docs/`, `Claude outputs/`); **Ryan chose to keep the plain
   version check.** Don't add path filtering without asking.
 
+- **[2026-10-16, `dev`] Critical-limit defaults are now researched: 35-104°F, 10-95%RH** (were placeholder
+  45-95°F / 20-80%RH). Ryan's framing: "what are the truly critical limits that will affect the colony in say 3
+  hours" - he felt the tight placeholders made setpoints hard to save. Assumes *Dermestes maculatus*. Heat is the
+  acute risk (no development at 40°C/104°F; museums kill all stages at ~50°C/122°F for 4 h). Cold is slow
+  (development stops below ~18°C/64°F; pest-kill freezing takes days at -20°C), so 35°F is a conservative
+  "enclosure freezing" alarm. Humidity has no few-hour danger point, so 10/95 only catches sensor failure or a
+  disaster; chronic drift is the out-of-range warning's job. Sources: FAO stored-product pest notes, UF/IFAS EDIS
+  IN836, NHCOLL-L museum reports. **Defaults only** - an existing `config.json` keeps whatever is saved, so Ryan
+  has to enter these on the Pi's Notifications page himself. Verified: 39 backend checks (incl. default modes +
+  margins passing the new defaults) and the Notifications page in headless Chromium showing them.
+  - **Minor, pre-existing, not fixed:** on a brand-new install with no `config.json`, two concurrent requests can
+    both hit `load_config()`'s create-on-first-read, and `_atomic_write`'s fixed `config.json.tmp` name makes the
+    loser's rename fail (one 500 on `/api/status`). Seen only in test harnesses; irrelevant once the file exists.
+
 - **[2026-10-16, `dev`] Out-of-range warning = one global MARGIN around the current mode's setpoints, next to
   Critical limits.** Ryan's actual intent (clarified after the fixed-limits version below shipped to `dev`): "alert
   if it's N out of what the current mode is set for." **Supersedes the fixed-limits entry below** - Ryan had

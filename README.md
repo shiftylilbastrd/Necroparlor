@@ -272,8 +272,12 @@ also exempt from the generic cooldown, since the repeat interval is their thrott
 the reading comes back inside the limit by 1°F / 2%RH, so a reading wobbling right on a limit can't restart
 episodes (and re-page) every few cycles; the recovery is logged as an `info` event. Every mode's setpoints
 must sit strictly inside these limits - saving either page rejects a value that would cross the other, since
-a setpoint inside critical territory would page you indefinitely with nothing wrong. **The default numbers
-(45-95°F, 20-80%RH, repeat 30 min) are placeholders, not researched dermestid tolerances** - set your own.
+a setpoint inside critical territory would page you indefinitely with nothing wrong. The defaults
+(35-104°F, 10-95%RH, repeat 30 min) are aimed at "harms the colony within a few hours" for *Dermestes
+maculatus*: heat is the real acute danger (development stops at 104°F/40°C; museums kill all stages at
+~122°F/50°C in 4 hours), cold acts slowly (development just stops below ~64°F; killing them takes days well
+below freezing), and humidity has no few-hour danger point, so those limits only catch a failed sensor or a
+disaster. Published dermestid tolerance data is patchy - adjust if you know your species better.
 Internal sensor only; a dead internal sensor is the emergency-shutdown alert's job, not this one's.
 
 Like every other setting on this dashboard, notification settings (including channel credentials) are saved
