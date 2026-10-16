@@ -1,8 +1,8 @@
 """The one place a timelapse's frames get turned into an .mp4 - shared by
-camera_service.py (the real, delete-frames-afterwards compile at a mode
-change), compile_timelapse.py (manual recovery, via camera_service), and
-webapp.py (the Timelapse page's "Build preview", which never deletes
-anything). Keeping the ffmpeg command in one module means a preview is
+the Timelapse page's Compile button and "Build preview" (webapp.py) and
+compile_timelapse.py (SSH). [2026-10-16] Compiling is manual now (see
+compile_recording() at the bottom) - nothing compiles on a mode change any
+more. Keeping the ffmpeg command in one module means a preview is
 always encoded exactly the way the final video will be.
 
 Overlay: each frame can have its capture time and the time elapsed since
@@ -264,3 +264,91 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
                              category="camera_issue")
     result["elapsed"] = time.time() - started
     return result
+
+
+# --------------------------------------------------------------------------
+# [2026-10-16] Compiling a timelapse RECORDING into a gallery video. Moved
+# here from camera_service.py (compile_session_video) when timelapses became
+# start/stop recordings instead of per-mode sessions: compiling is now
+# MANUAL (the Timelapse page's Compile button, or compile_timelapse.py), so
+# it runs in webapp.py's process or a terminal, never as a side effect of a
+# mode switch. Every caller holds state.try_encode_lock() - one encode on
+# the Pi at a time.
+# --------------------------------------------------------------------------
+MINIMUM_FRAMES_FOR_VIDEO = 3
+
+
+def _slug(text):
+    keep = [c if c.isalnum() else "-" for c in (text or "").strip()]
+    slug = "-".join(part for part in "".join(keep).split("-") if part)
+    return slug[:60] or "timelapse"
+
+
+def video_download_name(video):
+    """A client-friendly filename, e.g. "Smith-whitetail_2026-10-16.mp4"."""
+    day = datetime.fromtimestamp(video.get("start_ts") or video.get("ts") or time.time(),
+                                 state.LOCAL_TZ).strftime("%Y-%m-%d")
+    label = video.get("name") or MODE_LABELS.get(video.get("mode"), video.get("mode") or "timelapse")
+    return f"{_slug(label)}_{day}.mp4"
+
+
+def compile_recording(recording_id, timeout_seconds="auto", show_progress=False, progress_cb=None):
+    """Encodes a STOPPED recording's frames into a gallery video, then
+    deletes the frames (the video is the record from then on). The caller
+    must already hold the encode lock. Returns {"ok", "error", "video_id"}.
+    On any failure the frames are left untouched - nothing is ever lost to
+    a failed compile."""
+    rec = state.get_recording(recording_id)
+    if not rec:
+        return {"ok": False, "error": "No such recording."}
+    if rec["status"] != "stopped":
+        return {"ok": False, "error": "Stop the recording before compiling it." if rec["status"] == "recording"
+                else "This recording was already compiled."}
+    label = state.recording_label(rec)
+    frames = state.get_recording_frames(recording_id)
+    if len(frames) < MINIMUM_FRAMES_FOR_VIDEO:
+        return {"ok": False, "error": f"Only {len(frames)} frame(s) - at least {MINIMUM_FRAMES_FOR_VIDEO} "
+                                      "are needed for a video."}
+    os.makedirs(state.CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
+    start_ts, end_ts = frames[0]["ts"], frames[-1]["ts"]
+    base = f"rec{recording_id}_{int(start_ts)}_{int(end_ts)}"
+    video_filename, poster_filename = base + ".mp4", base + ".jpg"
+    video_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, video_filename)
+    poster_path = os.path.join(state.CAMERA_TIMELAPSE_VIDEOS_DIR, poster_filename)
+
+    result = encode(f"rec{recording_id}", frames, video_path, timeout_seconds=timeout_seconds,
+                    show_progress=show_progress, progress_cb=progress_cb)
+    if result["timed_out"]:
+        limit = timeout_for(len(frames)) if timeout_seconds == "auto" else timeout_seconds
+        msg = (f"ffmpeg timed out after {limit:.0f}s - frames kept. Run "
+               f"compile_timelapse.py {recording_id} on the Pi to compile with no time limit.")
+        state.log_event("error", f"Timelapse: compiling '{label}' ({len(frames)} frames): {msg}",
+                        category="camera_issue")
+        return {"ok": False, "error": msg}
+    if not result["ok"]:
+        state.log_event("error", f"Timelapse: compiling '{label}' ({len(frames)} frames) failed - frames kept. "
+                                 f"{result['error']}", category="camera_issue")
+        return {"ok": False, "error": result["error"]}
+
+    # Middle frame as the gallery poster (more representative than the first).
+    try:
+        shutil.copyfile(os.path.join(state.CAMERA_TIMELAPSE_DIR, frames[len(frames) // 2]["filename"]),
+                        poster_path)
+    except FileNotFoundError:
+        poster_filename = None
+    if result["skipped"]:
+        state.log_event("warning", f"Timelapse: {result['skipped']} frame(s) of '{label}' had no image file "
+                                   "and were left out of the video", category="camera_issue")
+    duration_seconds = result["frames_encoded"] / result["fps"]
+    file_size_bytes = os.path.getsize(video_path)
+    video_id = state.save_timelapse_video(rec.get("mode_at_start") or "", start_ts, end_ts,
+                                          result["frames_encoded"], video_filename, poster_filename,
+                                          duration_seconds, file_size_bytes,
+                                          recording_id=recording_id, name=label)
+    state.mark_recording_compiled(recording_id, video_id)
+    state.delete_camera_snapshots([f["ts"] for f in frames])
+    state.delete_recording_preview(recording_id)
+    state.log_event("info", f"Timelapse: compiled '{label}' - a {duration_seconds:.0f}s video from "
+                            f"{result['frames_encoded']} frames ({file_size_bytes / (1024 * 1024):.1f}MB) "
+                            f"in {result['elapsed']:.0f}s")
+    return {"ok": True, "error": "", "video_id": video_id}

@@ -398,12 +398,6 @@ DEFAULT_CONFIG = {
             "low_temp_f": 60.0,
             "high_temp_f": 65.0,
             "humidity_setpoint": 45.0,
-            # Timelapse snapshot cadence for this mode - 0 means never
-            # (no snapshots captured while in this mode). Per-mode
-            # rather than a single global setting, since a mode you
-            # barely visit (dormant) plausibly warrants a different
-            # cadence than one you're actively watching (ready).
-            "snapshot_interval_minutes": 0
         },
         "breeding": {
             # Fastest development (~86F) at the most humidity that's still
@@ -411,8 +405,7 @@ DEFAULT_CONFIG = {
             # Needs steady feeding to actually pay off.
             "low_temp_f": 84.0,
             "high_temp_f": 86.0,
-            "humidity_setpoint": 55.0,
-            "snapshot_interval_minutes": 0
+            "humidity_setpoint": 55.0
         },
         "ready": {
             # Waiting for a specimen, often with little food - active, but
@@ -420,8 +413,7 @@ DEFAULT_CONFIG = {
             # through its reserves (or turn on itself) while it waits.
             "low_temp_f": 75.0,
             "high_temp_f": 80.0,
-            "humidity_setpoint": 50.0,
-            "snapshot_interval_minutes": 0
+            "humidity_setpoint": 50.0
         },
         "cleaning": {
             # Specimen in the box: warm for fast work, a bit drier to favor
@@ -432,8 +424,7 @@ DEFAULT_CONFIG = {
             "high_temp_f": 85.0,
             "humidity_setpoint": 45.0,
             "vent_interval_minutes": 30,
-            "vent_duration_minutes": 5,
-            "snapshot_interval_minutes": 0
+            "vent_duration_minutes": 5
         }
     }
 }
@@ -1167,17 +1158,10 @@ def validate_setpoints(mode, values, critical_limits=None, range_margins=None):
         cleaned["vent_interval_minutes"] = interval
         cleaned["vent_duration_minutes"] = duration
 
-    # Timelapse cadence applies to every mode, not just cleaning - 0 is
-    # the "never" sentinel and is deliberately exempt from
-    # SNAPSHOT_INTERVAL_BOUNDS (which only constrains the non-zero case).
-    try:
-        snapshot_interval = int(values.get("snapshot_interval_minutes", 0))
-    except (TypeError, ValueError):
-        return None, "snapshot_interval_minutes must be a whole number"
-    if snapshot_interval != 0 and not (SNAPSHOT_INTERVAL_BOUNDS[0] <= snapshot_interval <= SNAPSHOT_INTERVAL_BOUNDS[1]):
-        return None, (f"snapshot_interval_minutes must be 0 (never) or between "
-                       f"{SNAPSHOT_INTERVAL_BOUNDS[0]} and {SNAPSHOT_INTERVAL_BOUNDS[1]}")
-    cleaned["snapshot_interval_minutes"] = snapshot_interval
+    # [2026-10-16] snapshot_interval_minutes is no longer a per-mode
+    # setting - timelapse capture belongs to recordings now (see the
+    # "Timelapse RECORDINGS" section). An old page still sending it is
+    # simply ignored, and a saved mode drops the key on its next save.
 
     return cleaned, None
 
@@ -1274,6 +1258,28 @@ def init_db():
             filename TEXT
         )
     """)
+    # [2026-10-16] Timelapse recordings - started/stopped from the dashboard,
+    # independent of the climate mode (see the "Camera / timelapse" section
+    # below for the full story). At most one row is ever status='recording'.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS timelapse_recordings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            interval_minutes INTEGER,
+            started_ts REAL,
+            stopped_ts REAL,
+            status TEXT,
+            mode_at_start TEXT,
+            source TEXT,
+            video_id INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS timelapse_videos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1288,21 +1294,117 @@ def init_db():
             file_size_bytes INTEGER
         )
     """)
+    _migrate_timelapse_columns(conn)
     conn.commit()
     conn.close()
+    _migrate_mode_sessions_to_recordings()
+
+
+def _add_column(conn, sql):
+    """Runs one "ALTER TABLE ... ADD COLUMN" and treats "duplicate column
+    name" as success. [2026-10-16] Every service calls init_db() at startup,
+    and the column checks here are check-then-ALTER - two services starting
+    together could both see a column missing, and the second ALTER then
+    crashed that service ("duplicate column name"). Found by a 4-way
+    concurrent init_db() test while adding the timelapse-recordings columns,
+    which WILL be missing on the Pi's first start of that code."""
+    try:
+        conn.execute(sql)
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
+
+
+def _migrate_timelapse_columns(conn):
+    """[2026-10-16] recording_id on frames and videos, name on videos, for
+    DBs from before timelapse recordings existed."""
+    snap_cols = {row[1] for row in conn.execute("PRAGMA table_info(camera_snapshots)").fetchall()}
+    if "recording_id" not in snap_cols:
+        _add_column(conn, "ALTER TABLE camera_snapshots ADD COLUMN recording_id INTEGER")
+    vid_cols = {row[1] for row in conn.execute("PRAGMA table_info(timelapse_videos)").fetchall()}
+    if "recording_id" not in vid_cols:
+        _add_column(conn, "ALTER TABLE timelapse_videos ADD COLUMN recording_id INTEGER")
+    if "name" not in vid_cols:
+        _add_column(conn, "ALTER TABLE timelapse_videos ADD COLUMN name TEXT")
+
+
+def _migrate_mode_sessions_to_recordings():
+    """[2026-10-16] One-time conversion of the old mode-based timelapse
+    sessions into recordings, so updating never interrupts a timelapse
+    that's already running (Ryan's explicit concern):
+
+      - the CURRENT mode, if it had a snapshot interval set, becomes the
+        active recording "<Mode> (carried over)" at that same interval,
+        keeping every frame it already captured - capture just continues;
+      - any other mode's leftover uncompiled frames (and the current
+        mode's, if its interval was 0) become stopped recordings
+        "<Mode> (before recordings)", ready to compile or delete.
+
+    The per-mode snapshot_interval_minutes is read from the saved
+    config.json, which still has it until that mode's setpoints are next
+    saved. Runs inside BEGIN IMMEDIATE with an app_meta marker checked
+    INSIDE the transaction - every service calls init_db() at startup,
+    and without that two of them starting together could both migrate."""
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM app_meta WHERE key = 'recordings_migrated'").fetchone():
+            conn.rollback()
+            return
+        config = load_config()
+        current = config.get("current_mode")
+        modes_cfg = config.get("modes", {})
+        now = time.time()
+        rows = conn.execute(
+            "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots "
+            "WHERE recording_id IS NULL GROUP BY mode").fetchall()
+        pending = {m: (c, first, last) for m, c, first, last in rows}
+        current_interval = int(modes_cfg.get(current, {}).get("snapshot_interval_minutes", 0) or 0)
+        created = []
+        if current and current_interval > 0:
+            count, first, _ = pending.pop(current, (0, None, None))
+            label = MODE_DISPLAY_NAMES.get(current, str(current).capitalize())
+            cur = conn.execute(
+                "INSERT INTO timelapse_recordings (name, interval_minutes, started_ts, stopped_ts, status, "
+                "mode_at_start, source) VALUES (?,?,?,?,?,?,?)",
+                (f"{label} (carried over)", current_interval, first if first is not None else now,
+                 None, "recording", current, "migrated"))
+            conn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND mode = ?",
+                         (cur.lastrowid, current))
+            created.append(f"active '{label} (carried over)' ({count} frames, every {current_interval} min)")
+        for mode, (count, first, last) in pending.items():
+            label = MODE_DISPLAY_NAMES.get(mode, str(mode).capitalize())
+            interval = int(modes_cfg.get(mode, {}).get("snapshot_interval_minutes", 0) or 0)
+            cur = conn.execute(
+                "INSERT INTO timelapse_recordings (name, interval_minutes, started_ts, stopped_ts, status, "
+                "mode_at_start, source) VALUES (?,?,?,?,?,?,?)",
+                (f"{label} (before recordings)", interval or None, first, last, "stopped", mode, "migrated"))
+            conn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND mode = ?",
+                         (cur.lastrowid, mode))
+            created.append(f"stopped '{label} (before recordings)' ({count} frames)")
+        conn.execute("INSERT INTO app_meta (key, value) VALUES ('recordings_migrated', ?)", (str(now),))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logging.exception("Timelapse: migrating mode sessions to recordings failed - will retry next start")
+        return
+    finally:
+        conn.close()
+    if created:
+        log_event("info", "Timelapse: converted mode-based sessions to recordings - " + "; ".join(created))
 
 
 def _migrate_readings_columns(conn):
     """Adds columns to readings for DBs that predate them."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(readings)").fetchall()}
     if "external_humidity" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN external_humidity REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN external_humidity REAL")
     if "fallback_external_temp" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN fallback_external_temp REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN fallback_external_temp REAL")
     if "fallback_external_humidity" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN fallback_external_humidity REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN fallback_external_humidity REAL")
     if "active_external_source" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN active_external_source TEXT")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN active_external_source TEXT")
     # ble_temp/wired_temp replace fallback_external_temp/humidity above -
     # each physical sensor's reading now lives under its own fixed name
     # regardless of which one is currently active, instead of whichever
@@ -1311,13 +1413,13 @@ def _migrate_readings_columns(conn):
     # forward) purely so historical rows already written under the old
     # scheme don't lose data.
     if "ble_temp" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN ble_temp REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN ble_temp REAL")
     if "ble_humidity" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN ble_humidity REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN ble_humidity REAL")
     if "wired_temp" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN wired_temp REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN wired_temp REAL")
     if "wired_humidity" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN wired_humidity REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN wired_humidity REAL")
     # Pi health (see get_pi_health()) - sampled once per control cycle by
     # climate.py alongside the sensor readings, purely for visibility into
     # whether the Pi itself (not the enclosure) is under strain - e.g.
@@ -1326,9 +1428,9 @@ def _migrate_readings_columns(conn):
     # control-critical logic (failsafe, delta-glitch filter, etc.) -
     # informational only, same treatment as ble_temp/wired_temp above.
     if "cpu_temp_f" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN cpu_temp_f REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN cpu_temp_f REAL")
     if "cpu_load_1m" not in existing:
-        conn.execute("ALTER TABLE readings ADD COLUMN cpu_load_1m REAL")
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN cpu_load_1m REAL")
     # [2026-09-17] camera_actual_fps/camera_target_fps actually DROPPED
     # here now, not just left unwritten. They were history columns from
     # when camera_service.py measured its own continuous capture rate
@@ -1367,7 +1469,7 @@ def _migrate_events_columns(conn):
     exactly true for events logged before this column existed."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
     if "category" not in existing:
-        conn.execute("ALTER TABLE events ADD COLUMN category TEXT")
+        _add_column(conn, "ALTER TABLE events ADD COLUMN category TEXT")
 
 
 def _migrate_ble_readings_columns(conn):
@@ -2132,9 +2234,9 @@ def _migrate_update_state_columns(conn):
     branch selection support."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(update_state)").fetchall()}
     if "current_branch" not in existing:
-        conn.execute("ALTER TABLE update_state ADD COLUMN current_branch TEXT")
+        _add_column(conn, "ALTER TABLE update_state ADD COLUMN current_branch TEXT")
     if "target_branch" not in existing:
-        conn.execute("ALTER TABLE update_state ADD COLUMN target_branch TEXT")
+        _add_column(conn, "ALTER TABLE update_state ADD COLUMN target_branch TEXT")
 
 
 def save_update_status(is_available, local_commit, remote_commit, remote_message,
@@ -2372,7 +2474,7 @@ def prune_old_history():
 # Camera / timelapse (written by camera_service.py, read by webapp.py)
 # --------------------------------------------------------------------------
 
-def save_camera_snapshot(mode, jpeg_bytes):
+def save_camera_snapshot(mode, jpeg_bytes, recording_id=None):
     """Writes a timelapse frame to disk under CAMERA_TIMELAPSE_DIR and
     records it in the DB in one call, keyed by the same WHOLE-SECOND
     timestamp used as both the DB primary key and the filename - so the
@@ -2395,7 +2497,8 @@ def save_camera_snapshot(mode, jpeg_bytes):
     with open(os.path.join(CAMERA_TIMELAPSE_DIR, filename), "wb") as f:
         f.write(jpeg_bytes)
     conn = get_db()
-    conn.execute("INSERT OR REPLACE INTO camera_snapshots (ts, mode, filename) VALUES (?,?,?)", (ts, mode, filename))
+    conn.execute("INSERT OR REPLACE INTO camera_snapshots (ts, mode, filename, recording_id) VALUES (?,?,?,?)",
+                 (ts, mode, filename, recording_id))
     conn.commit()
     conn.close()
     return ts, filename
@@ -2433,27 +2536,10 @@ def get_camera_snapshot_count():
     return count
 
 
-def get_pending_timelapse_stats():
-    """Stats for the Timelapse page's header, about the current,
-    not-yet-compiled session only - NOT a lifetime total across every
-    video ever compiled.
-
-    camera_snapshots (and, by construction, CAMERA_TIMELAPSE_DIR on
-    disk) only ever holds a mode's not-yet-compiled frames - see
-    get_earliest_camera_snapshot_ts's docstring above for why. The
-    moment a session compiles into a video, compile_session_video()
-    deletes both the DB rows and the files that went into it (the
-    video is the lasting record from there on). That invariant is what
-    makes a plain directory scan here both correct AND cheap: whatever
-    bytes are sitting in CAMERA_TIMELAPSE_DIR right now ARE the pending
-    collection's true on-disk size, with no separate size column to
-    keep in sync or risk drifting from reality.
-
-    estimated_video_seconds reuses timelapse_fps() - the exact value
-    compile_session_video() will actually divide by - so this estimate
-    matches what compiling right now would really produce, not an
-    approximation of it."""
-    count = get_camera_snapshot_count()
+def get_timelapse_disk_bytes():
+    """Bytes used by every uncompiled frame on disk (all recordings) - a
+    plain directory scan, which is correct because CAMERA_TIMELAPSE_DIR
+    only ever holds not-yet-compiled frames (compiling deletes them)."""
     disk_bytes = 0
     try:
         with os.scandir(CAMERA_TIMELAPSE_DIR) as it:
@@ -2465,11 +2551,7 @@ def get_pending_timelapse_stats():
                         pass
     except FileNotFoundError:
         pass
-    return {
-        "count": count,
-        "disk_bytes": disk_bytes,
-        "estimated_video_seconds": (count / timelapse_fps()) if count else 0,
-    }
+    return disk_bytes
 
 
 def prune_oldest_camera_snapshots(n):
@@ -2498,39 +2580,13 @@ def prune_oldest_camera_snapshots(n):
     return removed
 
 
-def get_earliest_camera_snapshot_ts(mode):
-    """The oldest not-yet-compiled frame currently sitting in
-    camera_snapshots for this mode, or None if there isn't one.
-
-    camera_service.py deletes a mode's snapshot rows the moment they're
-    successfully compiled into a timelapse video (see
-    save_timelapse_video/delete raw frames below), so whatever's left in
-    this table for a given mode is, by construction, exactly that mode's
-    CURRENT in-progress session - nothing here has been compiled yet.
-    That invariant is what lets camera_service.py recover the right
-    session start time across a service restart (a deploy, a crash, a
-    manual restart) without needing to persist any extra state of its
-    own: it just asks "what's the oldest uncompiled frame for the mode
-    we're in right now?" instead of trusting an in-memory variable that
-    a restart would have reset."""
-    conn = get_db()
-    row = conn.execute(
-        "SELECT MIN(ts) FROM camera_snapshots WHERE mode = ?", (mode,)
-    ).fetchone()
-    conn.close()
-    return row[0] if row and row[0] is not None else None
-
-
-def get_camera_snapshots_in_range(mode, start_ts, end_ts):
-    """All of one mode's timelapse frames within [start_ts, end_ts],
-    oldest first - the exact input a session's ffmpeg compile needs, in
-    playback order."""
+def get_recording_frames(recording_id):
+    """Every frame of one recording, oldest first - the exact input its
+    ffmpeg encode needs, in playback order."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT ts, mode, filename FROM camera_snapshots "
-        "WHERE mode = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC",
-        (mode, start_ts, end_ts)
-    ).fetchall()
+        "SELECT ts, mode, filename FROM camera_snapshots WHERE recording_id = ? ORDER BY ts ASC",
+        (recording_id,)).fetchall()
     conn.close()
     return [{"ts": r[0], "mode": r[1], "filename": r[2]} for r in rows]
 
@@ -2559,51 +2615,244 @@ def delete_camera_snapshots(ts_list):
     return removed
 
 
-# [2026-10-06] get_pending_sessions() through purge_camera_snapshots() below
-# all went missing from this file in commit efd3664 ("Extereme alert") back
-# on 2026-09-whatever that was, with the webapp.py routes that called them
-# dropped in the very next commit (3b49b22) - restored here from
-# `git show 0640fc6:shared_state.py` (the commit right before efd3664),
-# lightly checked against this file's current state rather than pasted
-# blind. Two real, previously-undiscovered consequences of the gap, not
-# just the Timelapse page's on-demand preview button:
-#   1. compile_lock_path() is what camera_service.py's own
-#      compile_session_video() calls on every single automatic compile
-#      (every mode change with enough pending frames) - with it missing,
-#      that call raised AttributeError inside compile_session_video()'s
-#      background thread, which has no top-level try/except, so the
-#      thread just died silently. In other words: EVERY automatic
-#      timelapse compile since efd3664 has been failing silently, not
-#      just the manual "Build preview" button - see PROJECT_STATUS.md's
-#      2026-10-06 entry for the full story (this was found by Ryan
-#      reporting the preview UI stuck on "Loading...").
-#   2. The Timelapse page's "Purge pending frames" button
-#      (purge_camera_snapshots) has also been 404ing this whole time for
-#      the same reason the preview button was.
-# CAMERA_TIMELAPSE_PREVIEWS_DIR (restored above, near CAMERA_TIMELAPSE_DIR)
-# was missing too - these functions need it and nothing else in this file
-# still referenced it once they were gone.
-def get_pending_sessions():
-    """One entry per mode that has pending (not-yet-compiled) frames:
-    mode, count, first_ts, last_ts - oldest mode first. What the Timelapse
-    page's per-mode preview rows are built from."""
+# --------------------------------------------------------------------------
+# [2026-10-16] Timelapse RECORDINGS (Ryan): a timelapse is now started and
+# stopped explicitly from the dashboard, independent of the climate mode -
+# the natural unit is a specimen/job, not a mode visit, and a mode switch no
+# longer kicks off an ffmpeg compile (the heaviest thing the Pi does) at
+# whatever moment it happens. A stopped recording keeps its frames until
+# it's compiled by hand (Ryan: "for now compile should be manually
+# triggered") or deleted. Replaced the old per-mode sessions:
+# get_pending_sessions / get_earliest_camera_snapshot_ts / per-mode
+# previews / per-mode compile locks / purge_camera_snapshots.
+# --------------------------------------------------------------------------
+RECORDING_INTERVAL_BOUNDS = SNAPSHOT_INTERVAL_BOUNDS
+RECORDING_NAME_MAX = 80
+DEFAULT_RECORDING_INTERVAL_MINUTES = 10
+MODE_DISPLAY_NAMES = {"dormant": "Dormant", "breeding": "Breeding", "ready": "Ready", "cleaning": "Cleaning"}
+
+_RECORDING_COLS = ("id, name, interval_minutes, started_ts, stopped_ts, status, mode_at_start, source, video_id")
+
+
+def _recording_row(r):
+    return {"id": r[0], "name": r[1], "interval_minutes": r[2], "started_ts": r[3], "stopped_ts": r[4],
+            "status": r[5], "mode_at_start": r[6], "source": r[7], "video_id": r[8]}
+
+
+def validate_recording_fields(values, require_interval=True):
+    """(cleaned, None) or (None, error) for a recording's name/interval.
+    Name is optional (blank -> None); interval is whole minutes within
+    RECORDING_INTERVAL_BOUNDS."""
+    cleaned = {}
+    if "name" in values:
+        name = str(values.get("name") or "").strip()
+        if len(name) > RECORDING_NAME_MAX:
+            return None, f"name must be {RECORDING_NAME_MAX} characters or fewer"
+        cleaned["name"] = name or None
+    if "interval_minutes" in values or require_interval:
+        try:
+            interval = int(values.get("interval_minutes"))
+        except (TypeError, ValueError):
+            return None, "interval_minutes must be a whole number"
+        lo, hi = RECORDING_INTERVAL_BOUNDS
+        if not (lo <= interval <= hi):
+            return None, f"interval_minutes must be between {lo} and {hi}"
+        cleaned["interval_minutes"] = interval
+    return cleaned, None
+
+
+def get_active_recording():
     conn = get_db()
-    rows = conn.execute(
-        "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots GROUP BY mode ORDER BY MIN(ts)"
-    ).fetchall()
+    row = conn.execute(f"SELECT {_RECORDING_COLS} FROM timelapse_recordings WHERE status = 'recording' "
+                       "ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
-    return [{"mode": m, "count": c, "first_ts": f, "last_ts": l} for m, c, f, l in rows]
+    return _recording_row(row) if row else None
 
 
-def timelapse_preview_paths(mode):
-    base = os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, f"preview_{mode}")
+def get_recording(recording_id):
+    conn = get_db()
+    row = conn.execute(f"SELECT {_RECORDING_COLS} FROM timelapse_recordings WHERE id = ?",
+                       (recording_id,)).fetchone()
+    conn.close()
+    return _recording_row(row) if row else None
+
+
+def get_recordings_with_frames():
+    """The active recording (if any) and every stopped, not-yet-compiled
+    one, each with frame count / first & last frame ts - newest first."""
+    conn = get_db()
+    rows = conn.execute(f"SELECT {_RECORDING_COLS} FROM timelapse_recordings "
+                        "WHERE status IN ('recording', 'stopped') ORDER BY id DESC").fetchall()
+    stats = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+        "SELECT recording_id, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots "
+        "WHERE recording_id IS NOT NULL GROUP BY recording_id").fetchall()}
+    conn.close()
+    out = []
+    for r in rows:
+        rec = _recording_row(r)
+        count, first, last = stats.get(rec["id"], (0, None, None))
+        rec.update({"frame_count": count, "first_ts": first, "last_ts": last})
+        out.append(rec)
+    return out
+
+
+def start_recording(name, interval_minutes, mode_at_start, source="dashboard"):
+    """Starts a new recording. Returns (recording, None), or (None, error)
+    if one is already running - only one at a time. BEGIN IMMEDIATE so two
+    simultaneous Start clicks can't both succeed."""
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM timelapse_recordings WHERE status = 'recording'").fetchone():
+            conn.rollback()
+            return None, "A recording is already running - stop it first."
+        cur = conn.execute(
+            "INSERT INTO timelapse_recordings (name, interval_minutes, started_ts, stopped_ts, status, "
+            "mode_at_start, source) VALUES (?,?,?,?,?,?,?)",
+            (name, interval_minutes, time.time(), None, "recording", mode_at_start, source))
+        conn.commit()
+        rid = cur.lastrowid
+    finally:
+        conn.close()
+    return get_recording(rid), None
+
+
+def stop_recording(recording_id):
+    """Marks a running recording stopped. Returns the updated row, or None
+    if it wasn't running."""
+    conn = get_db()
+    cur = conn.execute("UPDATE timelapse_recordings SET status = 'stopped', stopped_ts = ? "
+                       "WHERE id = ? AND status = 'recording'", (time.time(), recording_id))
+    conn.commit()
+    conn.close()
+    return get_recording(recording_id) if cur.rowcount else None
+
+
+def update_recording(recording_id, fields):
+    """Renames a recording and/or changes a RUNNING one's interval."""
+    rec = get_recording(recording_id)
+    if not rec or rec["status"] not in ("recording", "stopped"):
+        return None, "No such recording."
+    if "interval_minutes" in fields and rec["status"] != "recording":
+        return None, "Only a running recording's interval can be changed."
+    sets, params = [], []
+    for key in ("name", "interval_minutes"):
+        if key in fields:
+            sets.append(f"{key} = ?")
+            params.append(fields[key])
+    if sets:
+        conn = get_db()
+        conn.execute(f"UPDATE timelapse_recordings SET {', '.join(sets)} WHERE id = ?", params + [recording_id])
+        conn.commit()
+        conn.close()
+    return get_recording(recording_id), None
+
+
+def recording_label(rec):
+    """Display name: the given name, else "<Mode> recording"."""
+    if rec.get("name"):
+        return rec["name"]
+    return f"{MODE_DISPLAY_NAMES.get(rec.get('mode_at_start'), 'Timelapse')} recording"
+
+
+def encode_lock_path():
+    """ONE lock for every timelapse ffmpeg encode on this Pi - previews,
+    dashboard compiles and compile_timelapse.py alike - so two encodes can
+    never run at once (one of the suspects in the open "compile makes the
+    Pi unresponsive" issue). Also held while a recording's frames are being
+    deleted, so frames can't vanish from under a running encode."""
+    return os.path.join(CAMERA_TIMELAPSE_VIDEOS_DIR, ".encode.lock")
+
+
+def try_encode_lock():
+    """Non-blocking: returns an open, locked file (pass it to
+    release_encode_lock) or None if an encode already holds it."""
+    os.makedirs(CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
+    f = open(encode_lock_path(), "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        f.close()
+        return None
+    return f
+
+
+def release_encode_lock(f):
+    try:
+        fcntl.flock(f, fcntl.LOCK_UN)
+    finally:
+        f.close()
+
+
+def delete_recording(recording_id, orphan_min_age_seconds=60):
+    """Deletes a STOPPED recording's frames (DB rows + files), its preview
+    and the recording row. Refuses while it's still running or while an
+    encode holds the lock. Returns {"removed", "freed_bytes"} or
+    {"error": ...}."""
+    rec = get_recording(recording_id)
+    if not rec or rec["status"] != "stopped":
+        return {"error": "Only a stopped recording can be deleted - stop it first." if rec and
+                rec["status"] == "recording" else "No such recording."}
+    lock = try_encode_lock()
+    if lock is None:
+        return {"error": "A timelapse is encoding right now - try again once it finishes.", "busy": True}
+    try:
+        conn = get_db()
+        rows = conn.execute("SELECT ts, filename FROM camera_snapshots WHERE recording_id = ?",
+                            (recording_id,)).fetchall()
+        removed, freed = 0, 0
+        for ts, filename in rows:
+            path = os.path.join(CAMERA_TIMELAPSE_DIR, filename)
+            try:
+                freed += os.path.getsize(path)
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
+            removed += 1
+        conn.execute("DELETE FROM timelapse_recordings WHERE id = ?", (recording_id,))
+        conn.commit()
+        conn.close()
+        delete_recording_preview(recording_id)
+        return {"removed": removed, "freed_bytes": freed}
+    finally:
+        release_encode_lock(lock)
+
+
+def adopt_orphan_frames():
+    """Frames saved with no recording_id after the one-time migration ran -
+    possible only during the update itself, if the OLD camera service saved a
+    frame after the new dashboard had already migrated - are attached to the
+    running recording when they fall inside it, so they're never stranded.
+    Called by camera_service.py at startup. Returns how many were adopted."""
+    rec = get_active_recording()
+    if not rec:
+        return 0
+    conn = get_db()
+    cur = conn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND ts >= ?",
+                       (rec["id"], rec["started_ts"]))
+    conn.commit()
+    conn.close()
+    return cur.rowcount
+
+
+def mark_recording_compiled(recording_id, video_id):
+    conn = get_db()
+    conn.execute("UPDATE timelapse_recordings SET status = 'compiled', video_id = ? WHERE id = ?",
+                 (video_id, recording_id))
+    conn.commit()
+    conn.close()
+
+
+def recording_preview_paths(recording_id):
+    base = os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, f"preview_rec{int(recording_id)}")
     return base + ".mp4", base + ".json"
 
 
-def get_timelapse_preview(mode):
-    """The existing preview for `mode` (dict with frame_count, first_ts,
-    last_ts, built_ts, file_size_bytes, overlay) or None."""
-    video_path, meta_path = timelapse_preview_paths(mode)
+def get_recording_preview(recording_id):
+    """The existing preview for a recording (dict with frame_count,
+    first_ts, last_ts, built_ts, file_size_bytes, overlay) or None."""
+    video_path, meta_path = recording_preview_paths(recording_id)
     if not os.path.exists(video_path):
         return None
     try:
@@ -2615,108 +2864,32 @@ def get_timelapse_preview(mode):
     return meta
 
 
-def delete_timelapse_previews(mode=None):
-    """Removes the preview for one mode, or all of them (mode=None) - called
-    when the frames a preview was built from stop existing (a real compile
-    consumed them, or they were purged), so a stale preview can't be
-    mistaken for current progress."""
+def delete_recording_preview(recording_id):
+    for path in recording_preview_paths(recording_id):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def delete_stale_previews(keep_ids):
+    """Removes every preview file whose recording isn't in keep_ids -
+    including any left over from the old per-mode preview naming."""
+    keep = {f"preview_rec{int(i)}" for i in keep_ids}
     try:
         names = os.listdir(CAMERA_TIMELAPSE_PREVIEWS_DIR)
     except FileNotFoundError:
         return
-    prefix = "preview_" if mode is None else f"preview_{mode}."
     for name in names:
-        if name.startswith(prefix):
+        if name.startswith("preview_") and name.rsplit(".", 1)[0] not in keep:
             try:
                 os.remove(os.path.join(CAMERA_TIMELAPSE_PREVIEWS_DIR, name))
             except OSError:
                 pass
 
 
-def compile_lock_path(mode):
-    """Per-mode lock file camera_service.compile_session_video() holds
-    (fcntl.flock) for the whole of a compile - shared here so anything
-    else that touches a mode's raw frames (purge_camera_snapshots below,
-    compile_timelapse.py) can respect the same lock instead of deleting
-    frames out from under a running ffmpeg."""
-    return os.path.join(CAMERA_TIMELAPSE_VIDEOS_DIR, f".compile_{mode}.lock")
-
-
-def purge_camera_snapshots(orphan_min_age_seconds=60):
-    """Deletes EVERY kept (uncompiled) timelapse frame - DB rows and
-    files - for the Timelapse page's "Purge pending frames" button.
-    Compiled videos and their posters are untouched.
-
-    Refuses (returns {"busy_mode": mode}) if any mode with frames has a
-    compile running, rather than deleting the JPEGs ffmpeg is reading
-    mid-encode; all involved modes' compile locks are held for the whole
-    purge so a compile can't start part-way through it either.
-
-    Also removes stray .jpg files in CAMERA_TIMELAPSE_DIR with no DB row
-    (e.g. left by a crash between writing a file and inserting its row),
-    but only ones older than orphan_min_age_seconds: save_camera_snapshot()
-    writes the file BEFORE inserting the row, so a brand-new frame is
-    briefly a "stray" - deleting it in that window would leave a row
-    pointing at a missing file, which would make that mode's next ffmpeg
-    compile fail."""
-    os.makedirs(CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
-    conn = get_db()
-    modes = [r[0] for r in conn.execute("SELECT DISTINCT mode FROM camera_snapshots").fetchall()]
-    conn.close()
-
-    held = []
-    try:
-        for mode in modes:
-            f = open(compile_lock_path(mode), "w")
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                f.close()
-                return {"busy_mode": mode}
-            held.append(f)
-
-        conn = get_db()
-        rows = conn.execute("SELECT ts, filename FROM camera_snapshots").fetchall()
-        removed, freed = 0, 0
-        known = set()
-        for ts, filename in rows:
-            known.add(filename)
-            path = os.path.join(CAMERA_TIMELAPSE_DIR, filename)
-            try:
-                freed += os.path.getsize(path)
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
-            removed += 1
-        conn.commit()
-        conn.close()
-
-        strays = 0
-        cutoff = time.time() - orphan_min_age_seconds
-        try:
-            with os.scandir(CAMERA_TIMELAPSE_DIR) as it:
-                for entry in it:
-                    if (entry.is_file() and entry.name.endswith(".jpg")
-                            and entry.name not in known):
-                        st = entry.stat()
-                        if st.st_mtime < cutoff:
-                            os.remove(entry.path)
-                            freed += st.st_size
-                            strays += 1
-        except FileNotFoundError:
-            pass
-        # Previews were built from the frames just deleted.
-        delete_timelapse_previews()
-        return {"removed": removed, "strays_removed": strays, "freed_bytes": freed}
-    finally:
-        for f in held:
-            fcntl.flock(f, fcntl.LOCK_UN)
-            f.close()
-
-
 def save_timelapse_video(mode, start_ts, end_ts, frame_count, filename, poster_filename,
-                          duration_seconds, file_size_bytes):
+                          duration_seconds, file_size_bytes, recording_id=None, name=None):
     """Records a compiled session video - one row per completed
     ffmpeg compile (see camera_service.py). Deliberately keyed by an
     ordinary autoincrement id, NOT by timestamp like camera_snapshots/
@@ -2734,9 +2907,10 @@ def save_timelapse_video(mode, start_ts, end_ts, frame_count, filename, poster_f
     ts = time.time()
     cursor = conn.execute(
         "INSERT INTO timelapse_videos "
-        "(ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, duration_seconds, file_size_bytes) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        (ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, duration_seconds, file_size_bytes)
+        "(ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, duration_seconds, file_size_bytes, "
+        "recording_id, name) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, duration_seconds, file_size_bytes,
+         recording_id, name)
     )
     conn.commit()
     video_id = cursor.lastrowid
@@ -2752,7 +2926,7 @@ def get_timelapse_videos(limit=50, before_ts=None):
     building a "load older" cursor."""
     conn = get_db()
     query = ("SELECT id, ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, "
-              "duration_seconds, file_size_bytes FROM timelapse_videos WHERE 1=1")
+              "duration_seconds, file_size_bytes, recording_id, name FROM timelapse_videos WHERE 1=1")
     params = []
     if before_ts:
         query += " AND ts < ?"
@@ -2763,7 +2937,8 @@ def get_timelapse_videos(limit=50, before_ts=None):
     conn.close()
     return [
         {"id": r[0], "ts": r[1], "mode": r[2], "start_ts": r[3], "end_ts": r[4], "frame_count": r[5],
-         "filename": r[6], "poster_filename": r[7], "duration_seconds": r[8], "file_size_bytes": r[9]}
+         "filename": r[6], "poster_filename": r[7], "duration_seconds": r[8], "file_size_bytes": r[9],
+         "recording_id": r[10], "name": r[11]}
         for r in rows
     ]
 
@@ -2772,14 +2947,15 @@ def get_timelapse_video(video_id):
     conn = get_db()
     row = conn.execute(
         "SELECT id, ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, "
-        "duration_seconds, file_size_bytes FROM timelapse_videos WHERE id = ?",
+        "duration_seconds, file_size_bytes, recording_id, name FROM timelapse_videos WHERE id = ?",
         (video_id,)
     ).fetchone()
     conn.close()
     if not row:
         return None
     return {"id": row[0], "ts": row[1], "mode": row[2], "start_ts": row[3], "end_ts": row[4], "frame_count": row[5],
-            "filename": row[6], "poster_filename": row[7], "duration_seconds": row[8], "file_size_bytes": row[9]}
+            "filename": row[6], "poster_filename": row[7], "duration_seconds": row[8], "file_size_bytes": row[9],
+            "recording_id": row[10], "name": row[11]}
 
 
 def delete_timelapse_video(video_id):

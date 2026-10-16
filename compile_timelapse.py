@@ -1,57 +1,43 @@
 #!/usr/bin/env python3
-"""Manually compile a mode's kept (uncompiled) timelapse frames into a
-video - the recovery path for when the camera service's automatic
-compile fails or times out and logs "raw frames kept".
+"""Compile a stopped timelapse recording into a video from the command line -
+the same compile the Timelapse page's Compile button runs (same encoder
+settings, same gallery entry, same delete-frames-after-success behaviour),
+but with NO time limit and ffmpeg's progress line shown in the terminal,
+since a person is deliberately waiting on it. Use it when a dashboard
+compile timed out ("frames kept").
 
-Uses the exact same compile_session_video() the camera service does
-(same encoder settings, same gallery entry, same delete-frames-after-
-success behaviour), just with NO time limit and ffmpeg's progress line
-shown in the terminal, since a person is deliberately waiting on it.
-Safe to run while dermestid-camera.service is running: a per-mode lock
-file means the service skips its own compile of that mode (leaving the
-frames alone) if one is already in progress from here, and vice versa.
+[2026-10-16] Works on recordings now (started/stopped from the Timelapse
+page), not per-mode sessions. Shares the dashboard's single encode lock, so
+it refuses to start while a preview or another compile is running, and
+vice versa.
 
 Usage (on the Pi, as the pi user, from the project directory):
 
-    python3 compile_timelapse.py              # list modes with kept frames
-    python3 compile_timelapse.py cleaning     # compile them
+    python3 compile_timelapse.py          # list recordings with frames
+    python3 compile_timelapse.py 7        # compile recording #7
 
-If the mode you name is the one currently ACTIVE, its frames include the
-session still being recorded - compiling cuts that session at this
-point (the next video picks up from here). Pass --include-current to
-confirm that's what you want.
+Only STOPPED recordings can be compiled - stop a running one on the
+Timelapse page first.
 
 Don't run it with sudo: files it creates would be owned by root, and the
-camera service (running as pi) couldn't clean them up later.
+dashboard (running as pi) couldn't clean them up later.
 """
 import argparse
 import os
 import sys
-import time
 from datetime import datetime
 
 import shared_state as state
-import camera_service
-
-
-def pending_by_mode():
-    conn = state.get_db()
-    rows = conn.execute(
-        "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots GROUP BY mode ORDER BY mode"
-    ).fetchall()
-    conn.close()
-    return rows
+import timelapse_encode
 
 
 def fmt_ts(ts):
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "--"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("mode", nargs="?", help="mode whose kept frames to compile")
-    parser.add_argument("--include-current", action="store_true",
-                        help="allow compiling the currently active mode's frames")
+    parser.add_argument("recording_id", nargs="?", type=int, help="id of the stopped recording to compile")
     args = parser.parse_args()
 
     if os.geteuid() == 0:
@@ -60,52 +46,48 @@ def main():
         return 2
 
     state.init_db()
-    rows = pending_by_mode()
-    current_mode = state.load_config().get("current_mode", "ready")
+    recs = state.get_recordings_with_frames()
 
-    if not args.mode:
-        if not rows:
-            print("No kept timelapse frames - nothing to compile.")
+    if args.recording_id is None:
+        if not recs:
+            print("No recordings with frames - nothing to compile.")
             return 0
-        print(f"Kept (uncompiled) timelapse frames - current mode is '{current_mode}':")
-        for mode, count, first, last in rows:
-            est = count / state.timelapse_fps()
-            active = "  (ACTIVE - still recording)" if mode == current_mode else ""
-            print(f"  {mode:<12} {count:>6} frames  {fmt_ts(first)} -> {fmt_ts(last)}  "
-                  f"~{est:.0f}s of video{active}")
-        print("\nCompile one with: python3 compile_timelapse.py <mode>")
+        print("Timelapse recordings with frames:")
+        for r in recs:
+            est = r["frame_count"] / state.timelapse_fps()
+            status = "RECORDING - stop it first" if r["status"] == "recording" else "stopped"
+            print(f"  #{r['id']:<4} {state.recording_label(r)[:40]:<40} {r['frame_count']:>6} frames  "
+                  f"{fmt_ts(r['first_ts'])} -> {fmt_ts(r['last_ts'])}  ~{est:.0f}s  ({status})")
+        print("\nCompile one with: python3 compile_timelapse.py <id>")
         return 0
 
-    mode = args.mode
-    match = [r for r in rows if r[0] == mode]
-    if not match:
-        known = ", ".join(r[0] for r in rows) or "none"
-        print(f"No kept frames for mode '{mode}'. Modes with kept frames: {known}")
+    rec = next((r for r in recs if r["id"] == args.recording_id), None)
+    if not rec:
+        print(f"No recording #{args.recording_id} with frames.")
         return 1
-    if mode == current_mode and not args.include_current:
-        print(f"'{mode}' is the active mode, so its frames include the session still "
-              "being recorded. Re-run with --include-current to compile them anyway "
-              "(the rest of the current session will become a separate video).")
+    if rec["status"] == "recording":
+        print("That recording is still running - stop it on the Timelapse page first.")
         return 1
-
-    _, count, first, _ = match[0]
-    end_ts = time.time()
-    frames = state.get_camera_snapshots_in_range(mode, first, end_ts)
-    if len(frames) < camera_service.MINIMUM_FRAMES_FOR_VIDEO:
-        print(f"Only {len(frames)} frame(s) - fewer than the "
-              f"{camera_service.MINIMUM_FRAMES_FOR_VIDEO} needed for a video.")
+    if rec["frame_count"] < timelapse_encode.MINIMUM_FRAMES_FOR_VIDEO:
+        print(f"Only {rec['frame_count']} frame(s) - at least {timelapse_encode.MINIMUM_FRAMES_FOR_VIDEO} "
+              "are needed for a video.")
         return 1
 
-    print(f"Compiling {len(frames)} {mode} frames ({fmt_ts(first)} -> now), no time limit. "
-          "This can take a while on a Pi; ffmpeg's progress is shown below.")
-    ok = camera_service.compile_session_video(mode, first, end_ts, frames,
-                                              timeout_seconds=None, show_progress=True)
+    lock = state.try_encode_lock()
+    if lock is None:
+        print("Another timelapse encode (a preview or compile) is running - try again once it finishes.")
+        return 1
+    try:
+        print(f"Compiling '{state.recording_label(rec)}' ({rec['frame_count']} frames), no time limit. "
+              "This can take a while on a Pi; ffmpeg's progress is shown below.")
+        result = timelapse_encode.compile_recording(rec["id"], timeout_seconds=None, show_progress=True)
+    finally:
+        state.release_encode_lock(lock)
     print()
-    if ok:
+    if result["ok"]:
         print("Done - the video is on the Timelapse page and the raw frames were removed.")
         return 0
-    print("Compile did not finish - raw frames kept. Check the dashboard log / "
-          "logs/camera.log for the reason.")
+    print(f"Compile did not finish - frames kept. {result['error']}")
     return 1
 
 

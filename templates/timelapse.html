@@ -72,56 +72,59 @@
   .progress-bar { height: 4px; background: var(--panel-border); border-radius: 2px; margin-top: 6px; overflow: hidden; }
   .progress-bar > div { height: 100%; background: var(--accent); width: 0; transition: width 0.4s; }
   .overlay-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-dim); margin-top: 12px; }
+  .rec-tag {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+    color: #fff; background: var(--danger); border-radius: 999px; padding: 2px 8px; vertical-align: middle;
+  }
+  .rec-dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: recPulse 1.6s infinite; }
+  @keyframes recPulse { 50% { opacity: 0.25; } }
+  .rec-form { display: grid; grid-template-columns: 1fr 140px; gap: 10px; align-items: end; }
+  .rec-form .field { margin: 0; }
+  @media (max-width: 520px) { .rec-form { grid-template-columns: 1fr; } }
+  .rec-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .rec-buttons .save-btn, .rec-buttons .danger-btn { margin-top: 0; }
+  /* Keep the green/red action buttons the same size as the ghost buttons beside them. */
+  .rec-buttons .save-btn, .rec-buttons .danger-btn, .session-actions .save-btn {
+    font-size: 13.3333px; padding: 8px 14px; line-height: normal;
+  }
+  .session-actions { flex-wrap: wrap; }
 </style>
 {% endblock %}
 {% block content %}
 
-<div class="subtitle">Compiled videos, one per mode session - live view moved to the Home page</div>
+<div class="subtitle">Start a recording when a specimen goes in, stop it when it comes out, then compile it into a
+  video. Recording runs separately from the climate mode - switching modes never stops or compiles anything.</div>
 
-<div class="grid">
-  <div class="card">
-    <h2>Pending frames</h2>
-    <div class="stat-value" id="pendingCount">--</div>
-    <div class="stat-sub">Captured for the current session, not compiled into a video yet</div>
-  </div>
-  <div class="card">
-    <h2>Est. video length</h2>
-    <div class="stat-value" id="pendingDuration">--</div>
-    <div class="stat-sub">If this session compiled right now</div>
-  </div>
-  <div class="card">
-    <h2>Disk used</h2>
-    <div class="stat-value" id="pendingDiskUsage">--</div>
-    <div class="stat-sub">By the current, uncompiled frames</div>
-  </div>
-</div>
-
-<div class="purge-row">
-  <button class="danger-btn" id="purgeBtn" onclick="purgePending()" disabled>Purge pending frames</button>
-  <span class="stat-sub" id="purgeStatus"></span>
+<div class="card" style="margin:14px 0;">
+  <h2>Recording</h2>
+  <div id="recordingCard"><div class="stat-sub">Loading...</div></div>
 </div>
 
 <div class="card" style="margin:14px 0;">
-  <h2>Progress preview</h2>
-  <div class="stat-sub" style="margin-bottom:8px;">
-    Builds a video of the frames captured so far without deleting them - the full video is still made from every
-    frame when the mode changes. Previews aren't added to the gallery below.
+  <h2>Waiting to compile</h2>
+  <div class="stat-sub" style="margin-bottom:6px;">
+    Stopped recordings keep their frames here until you compile them into a video (the frames are deleted once the
+    video is made) or delete them. Only one preview or compile runs at a time. <span id="diskLine"></span>
   </div>
-  <div id="sessionRows"><div class="stat-sub">Loading...</div></div>
-  <label class="overlay-toggle">
-    <input type="checkbox" id="overlayToggle" onchange="saveOverlay()">
+  <div id="stoppedRows"><div class="stat-sub">Loading...</div></div>
+</div>
+
+<div class="card" style="margin:14px 0;">
+  <h2>Video settings</h2>
+  <label class="overlay-toggle" style="margin-top:0;">
+    <input type="checkbox" id="overlayToggle" onchange="saveOverlay()" style="width:auto; margin:0; flex-shrink:0;">
     Burn date/time and elapsed time into new videos and previews
     <span class="save-msg" id="overlayMsg" style="margin:0;"></span>
   </label>
-  <div class="overlay-toggle">
+  <div class="overlay-toggle" style="flex-wrap:wrap;">
     <label for="fpsSelect" style="margin:0;">Playback speed</label>
     <select id="fpsSelect" onchange="saveFps()"></select>
-    <span>- applies to new compiles and previews (rebuild a preview above to see the new pace)</span>
+    <span>- applies to new compiles and previews</span>
     <span class="save-msg" id="fpsMsg" style="margin:0;"></span>
   </div>
 </div>
 
-
+<div class="section-title">Videos</div>
 <div class="bulk-bar" id="bulkBar">
   <span id="bulkCount"></span>
   <button onclick="downloadSelected()">Download selected</button>
@@ -184,11 +187,11 @@ function renderVideos(videos, append) {
           <div class="play-badge">&#9654;</div>
         </div>
         <div class="video-caption">
-          <strong>${MODE_LABELS[v.mode] || v.mode}</strong> · ${fmtDateTime(v.start_ts)}<br>
+          <strong>${escapeHtml(videoTitle(v))}</strong> · ${fmtDateTime(v.start_ts)}<br>
           ${fmtDuration(v.duration_seconds)} · ${v.frame_count} frames · ${fmtSize(v.file_size_bytes)}
         </div>
         <div class="video-actions">
-          <a href="${v.url}" download>Download</a>
+          <a href="${v.url}?download=1" download="${escapeHtml(v.download_name || '')}">Download</a>
           <button onclick="deleteOne(${v.id})" style="color:var(--danger);">Delete</button>
         </div>
       </div>
@@ -221,8 +224,7 @@ async function loadVideos() {
   renderVideos(videos, false);
   const statusEl = document.getElementById('timelapseStatus');
   if (videos.length === 0) {
-    statusEl.textContent = 'No timelapse videos yet - a video is compiled automatically the next time the ' +
-      'enclosure leaves a mode that has a snapshot interval set on the Setpoints page.';
+    statusEl.textContent = 'No videos yet - stop a recording above, then press Compile.';
   } else {
     statusEl.textContent = '';
   }
@@ -257,8 +259,14 @@ function updateBulkBar() {
   document.getElementById('bulkCount').textContent = `${selectedIds.size} selected`;
 }
 
+// [2026-10-16] Videos compiled from a recording carry its name; older
+// per-mode videos fall back to the mode label.
+function videoTitle(v) {
+  return v.name || MODE_LABELS[v.mode] || v.mode || 'Timelapse';
+}
+
 function videoLabel(v) {
-  return `${escapeHtml(MODE_LABELS[v.mode] || v.mode)} · ${escapeHtml(fmtDateTime(v.start_ts))}`;
+  return `${escapeHtml(videoTitle(v))} · ${escapeHtml(fmtDateTime(v.start_ts))}`;
 }
 
 async function deleteOne(id) {
@@ -314,8 +322,8 @@ function downloadSelected() {
       const v = videosById[id];
       if (!v) return;
       const a = document.createElement('a');
-      a.href = v.url;
-      a.download = v.filename || '';
+      a.href = v.url + '?download=1';
+      a.download = v.download_name || v.filename || '';
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -332,68 +340,241 @@ function fmtWhen(ts) {
   return new Date(ts * 1000).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
 }
 
-let sessionPollTimer = null;
-let overlayToggleLoaded = false;
+// --------------------------------------------------------------------------
+// [2026-10-16] Recordings (replaced the per-mode "Progress preview" rows,
+// the pending-frame stat cards and "Purge pending frames"). See
+// /api/timelapse/recordings in webapp.py.
+// --------------------------------------------------------------------------
+let recPollTimer = null;
+let settingsLoaded = false;
+let lastRecData = null;
+// Measured on the Pi 4 (2026-09-29): ~0.072s of encoding per frame.
+const ENCODE_SECONDS_PER_FRAME = 0.072;
 
-function sessionRowHtml(s, busy) {
-  const current = s.is_current ? '<span class="current-tag">current</span>' : '';
-  let info = `<strong>${escapeHtml(s.label)}</strong>${current}<br>` +
-    `${s.count.toLocaleString()} frame${s.count === 1 ? '' : 's'} · ${escapeHtml(fmtWhen(s.first_ts))} → ${escapeHtml(fmtWhen(s.last_ts))}`;
-  let actions = '';
-  if (s.building) {
-    const pct = s.building.total ? Math.floor(100 * s.building.done / s.building.total) : 0;
-    info += `<br>Building preview… ${pct}% (${s.building.done.toLocaleString()} of ${s.building.total.toLocaleString()} frames)` +
-      `<div class="progress-bar"><div style="width:${pct}%"></div></div>`;
-  } else if (s.last_error) {
-    info += `<br><span style="color:var(--danger);">Preview failed: ${escapeHtml(s.last_error)}</span>`;
+function framesText(n) { return `${n.toLocaleString()} frame${n === 1 ? '' : 's'}`; }
+
+function jobHtml(r) {
+  if (!r.job) {
+    return r.last_error
+      ? `<br><span style="color:var(--danger);">${r.last_error.kind === 'compile' ? 'Compile' : 'Preview'} failed: ${escapeHtml(r.last_error.message)}</span>`
+      : '';
   }
-  if (s.preview) {
-    const newer = s.count - s.preview.frame_count;
-    info += `<br>Preview built ${escapeHtml(fmtWhen(s.preview.built_ts))} from ${s.preview.frame_count.toLocaleString()} frames` +
-      (s.preview.overlay ? ' · with timestamps' : ' · no timestamps') +
-      (newer > 0 ? ` · ${newer.toLocaleString()} newer frame${newer === 1 ? '' : 's'} since` : ' · up to date');
-    actions += `<button class="ghost-btn" onclick="openLightboxUrl('${s.preview.url}')">&#9654; Watch</button>` +
-      `<a class="ghost-btn" style="text-decoration:none;" href="${s.preview.url}&download=1">Download</a>`;
+  const pct = r.job.total ? Math.floor(100 * r.job.done / r.job.total) : 0;
+  const what = r.job.kind === 'compile' ? 'Compiling video' : 'Building preview';
+  return `<br>${what}… ${pct}% (${r.job.done.toLocaleString()} of ${r.job.total.toLocaleString()} frames)` +
+    `<div class="progress-bar"><div style="width:${pct}%"></div></div>`;
+}
+
+function previewHtml(r) {
+  if (!r.preview) return {info: '', actions: ''};
+  const newer = r.frame_count - r.preview.frame_count;
+  return {
+    info: `<br>Preview built ${escapeHtml(fmtWhen(r.preview.built_ts))} from ${framesText(r.preview.frame_count)}` +
+      (newer > 0 ? ` · ${newer.toLocaleString()} newer since` : ' · up to date'),
+    actions: `<button class="ghost-btn" onclick="openLightboxUrl('${r.preview.url}')">&#9654; Watch preview</button>` +
+      `<a class="ghost-btn" style="text-decoration:none;" href="${r.preview.url}&download=1">Download preview</a>`,
+  };
+}
+
+function renderActiveRecording(data) {
+  const el = document.getElementById('recordingCard');
+  const r = data.active;
+  if (!r) {
+    const [lo, hi] = data.interval_bounds;
+    el.innerHTML = `
+      <div class="stat-sub" style="margin-bottom:10px;">Not recording.</div>
+      <div class="rec-form">
+        <div class="field">
+          <label for="recName">Name (optional - e.g. client and specimen)</label>
+          <input type="text" id="recName" maxlength="80" placeholder="Smith – whitetail">
+        </div>
+        <div class="field">
+          <label for="recInterval">Snapshot every (min)</label>
+          <input type="number" id="recInterval" min="${lo}" max="${hi}" value="${data.default_interval}">
+        </div>
+      </div>
+      <div class="rec-buttons">
+        <button class="save-btn" onclick="startRecording()">&#9679; Start recording</button>
+      </div>
+      <div class="save-msg" id="recMsg"></div>`;
+    return;
   }
-  const label = s.preview ? 'Rebuild preview' : 'Build preview';
-  const disabled = busy || s.count < 3 ? 'disabled' : '';
-  const title = s.count < 3 ? 'title="Needs at least 3 frames"' : (busy ? 'title="Another preview is building"' : '');
-  actions += `<button class="save-btn" ${disabled} ${title} onclick="buildPreview('${s.mode}')">${label}</button>`;
+  const pv = previewHtml(r);
+  const busy = data.busy;
+  const canPreview = !busy && r.frame_count >= 3;
+  el.innerHTML = `
+    <div class="session-info" style="min-width:0;">
+      <span class="rec-tag"><span class="rec-dot"></span>REC</span>
+      <strong style="margin-left:6px;">${escapeHtml(r.label)}</strong><br>
+      Started ${escapeHtml(fmtWhen(r.started_ts))} · snapshot every ${r.interval_minutes} min ·
+      ${framesText(r.frame_count)}${r.frame_count ? ` · ~${escapeHtml(fmtDuration(r.estimated_video_seconds))} of video so far` : ''}
+      ${pv.info}${jobHtml(r)}
+    </div>
+    <div class="rec-form" style="margin-top:12px;">
+      <div class="field">
+        <label for="recName">Name</label>
+        <input type="text" id="recName" maxlength="80" value="${escapeHtml(r.name || '')}" placeholder="${escapeHtml(r.label)}">
+      </div>
+      <div class="field">
+        <label for="recInterval">Snapshot every (min)</label>
+        <input type="number" id="recInterval" min="${data.interval_bounds[0]}" max="${data.interval_bounds[1]}" value="${r.interval_minutes}">
+      </div>
+    </div>
+    <div class="rec-buttons">
+      <button class="danger-btn" onclick="stopRecording(${r.id})">&#9632; Stop recording</button>
+      <button class="ghost-btn" onclick="saveRecordingChanges(${r.id})">Save name / interval</button>
+      <button class="save-btn" ${canPreview ? '' : 'disabled'} title="${r.frame_count < 3 ? 'Needs at least 3 frames' : (busy ? 'Another preview or compile is running' : '')}"
+              onclick="buildPreview(${r.id})">${r.preview ? 'Rebuild preview' : 'Build preview'}</button>
+      ${pv.actions}
+    </div>
+    <div class="save-msg" id="recMsg"></div>`;
+}
+
+function stoppedRowHtml(r, data) {
+  const pv = previewHtml(r);
+  const busy = data.busy;
+  const few = r.frame_count < data.min_frames;
+  const span = r.first_ts ? `${escapeHtml(fmtWhen(r.first_ts))} → ${escapeHtml(fmtWhen(r.last_ts))}` : 'no frames';
+  const info = `<strong>${escapeHtml(r.label)}</strong><br>` +
+    `${framesText(r.frame_count)} · ${span}` +
+    (r.frame_count ? ` · ~${escapeHtml(fmtDuration(r.estimated_video_seconds))} video` : '') +
+    pv.info + jobHtml(r);
+  const compileTitle = few ? `Needs at least ${data.min_frames} frames` : (busy ? 'Another preview or compile is running' : '');
+  const actions =
+    `<button class="save-btn" ${few || busy ? 'disabled' : ''} title="${compileTitle}" onclick="compileRecording(${r.id})">Compile video</button>` +
+    `<button class="ghost-btn" ${r.frame_count < 3 || busy ? 'disabled' : ''} onclick="buildPreview(${r.id})">${r.preview ? 'Rebuild preview' : 'Preview'}</button>` +
+    pv.actions +
+    `<button class="ghost-btn" style="color:var(--danger);" ${r.job ? 'disabled' : ''} onclick="deleteRecording(${r.id})">Delete</button>`;
   return `<div class="session-row"><div class="session-info">${info}</div><div class="session-actions">${actions}</div></div>`;
 }
 
-async function refreshSessions() {
-  clearTimeout(sessionPollTimer);
+async function refreshRecordings() {
+  clearTimeout(recPollTimer);
   let busy = false;
   try {
-    const res = await fetch('/api/timelapse/sessions');
+    const res = await fetch('/api/timelapse/recordings');
     const data = await res.json();
+    lastRecData = data;
     busy = data.busy;
-    const rows = document.getElementById('sessionRows');
-    rows.innerHTML = data.sessions.length
-      ? data.sessions.map(s => sessionRowHtml(s, data.busy)).join('')
-      : '<div class="stat-sub">No pending frames right now - nothing to preview.</div>';
-    if (!overlayToggleLoaded) {
+    // Don't re-render the active card's form while someone's typing in it.
+    const focused = document.activeElement && ['recName', 'recInterval'].includes(document.activeElement.id);
+    if (!focused) renderActiveRecording(data);
+    document.getElementById('stoppedRows').innerHTML = data.stopped.length
+      ? data.stopped.map(r => stoppedRowHtml(r, data)).join('')
+      : '<div class="stat-sub">Nothing waiting - stopped recordings show up here.</div>';
+    document.getElementById('diskLine').textContent = data.disk_bytes ? `Frames on disk: ${fmtSize(data.disk_bytes)}.` : '';
+    if (!settingsLoaded) {
       document.getElementById('overlayToggle').checked = data.overlay;
       populateFpsSelect(data.fps, data.fps_bounds);
-      overlayToggleLoaded = true;
+      settingsLoaded = true;
     }
   } catch (e) { /* try again next tick */ }
-  // Poll fast only while a build is running.
-  sessionPollTimer = setTimeout(refreshSessions, busy ? 2000 : 15000);
+  // Poll fast only while an encode is running.
+  recPollTimer = setTimeout(refreshRecordings, busy ? 2000 : 15000);
 }
 
-async function buildPreview(mode) {
-  const res = await fetch(`/api/timelapse/preview/${mode}`, {method: 'POST'});
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    alertInline(data.error || 'Could not start the preview.');
-  }
-  refreshSessions();
+function recMsg(text, ok) {
+  const el = document.getElementById('recMsg');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'save-msg ' + (ok ? 'ok' : 'err');
+}
+
+async function postJson(url, body, method) {
+  const res = await fetch(url, {
+    method: method || 'POST', headers: {'Content-Type': 'application/json'},
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  return {ok: res.ok, data};
+}
+
+async function startRecording() {
+  const name = document.getElementById('recName').value;
+  const interval = parseInt(document.getElementById('recInterval').value, 10);
+  const {ok, data} = await postJson('/api/timelapse/recordings', {name, interval_minutes: interval});
+  if (!ok) { recMsg(data.error || 'Could not start recording.', false); return; }
+  document.activeElement && document.activeElement.blur();
+  refreshRecordings();
+}
+
+async function saveRecordingChanges(id) {
+  const name = document.getElementById('recName').value;
+  const interval = parseInt(document.getElementById('recInterval').value, 10);
+  const {ok, data} = await postJson(`/api/timelapse/recordings/${id}`, {name, interval_minutes: interval});
+  document.activeElement && document.activeElement.blur();
+  if (!ok) { recMsg(data.error || 'Save failed.', false); return; }
+  await refreshRecordings();
+  recMsg('Saved', true);
+}
+
+async function stopRecording(id) {
+  const r = lastRecData && lastRecData.active;
+  const ok = await confirmDanger('Stop recording?', [
+    r ? `<strong>${escapeHtml(r.label)}</strong> - ${framesText(r.frame_count)} so far.` : 'The current recording.',
+    'No more snapshots are taken. The frames are kept under "Waiting to compile" until you compile or delete them.'
+  ], 'Stop recording', undefined, 'save-btn');
+  if (!ok) return;
+  const res = await postJson(`/api/timelapse/recordings/${id}/stop`);
+  if (!res.ok) recMsg(res.data.error || 'Could not stop.', false);
+  refreshRecordings();
+}
+
+function findRec(id) {
+  if (!lastRecData) return null;
+  if (lastRecData.active && lastRecData.active.id === id) return lastRecData.active;
+  return lastRecData.stopped.find(r => r.id === id) || null;
+}
+
+async function compileRecording(id) {
+  const r = findRec(id);
+  const est = r ? Math.max(5, Math.round(r.frame_count * ENCODE_SECONDS_PER_FRAME)) : null;
+  const ok = await confirmDanger('Compile video?', [
+    r ? `<strong>${escapeHtml(r.label)}</strong> - ${framesText(r.frame_count)} into a ~${escapeHtml(fmtDuration(r.estimated_video_seconds))} video.` : '',
+    'Once the video is made, the raw frames are deleted - the video replaces them. If the compile fails, the frames are kept.',
+    est ? `Expect the Pi to be busy for roughly ${escapeHtml(fmtDuration(est))}. Compiling is the heavy job behind the open "Pi becomes unresponsive" issue, so it's best started while you can keep an eye on it.` : ''
+  ].filter(Boolean), 'Compile', undefined, 'save-btn');
+  if (!ok) return;
+  const {ok: started, data} = await postJson(`/api/timelapse/recordings/${id}/compile`);
+  if (!started) alertInline(data.error || 'Could not start the compile.');
+  refreshRecordings();
+  watchForCompiledVideo();
+}
+
+// Reload the gallery once the compile job finishes, so the new video shows up.
+function watchForCompiledVideo() {
+  const check = async () => {
+    try {
+      const res = await fetch('/api/timelapse/recordings');
+      const data = await res.json();
+      if (data.busy) { setTimeout(check, 3000); return; }
+    } catch (e) { setTimeout(check, 5000); return; }
+    loadVideos();
+    refreshRecordings();
+  };
+  setTimeout(check, 3000);
+}
+
+async function deleteRecording(id) {
+  const r = findRec(id);
+  const ok = await confirmDanger('Delete recording?', [
+    r ? `<strong>${escapeHtml(r.label)}</strong> - ${framesText(r.frame_count)}.` : 'This recording.',
+    'Its frames and any preview are permanently deleted from the Pi without making a video. This can\'t be undone.'
+  ], 'Delete recording');
+  if (!ok) return;
+  const {ok: done, data} = await postJson(`/api/timelapse/recordings/${id}`, undefined, 'DELETE');
+  if (!done) alertInline(data.error || 'Delete failed.');
+  refreshRecordings();
+}
+
+async function buildPreview(id) {
+  const {ok, data} = await postJson(`/api/timelapse/recordings/${id}/preview`);
+  if (!ok) alertInline(data.error || 'Could not start the preview.');
+  refreshRecordings();
 }
 
 function alertInline(text) {
-  const rows = document.getElementById('sessionRows');
+  const rows = document.getElementById('stoppedRows');
   rows.insertAdjacentHTML('afterbegin', `<div class="save-msg err">${escapeHtml(text)}</div>`);
 }
 
@@ -433,10 +614,8 @@ async function saveFps() {
   msg.textContent = res.ok ? 'Saved' : 'Save failed';
   msg.className = 'save-msg ' + (res.ok ? 'ok' : 'err');
   setTimeout(() => { msg.textContent = ''; }, 2000);
-  // "Est. video length" above is computed from this exact setting - keep
-  // it in sync with what was just saved instead of waiting up to 15s for
-  // the next poll tick.
-  refreshPendingStats();
+  // The estimated video lengths are computed from this exact setting.
+  refreshRecordings();
 }
 
 function openLightbox(id) {
@@ -453,56 +632,7 @@ function closeLightbox() {
   document.getElementById('videoLightbox').classList.remove('visible');
 }
 
-let lastPending = {count: 0, disk_bytes: 0};
-
-async function purgePending() {
-  const n = lastPending.count;
-  const ok = await confirmDanger('Purge pending frames?', [
-    `This permanently deletes <strong>${n} frame${n === 1 ? '' : 's'}</strong> ` +
-      `(<strong>${escapeHtml(fmtSize(lastPending.disk_bytes))}</strong>) that haven't been compiled ` +
-      'into a video yet, including the session that\'s recording right now.',
-    'Compiled videos below aren\'t affected. This can\'t be undone.'
-  ], 'Delete frames');
-  if (!ok) return;
-  const btn = document.getElementById('purgeBtn');
-  const status = document.getElementById('purgeStatus');
-  btn.disabled = true;
-  try {
-    const res = await fetch('/api/timelapse/pending/purge', {method: 'POST'});
-    const data = await res.json();
-    if (!res.ok) {
-      status.textContent = data.error || 'Purge failed.';
-    } else {
-      const n = data.removed;
-      const strays = data.strays_removed ? ` plus ${data.strays_removed} orphaned file${data.strays_removed === 1 ? '' : 's'}` : '';
-      status.textContent = `Purged ${n} frame${n === 1 ? '' : 's'}${strays} (${fmtSize(data.freed_bytes)} freed).`;
-    }
-  } catch (e) {
-    status.textContent = 'Purge failed - dashboard unreachable.';
-  }
-  refreshPendingStats();
-  refreshSessions();
-}
-
-async function refreshPendingStats() {
-  try {
-    const res = await fetch('/api/timelapse/pending');
-    const data = await res.json();
-    lastPending = data;
-    document.getElementById('purgeBtn').disabled = !data.count;
-    document.getElementById('pendingCount').textContent = data.count;
-    document.getElementById('pendingDuration').textContent =
-      data.count ? fmtDuration(data.estimated_video_seconds) : '--';
-    document.getElementById('pendingDiskUsage').textContent = fmtSize(data.disk_bytes);
-  } catch (e) {
-    // A stale header stat isn't worth an error state - just leave
-    // whatever was last shown and try again on the next tick.
-  }
-}
-
 loadVideos();
-refreshPendingStats();
-setInterval(refreshPendingStats, 15000);
-refreshSessions();
+refreshRecordings();
 </script>
 {% endblock %}

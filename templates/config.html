@@ -57,10 +57,6 @@ function renderSetpointPanels(config) {
         <input type="number" step="1" id="${mode}-humidity_setpoint" value="${sp.humidity_setpoint}">
       </div>
       ${extraFields}
-      <div class="field">
-        <label>Timelapse snapshot interval, minutes (0 = never)</label>
-        <input type="number" min="0" id="${mode}-snapshot_interval_minutes" value="${sp.snapshot_interval_minutes ?? 0}">
-      </div>
       <button class="save-btn" onclick="saveSetpoints('${mode}')">Save</button>
       <div class="save-msg" id="${mode}-msg"></div>
     `;
@@ -79,7 +75,6 @@ async function saveSetpoints(mode) {
     body.vent_interval_minutes = parseInt(document.getElementById(`${mode}-vent_interval_minutes`).value, 10);
     body.vent_duration_minutes = parseInt(document.getElementById(`${mode}-vent_duration_minutes`).value, 10);
   }
-  body.snapshot_interval_minutes = parseInt(document.getElementById(`${mode}-snapshot_interval_minutes`).value, 10);
   const res = await fetch('/api/setpoints', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
   });

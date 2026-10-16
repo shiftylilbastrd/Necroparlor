@@ -54,6 +54,17 @@
     .mode-dropdown { width: 100%; }
     .mode-options { left: 0; right: 0; width: auto; }
   }
+  /* [2026-10-16] "REC <name>" pill under the header while a timelapse
+     recording is running - links to the Timelapse page. */
+  .rec-indicator {
+    display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 8px; max-width: 100%;
+    font-size: 0.75rem; font-weight: 700; letter-spacing: 0.03em; text-decoration: none;
+    color: #fff; background: var(--danger); border-radius: 999px; padding: 3px 10px;
+  }
+  .rec-indicator[hidden] { display: none; }
+  .rec-indicator #recIndicatorLabel { font-weight: 600; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rec-dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; flex-shrink: 0; animation: recPulse 1.6s infinite; }
+  @keyframes recPulse { 50% { opacity: 0.25; } }
   .chart-label { font-size: 0.8rem; color: var(--text-dim); margin: 14px 0 6px 0; font-weight: 600; }
   .tile-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
   .tile-side { text-align: right; flex-shrink: 0; }
@@ -189,6 +200,9 @@
   </div>
 </div>
 <div class="subtitle" id="lastUpdateLine">Last update: --</div>
+<a class="rec-indicator" id="recIndicator" href="/timelapse" hidden>
+  <span class="rec-dot"></span>REC <span id="recIndicatorLabel"></span>
+</a>
 <div class="save-msg" id="modeMsg" style="margin-bottom:10px;"></div>
 
 <div class="banner" id="staleBanner">⚠ No sensor update in over 90 seconds - check the climate service on the Pi.</div>
@@ -290,6 +304,8 @@ let modeDropdownOpen = false;
 // The latest /api/status config - selectMode()'s confirmation reads the
 // current mode and the target mode's setpoints from it.
 let lastStatusConfig = null;
+// The running timelapse recording from /api/status (or null).
+let lastStatusRecording = null;
 const MODE_NAMES = {dormant: 'Dormant', breeding: 'Breeding', ready: 'Ready', cleaning: 'Cleaning'};
 
 function fmtTime(ts) {
@@ -350,10 +366,12 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// [2026-10-16] Mode switches now need confirming (Ryan) - a mis-tap changes
-// the control targets AND ends the current mode's timelapse session, which
-// kicks off a compile (see camera_service.maybe_compile_session). Picking
-// the mode that's already active just closes the menu.
+// [2026-10-16] Mode switches need confirming (Ryan) - a mis-tap changes the
+// control targets. Picking the mode that's already active just closes the
+// menu. Timelapse recording is independent of the mode now, so a switch
+// never stops or compiles anything - but switching INTO Cleaning with
+// nothing recording offers to start a recording too (Ryan asked for that
+// prompt), named after the mode and date at the last-used interval.
 function fmtSetpointNum(v) { return (Math.round(v * 10) / 10).toString(); }
 
 async function selectMode(mode) {
@@ -367,13 +385,21 @@ async function selectMode(mode) {
     lines.push(`Targets: <strong>${fmtSetpointNum(sp.low_temp_f)}–${fmtSetpointNum(sp.high_temp_f)}°F</strong>, ` +
                `humidity up to <strong>${fmtSetpointNum(sp.humidity_setpoint)}%</strong>.`);
   }
-  if (from) {
-    lines.push(`This ends the current ${escapeHtml(MODE_NAMES[from] || from)} timelapse session - if it captured ` +
-               `enough frames, they're compiled into a video.`);
+  const rec = lastStatusRecording;
+  if (rec) {
+    lines.push(`Recording <strong>${escapeHtml(rec.label)}</strong> keeps running.`);
   }
-  const ok = await confirmDanger(`Switch to ${MODE_NAMES[mode] || mode}?`, lines,
-                                 `Switch to ${MODE_NAMES[mode] || mode}`, undefined, 'save-btn');
-  if (!ok) return;
+  const offerRecording = mode === 'cleaning' && !rec;
+  if (offerRecording) {
+    lines.push('Nothing is recording. Start a timelapse recording as well? You can rename it or change its ' +
+               'interval on the Timelapse page.');
+  }
+  const label = MODE_NAMES[mode] || mode;
+  const choice = await confirmDanger(`Switch to ${label}?`, lines,
+                                     offerRecording ? 'Switch only' : `Switch to ${label}`,
+                                     offerRecording ? 'Switch + start recording' : undefined, 'save-btn');
+  const go = offerRecording ? choice !== 'cancel' : choice;
+  if (!go) return;
   updateModeUI(mode); // optimistic - reconciled by the next refreshStatus regardless
   const res = await fetch('/api/mode', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({mode})
@@ -387,8 +413,39 @@ async function selectMode(mode) {
     msg.textContent = 'Mode changed';
     msg.className = 'save-msg ok';
     setTimeout(() => { msg.textContent = ''; }, 2000);
+    // After the switch, so the recording is tagged with the new mode.
+    if (offerRecording && choice === 'extra') await startRecordingFromHome(label);
   }
   refreshStatus();
+}
+
+async function startRecordingFromHome(modeLabel) {
+  const interval = (lastStatusConfig && lastStatusConfig.timelapse_last_interval_minutes) || 10;
+  const day = new Date().toLocaleDateString([], {month: 'short', day: 'numeric'});
+  const msg = document.getElementById('modeMsg');
+  try {
+    const res = await fetch('/api/timelapse/recordings', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: `${modeLabel} – ${day}`, interval_minutes: interval, source: 'mode_switch'})
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      msg.textContent = `Recording not started: ${data.error || 'error'}`;
+      msg.className = 'save-msg err';
+    }
+  } catch (e) {
+    msg.textContent = 'Recording not started - dashboard unreachable';
+    msg.className = 'save-msg err';
+  }
+}
+
+function updateRecordingIndicator(rec) {
+  lastStatusRecording = rec || null;
+  const el = document.getElementById('recIndicator');
+  if (!rec) { el.hidden = true; return; }
+  el.hidden = false;
+  document.getElementById('recIndicatorLabel').textContent = rec.label;
+  el.title = `Recording a timelapse every ${rec.interval_minutes} min - open the Timelapse page`;
 }
 
 async function refreshStatus() {
@@ -442,6 +499,7 @@ async function refreshStatus() {
   }
 
   lastStatusConfig = data.config;
+  updateRecordingIndicator(data.recording);
   updateModeUI(data.config.current_mode);
 
   // Resyncs the light icon from config.json's own light_override_until

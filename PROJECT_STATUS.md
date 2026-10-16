@@ -624,6 +624,15 @@ that aren't obvious from reading the code cold.
   **Diagnostics to grab next time** (from a second SSH session started *before* the compile): `htop`,
   `vmstat 2`, `iostat -x 2` (sysstat), `vcgencmd measure_temp && vcgencmd get_throttled`; afterwards
   `journalctl -u dermestid-web -u dermestid-camera --since "-30 min"` and `dmesg | tail -50`.
+  - **[2026-10-16 update, `dev`]** Not fixed yet, but the recordings redesign (entry below) changes the picture:
+    (a) suspect 3 (two encodes at once) is now ruled out by design - every encode (preview, dashboard compile,
+    `compile_timelapse.py`) takes one shared lock (`state.try_encode_lock()`); (b) a mode switch no longer compiles
+    anything, so a compile only happens when Ryan presses Compile (or runs the CLI) - the hang can no longer be
+    triggered by surprise; (c) the compile now runs in the **dashboard's own process** (a background thread in
+    `webapp.py`), not `dermestid-camera` - if the dashboard stalls during a compile, that's consistent with
+    suspects 1/2 (I/O or CPU starvation), and `journalctl -u dermestid-web` is where its log lines land. The
+    compile confirmation box warns about this issue. `nice -n 19` is still the only throttle; `ionice` /
+    `-threads` still untried.
 
 - **[2026-10-16, `dev`] Removed the System page's "Save branch" button** (Ryan: the branch select already
   auto-saves, so the button was superfluous). Its one real job - retrying a failed auto-save - is covered
@@ -639,6 +648,54 @@ that aren't obvious from reading the code cold.
   update check (`_git_check_for_update()` in `webapp.py`, and `auto_update.sh`) compares commit hashes only, with
   no path filtering. Offered a docs-only skip (`*.md`, `docs/`, `Claude outputs/`); **Ryan chose to keep the plain
   version check.** Don't add path filtering without asking.
+
+- **[2026-10-16, `dev`] Timelapse is now start/stop RECORDINGS, separate from the climate mode; compiling is
+  manual.** Ryan asked whether timelapse should be "started and controlled separately from the mode switch";
+  decisions, all his: yes; **compile is manually triggered for now** (no automatic/overnight compile); and a
+  **prompt to start a recording when switching into Cleaning**. Why: the natural unit is a specimen/job, not a
+  mode visit (a quick Cleaning->Ready->Cleaning flip used to split one job into two videos), and a mode switch used
+  to fire an ffmpeg compile - the top-priority hang suspect - at whatever moment it happened.
+  - **Model:** `timelapse_recordings` table (name, interval_minutes, started/stopped ts, status
+    recording/stopped/compiled, mode_at_start, source, video_id). Frames carry `recording_id`; videos carry
+    `recording_id` + `name`. **At most one recording runs at a time** (`start_recording` uses BEGIN IMMEDIATE).
+    `camera_service.py` captures only while one runs, at its interval, and seeds its timer from that recording's
+    newest frame on startup (no extra snapshot after a restart). Per-mode `snapshot_interval_minutes` is gone
+    (Setpoints page field removed; a mode drops the key on its next save). Removed: per-mode sessions, per-mode
+    previews/locks, `purge_camera_snapshots` + the "Purge pending frames" button, `/api/timelapse/pending`,
+    `/sessions`, `/preview/<mode>`, compile-on-mode-change (`maybe_compile_session`/`compile_session_video`).
+  - **Compile:** `timelapse_encode.compile_recording()` (moved out of `camera_service.py`), STOPPED recordings
+    only, deletes frames only after a verified video exists. Runs from the Timelapse page (background thread in
+    `webapp.py`, progress bar, gallery refreshes when done) or `compile_timelapse.py <id>` over SSH (no time
+    limit). One shared encode lock covers previews, compiles and the CLI. Downloads are named after the
+    recording, e.g. `Jones-black-bear_2026-10-16.mp4`, ready to send to a client.
+  - **Migration - Ryan's explicit concern was not interrupting the timelapse already running.** First start of
+    the new code (`_migrate_mode_sessions_to_recordings()`, inside `init_db()`, BEGIN IMMEDIATE + `app_meta`
+    marker so concurrent service starts migrate exactly once): the current mode, if it had a snapshot interval,
+    becomes the ACTIVE recording "<Mode> (carried over)" at that interval with all its frames - capture just
+    continues; every other mode's leftover frames become STOPPED "<Mode> (before recordings)". Logged as one info
+    event. Old gallery videos keep working (no name -> mode label).
+  - **UI:** Timelapse page = Recording card (Start with name + interval, or REC tag / rename / change interval /
+    Stop / preview), "Waiting to compile" list (Compile, Preview, Delete per recording - compile and delete have
+    confirm boxes; compile's warns about the open hang issue), Video settings, gallery. Home: red "REC <name>"
+    pill linking to Timelapse; mode-switch box says "Recording X keeps running"; switching INTO Cleaning with
+    nothing recording offers **Switch + start recording** / Switch only (recording named "Cleaning – <date>", last
+    used interval, started after the switch succeeds). Stopping a recording with zero frames discards it.
+  - **Verified** off-Pi: 50-check backend suite built from an OLD-schema DB with a Cleaning session mid-recording
+    (4 concurrent `init_db()` -> exactly one migration; capture continues in the carried-over recording through a
+    mode switch and a restart; no compile from the loop; one-at-a-time; compile/preview/delete/lock conflicts
+    through Flask; real ffmpeg compile; download headers; CLI list/refusal/compile); 28-check headless Chromium
+    run of the whole flow at phone width (incl. the Cleaning prompt's three choices); the earlier 50-check
+    settings/modes suite still passes. **NOT verified on the Pi.** After updating: check the Timelapse page shows
+    the carried-over recording with the right frame count, and that new frames keep landing in it.
+  - **Startup race fixed along the way (pre-existing pattern).** The concurrent-`init_db()` test also caught that
+    every "add a missing column" migration was check-then-ALTER, so two services starting together could both
+    try to add it and one would crash with "duplicate column name" (systemd's `Restart=on-failure` would bring it
+    back, but climate.py shouldn't crash at boot). All 16 `ADD COLUMN` sites now go through `_add_column()`, which
+    treats a duplicate as success - this matters on the Pi's first start of this code, when the new
+    `recording_id`/`name` columns are missing. Stress-tested: 8 services x 10 trials on an old-schema DB, zero
+    crashes, exactly one migration each time. Also: `adopt_orphan_frames()` (camera service startup) attaches any
+    frame the OLD camera service saved during the update window, after the new code had already migrated, to
+    the running recording.
 
 - **[2026-10-16, `dev`] Home mode dropdown: no longer cut off when the header wraps; mode switches now need
   confirming.** Ryan: "if the page is narrowed the dropdown moves to the left side and then the options are cut

@@ -16,7 +16,7 @@ Raspberry Pi climate control for a dermestid beetle colony living in a converted
 | `ble_listener.py` | Optional — listens for a BLE temp/humidity sensor (SensorPush, Govee, INKBIRD, Xiaomi, RuuviTag) as the external reading. |
 | `ble_battery.py` | Optional — periodic battery check (SensorPush HT1 only; other brands broadcast battery for free). |
 | `discover_ble_sensor.py` | One-time helper to find a BLE sensor's address. |
-| `camera_service.py` | Optional — per-mode timelapse capture only (pulls snapshots from camera-streamer's HTTP API). Live view itself is served by camera-streamer, a separate daemon — see `docs/camera-streamer-setup.md`. |
+| `camera_service.py` | Optional — timelapse capture for the running recording only (pulls snapshots from camera-streamer's HTTP API). Live view itself is served by camera-streamer, a separate daemon — see `docs/camera-streamer-setup.md`. |
 | `discover_camera.py` | One-time helper to find the webcam's `/dev/videoN` index. |
 | `auto_update.sh` | Pulls from git and restarts the affected services. |
 | `systemd/` | Unit/timer files so everything runs on boot and restarts on crash. |
@@ -166,7 +166,7 @@ follow that doc for the actual setup. Short version once it's built and
 running:
 
 ```bash
-sudo apt install ffmpeg   # needed to compile timelapse sessions into .mp4
+sudo apt install ffmpeg   # needed to compile timelapse recordings into .mp4
 ```
 
 1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
@@ -180,7 +180,7 @@ sudo apt install ffmpeg   # needed to compile timelapse sessions into .mp4
    }
    ```
    `streamer_port` can't be `8080` — that's this dashboard's own port. A save here regenerates `camera-streamer.env` and restarts `camera-streamer.service` automatically. JPEG quality and capture rate are camera-streamer's own CLI flags now (see `docs/camera-streamer-setup.md`), not a Config-page setting.
-3. `camera_service.py` no longer opens the USB device at all — it only wakes up to pull a timelapse snapshot from camera-streamer's own `/snapshot` endpoint on each mode's `snapshot_interval_minutes`. Run/enable it as before:
+3. `camera_service.py` no longer opens the USB device at all — it only wakes up to pull a timelapse snapshot from camera-streamer's own `/snapshot` endpoint at the running timelapse recording's interval (nothing is captured when no recording is running). Run/enable it as before:
 
 ```bash
 sudo cp systemd/camera-streamer.service /etc/systemd/system/
@@ -190,7 +190,7 @@ sudo systemctl enable --now camera-streamer.service
 sudo systemctl enable --now dermestid-camera.service
 ```
 
-**Live view** (Home page) connects straight to camera-streamer's own `/stream` endpoint — not relayed through this dashboard's own server anymore — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) auto-compiles each mode session's frames into an `.mp4` once it ends; set `snapshot_interval_minutes` per mode on the Config page (`0` = off). A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
+**Live view** (Home page) connects straight to camera-streamer's own `/stream` endpoint — not relayed through this dashboard's own server anymore — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) works in **recordings**, separate from the climate mode: **Start recording** (optional name, e.g. "Smith – whitetail", and a snapshot interval) when a specimen goes in, **Stop recording** when it comes out, then press **Compile video** when you're ready. Compiling turns the frames into an `.mp4` in the gallery (named after the recording, so the download is ready to send to a client) and deletes the frames. Switching modes never stops or compiles anything; switching *into* Cleaning while nothing is recording offers to start one, and Home shows a red **REC** pill while one runs. Only one recording runs at a time, and only one preview or compile runs at a time. If a dashboard compile times out, `python3 compile_timelapse.py` (no arguments lists recordings; `python3 compile_timelapse.py <id>` compiles one with no time limit) does the same compile from SSH. A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
 
 ## Notifications (optional)
 
@@ -241,7 +241,7 @@ below are unaffected either way.
 **Low disk space** (relevant if you're using the optional USB webcam/timelapse feature) gets two separate
 event types instead of one generic camera warning: a `disk_space_low` **forecast**, which fires at least 24
 hours before free space is projected to hit the hardcoded auto-delete threshold (based on the current
-snapshot capture rate at whatever mode is active) - an early nudge to lower the snapshot interval, lower
+snapshot capture rate of the running recording) - an early nudge to lower the snapshot interval, lower
 camera-streamer's resolution/quality, or free up SD card space before anything actually gets deleted - and a
 `disk_space_pruned` event when the oldest timelapse frames actually do get auto-deleted as the last-resort
 safety net. Both are on by default and independently toggleable like any other event type, separate from the
@@ -359,7 +359,7 @@ The database file itself doesn't shrink on the SD card when rows are deleted (or
 - **Home** (`/`) — live readings, relay states, mode switch, live camera view, and the temp/humidity history graph (1h–30d).
 - **Logs** (`/logs`) — event log with level filter and pagination.
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
-- **Timelapse** (`/timelapse`) — compiled per-session videos.
+- **Timelapse** (`/timelapse`) — start/stop recordings, compile them into videos, previews, and the video gallery.
 - **Config** (`/config`) — per-mode setpoints.
 - **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open alert timing, the global out-of-range warning margin, and the global critical temp/humidity limits.
 - **Settings** (`/settings`) — sensor source/calibration, BLE and camera settings, software updates, data history retention/clearing, restarting the Pi.
