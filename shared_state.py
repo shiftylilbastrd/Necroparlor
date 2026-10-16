@@ -429,6 +429,12 @@ DEFAULT_CONFIG = {
     }
 }
 
+# Dehumidifier hysteresis: climate.py turns it on above humidity_setpoint
+# + this and off below humidity_setpoint - this. Defined here (not in
+# climate.py) so the Home chart's "Setpoint range" can shade exactly the band
+# the control loop holds humidity in. Not a dashboard setting.
+HUMIDITY_HYSTERESIS = 3.0
+
 # Sanity bounds used to validate anything coming in from the web UI.
 TEMP_BOUNDS_F = (40.0, 100.0)
 HUMIDITY_BOUNDS = (10.0, 90.0)

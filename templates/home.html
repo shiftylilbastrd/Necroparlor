@@ -504,6 +504,7 @@ async function refreshStatus() {
   }
 
   lastStatusConfig = data.config;
+  lastHumidityHysteresis = data.humidity_hysteresis;
   updateRecordingIndicator(data.recording);
   updateModeUI(data.config.current_mode);
 
@@ -596,12 +597,17 @@ function timeScaleOptions(hours) {
 // recessive colours on purpose: a reference zone, not another data series.
 const SETPOINT_EDGE = 'rgba(231,236,239,0.55)';
 const SETPOINT_FILL = 'rgba(231,236,239,0.07)';
+let lastHumidityHysteresis = null;
 async function setpointConfig() {
-  if (lastStatusConfig) return lastStatusConfig;
-  try {
-    const res = await fetch('/api/status');
-    return (await res.json()).config;
-  } catch (e) { return null; }
+  let cfg = lastStatusConfig;
+  if (!cfg) {
+    try {
+      const data = await (await fetch('/api/status')).json();
+      cfg = data.config;
+      lastHumidityHysteresis = data.humidity_hysteresis;
+    } catch (e) { return null; }
+  }
+  return cfg ? {...cfg, __humidityHysteresis: lastHumidityHysteresis} : null;
 }
 function setpointsAt(cfg, p) {
   if (!cfg || !cfg.modes) return null;
@@ -649,11 +655,17 @@ async function refreshHistory() {
   if (hasBle) {
     humidityDatasets.push(...bandDatasets('External %RH', points.map(p => p.ble_humidity), points.map(p => p.ble_humidity_min), points.map(p => p.ble_humidity_max), '#d9a441'));
   }
-  // Humidity has a single setpoint, and it's a ceiling (the dehumidifier is
-  // the only humidity actuator), so it's a dashed line rather than a band.
+  // Humidity has one setpoint; the shaded range is the band the dehumidifier
+  // holds it in - on above setpoint + hysteresis, off below setpoint -
+  // hysteresis (climate.py) - the same "where the equipment kicks in" edges
+  // the temperature band uses. [2026-10-16, Ryan: fill it like temp.]
+  const hyst = (cfg && cfg.__humidityHysteresis) || 3;
   humidityDatasets.push(
-    { label: 'Setpoint range', data: sp.map(s => s ? s.humidity_setpoint : null), borderColor: SETPOINT_EDGE, borderDash: [5, 4],
-      borderWidth: 1.5, backgroundColor: 'transparent', pointRadius: 0, fill: false, stepped: true,
+    { label: 'Setpoint range high', data: sp.map(s => s ? s.humidity_setpoint + hyst : null), borderColor: SETPOINT_EDGE, borderDash: [5, 4],
+      borderWidth: 1, backgroundColor: 'transparent', pointRadius: 0, fill: false, stepped: true,
+      isBand: true, isSetpoint: true, group: 'Setpoint range', order: 10 },
+    { label: 'Setpoint range', data: sp.map(s => s ? s.humidity_setpoint - hyst : null), borderColor: SETPOINT_EDGE, borderDash: [5, 4],
+      borderWidth: 1, backgroundColor: SETPOINT_FILL, pointRadius: 0, fill: '-1', stepped: true,
       isSetpoint: true, group: 'Setpoint range', order: 10 }
   );
   updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);

@@ -661,6 +661,12 @@ that aren't obvious from reading the code cold.
     after the data series so they're last in the legend, with `order: 10` so Chart.js draws them behind the
     readings. Excluded from tooltips. Legend tap hides both band edges together (same `group` mechanism as the
     min/max bands) and survives a refresh. Neutral colours on purpose - a reference zone, not a data series.
+  - *(Same day, Ryan: "fill the acceptable humidity range just like the temp range.")* Humidity is now a filled
+    band too, setpoint +/- `HUMIDITY_HYSTERESIS` (3%) - exactly where climate.py switches the dehumidifier on/off,
+    the same "where the equipment kicks in" edges the temperature band uses (e.g. 45% -> 42-48%). The constant
+    moved from climate.py to `shared_state.HUMIDITY_HYSTERESIS` (climate.py reads it from there, behaviour
+    unchanged) and `/api/status` returns it as `humidity_hysteresis`, so the chart never hard-codes it.
+    Re-verified: climate suite (50 checks) and chart checks (13) pass; band steps 47-53% -> 42-48% at the switch.
   - **Known limitations, accepted:** uses each mode's CURRENT setpoints (past setpoint values aren't stored), so
     changing a mode's range redraws its older stretches; on the 7d/30d views a switch lands on the nearest
     6h/1-day bucket; the y-axis now always stretches to include the range.

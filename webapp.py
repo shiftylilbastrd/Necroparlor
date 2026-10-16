@@ -131,7 +131,8 @@ def api_status():
     return jsonify({"config": config, "latest": latest, "stale": stale,
                      "ble_status": ble_status, "door_status": door_status,
                      "last_valid_timestamps": last_valid,
-                     "disk_free_gb": disk_free_gb, "recording": recording})
+                     "disk_free_gb": disk_free_gb, "recording": recording,
+                     "humidity_hysteresis": state.HUMIDITY_HYSTERESIS})
 
 
 @app.route("/api/light-override", methods=["POST"])

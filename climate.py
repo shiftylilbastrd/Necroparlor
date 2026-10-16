@@ -48,7 +48,7 @@ logging.basicConfig(
 LOOP_INTERVAL = 15                 # seconds between control cycles
 COOL_HYSTERESIS = 2.0
 HEAT_HYSTERESIS = 2.0
-HUMIDITY_HYSTERESIS = 3.0
+HUMIDITY_HYSTERESIS = state.HUMIDITY_HYSTERESIS  # lives in shared_state so the Home chart can draw the same band
 MAX_DELTA_TEMP = 5.0                # max plausible degF jump between reads
 MAX_DELTA_HUMIDITY = 15.0           # max plausible %RH jump between reads
 SENSOR_FAIL_TIMEOUT = 90            # seconds of bad/missing reads -> failsafe
