@@ -640,6 +640,29 @@ that aren't obvious from reading the code cold.
   no path filtering. Offered a docs-only skip (`*.md`, `docs/`, `Claude outputs/`); **Ryan chose to keep the plain
   version check.** Don't add path filtering without asking.
 
+- **[2026-10-16, `dev`] Fourth mode: Breeding, plus researched default setpoints for all four.** Ryan's seasonal
+  workflow: Dormant for the off-season (months) -> Breeding for the run-up to hunting season -> Ready (waiting
+  for a specimen) <-> Cleaning (specimen in the box). Agreed in conversation: run Breeding 6-8 weeks, not ~1 month
+  (egg to adult ~5-7 weeks even at the optimum), keep it fed; Ready deliberately cooler than Cleaning because
+  it's a waiting state with little food (warm + hungry = reserves burned / cannibalism).
+  - New defaults (low-high °F, humidity CEILING): Dormant 60-65/45, **Breeding 84-86/55**, Ready 75-80/50,
+    Cleaning 80-85/45 (was Dormant 55-60/40, Ready 78-85/50, Cleaning 78-85/50). **Humidity is a ceiling, not a
+    target** - Ryan pointed out there's only one humidity number, and the only humidity actuator is the
+    dehumidifier (on > setpoint+3, off < setpoint-3); nothing adds moisture. Recommendations were made with that
+    in mind. Existing `config.json` keeps its saved setpoints; Breeding appears on the Pi at its defaults via
+    `load_config()`'s per-mode backfill.
+  - Code: `VALID_MODES` (season order), `DEFAULT_CONFIG["modes"]`, `timelapse_encode.MODE_LABELS` (so the
+    Timelapse page/preview/compile routes accept it), and the mode label maps in home/config/timelapse/
+    notifications templates; Home dropdown got a Breeding option and reworded descriptions; Setpoints page order
+    Dormant, Breeding, Ready, Cleaning. Breeding has no vent schedule (only Cleaning does). README mode table
+    rewritten.
+  - **Verified** off-Pi: 50 backend checks (3-mode config backfills Breeding without touching saved modes; mode
+    switch, setpoint save and critical-band rejection for Breeding through Flask; preview route accepts it;
+    `run_cycle()` in Breeding warns at its own band) and headless Chromium at phone width (Home dropdown order +
+    selecting Breeding, Setpoints panels/defaults/save, Notifications preview lists all four, Timelapse page
+    loads, no JS errors). **NOT verified on the Pi** - check the Home dropdown, then set the Pi's real setpoints
+    for all four modes (they won't change on their own).
+
 - **[2026-10-16, `dev`] Critical-limit defaults are now researched: 35-104°F, 10-95%RH** (were placeholder
   45-95°F / 20-80%RH). Ryan's framing: "what are the truly critical limits that will affect the colony in say 3
   hours" - he felt the tight placeholders made setpoints hard to save. Assumes *Dermestes maculatus*. Heat is the

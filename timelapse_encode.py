@@ -42,7 +42,7 @@ X264_PRESET = "veryfast"
 TIMEOUT_FLOOR_SECONDS = 300
 TIMEOUT_PER_FRAME_SECONDS = 1.0
 
-MODE_LABELS = {"dormant": "Dormant", "ready": "Ready", "cleaning": "Cleaning"}
+MODE_LABELS = {"dormant": "Dormant", "breeding": "Breeding", "ready": "Ready", "cleaning": "Cleaning"}
 
 # DejaVu ships with Raspberry Pi OS (fontconfig depends on it, and ffmpeg
 # pulls in fontconfig). If it's somehow missing, drawtext falls back to

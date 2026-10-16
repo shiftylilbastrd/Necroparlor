@@ -17,7 +17,7 @@ async function loadConfig() {
 
 function renderSetpointPanels(config) {
   const container = document.getElementById('setpointPanels');
-  const modeLabels = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+  const modeLabels = {dormant: 'Dormant', breeding: 'Breeding', ready: 'Ready', cleaning: 'Cleaning'};
   container.innerHTML = '';
 
   // Explicit left-to-right order, not however the object's keys happen
@@ -25,7 +25,7 @@ function renderSetpointPanels(config) {
   // insertion order across the round trip, so relying on it silently
   // produces whatever order the JSON came back in - alphabetical
   // ordering has shown up in practice, which isn't the intended layout).
-  const MODE_ORDER = ['dormant', 'ready', 'cleaning'];
+  const MODE_ORDER = ['dormant', 'breeding', 'ready', 'cleaning'];
   MODE_ORDER.filter(mode => config.modes[mode]).forEach(mode => {
     const sp = config.modes[mode];
     const panel = document.createElement('div');

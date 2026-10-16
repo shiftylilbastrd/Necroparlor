@@ -4,7 +4,7 @@ Dermestid beetle enclosure climate control.
 
 Controls heating, cooling/ventilation and dehumidification inside a
 converted chest freezer based on the currently selected activity mode
-(dormant / ready / cleaning). The active mode and per-mode setpoints
+(dormant / breeding / ready / cleaning). The active mode and per-mode setpoints
 live in config.json, managed via shared_state.py, and can be changed
 live from the web dashboard (webapp.py) - this script re-reads
 config.json every control cycle, so changes take effect within one

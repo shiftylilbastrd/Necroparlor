@@ -176,11 +176,14 @@
       <div class="mode-option" data-mode="dormant" onclick="selectMode('dormant')">
         <strong>Dormant</strong><small>Low activity, minimal feeding</small>
       </div>
+      <div class="mode-option" data-mode="breeding" onclick="selectMode('breeding')">
+        <strong>Breeding</strong><small>Warmest, most humid - build the colony</small>
+      </div>
       <div class="mode-option" data-mode="ready" onclick="selectMode('ready')">
-        <strong>Ready</strong><small>Optimal for breeding & cleaning</small>
+        <strong>Ready</strong><small>Active, waiting for a specimen</small>
       </div>
       <div class="mode-option" data-mode="cleaning" onclick="selectMode('cleaning')">
-        <strong>Cleaning</strong><small>Ready + scheduled ventilation</small>
+        <strong>Cleaning</strong><small>Specimen in - warm, drier, ventilated</small>
       </div>
     </div>
   </div>
@@ -284,7 +287,7 @@ window.__doorStatusPolledElsewhere = true;
 
 let currentRangeHours = 24;
 let modeDropdownOpen = false;
-const MODE_NAMES = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+const MODE_NAMES = {dormant: 'Dormant', breeding: 'Breeding', ready: 'Ready', cleaning: 'Cleaning'};
 
 function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});

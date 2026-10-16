@@ -112,7 +112,7 @@ CAMERA_STREAMER_ENV_PATH = os.path.join(BASE_DIR, "camera-streamer.env")
 # fewer thing that has to be correctly configured for this to work right.
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
-VALID_MODES = ("dormant", "ready", "cleaning")
+VALID_MODES = ("dormant", "breeding", "ready", "cleaning")
 
 # Starting-point setpoints. These are reasonable defaults for a
 # dermestid colony but are not a substitute for your own care sheet -
@@ -382,12 +382,22 @@ DEFAULT_CONFIG = {
     # by this - it only ever touches the readings/events tables.
     "history_retention_days": 0,
     "modes": {
+        # [2026-10-16] Four modes, in Ryan's seasonal order: dormant for
+        # the off-season (months), breeding for ~6-8 weeks before hunting
+        # season to build the colony back up, then ready (waiting for a
+        # specimen) <-> cleaning (specimen in the box). Default setpoints
+        # researched for Dermestes maculatus (see PROJECT_STATUS.md): egg
+        # to adult ~38 days near 86F vs ~96 days at 64F; mites/mold above
+        # ~60%RH. humidity_setpoint is effectively a CEILING - the only
+        # humidity actuator is a dehumidifier (on above setpoint +3, off
+        # below setpoint -3); nothing adds moisture.
         "dormant": {
-            # Cold enough to slow metabolism way down (less feeding,
-            # less breeding) without risking cold-killing the colony.
-            "low_temp_f": 55.0,
-            "high_temp_f": 60.0,
-            "humidity_setpoint": 40.0,
+            # Cool enough that development nearly stops (below ~64F) -
+            # less feeding, less breeding - without parking larvae so
+            # cold for so long they fail to pupate.
+            "low_temp_f": 60.0,
+            "high_temp_f": 65.0,
+            "humidity_setpoint": 45.0,
             # Timelapse snapshot cadence for this mode - 0 means never
             # (no snapshots captured while in this mode). Per-mode
             # rather than a single global setting, since a mode you
@@ -395,21 +405,32 @@ DEFAULT_CONFIG = {
             # cadence than one you're actively watching (ready).
             "snapshot_interval_minutes": 0
         },
+        "breeding": {
+            # Fastest development (~86F) at the most humidity that's still
+            # mite/mold-safe, for building the colony before the season.
+            # Needs steady feeding to actually pay off.
+            "low_temp_f": 84.0,
+            "high_temp_f": 86.0,
+            "humidity_setpoint": 55.0,
+            "snapshot_interval_minutes": 0
+        },
         "ready": {
-            # Warm/humid enough for active feeding and breeding.
-            "low_temp_f": 78.0,
-            "high_temp_f": 85.0,
+            # Waiting for a specimen, often with little food - active, but
+            # a few degrees under cleaning so a hungry colony doesn't burn
+            # through its reserves (or turn on itself) while it waits.
+            "low_temp_f": 75.0,
+            "high_temp_f": 80.0,
             "humidity_setpoint": 50.0,
             "snapshot_interval_minutes": 0
         },
         "cleaning": {
-            # Same thermal target as "ready" (colony stays active and
-            # keeps working through a cleaning job) plus scheduled
-            # forced-air cycles to keep odor from building up in the
-            # ducted intake/exhaust.
-            "low_temp_f": 78.0,
+            # Specimen in the box: warm for fast work, a bit drier to favor
+            # the beetles over fly larvae and hold down mold/odor, plus
+            # scheduled forced-air cycles to keep odor from building up in
+            # the ducted intake/exhaust.
+            "low_temp_f": 80.0,
             "high_temp_f": 85.0,
-            "humidity_setpoint": 50.0,
+            "humidity_setpoint": 45.0,
             "vent_interval_minutes": 30,
             "vent_duration_minutes": 5,
             "snapshot_interval_minutes": 0

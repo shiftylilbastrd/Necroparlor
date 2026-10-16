@@ -381,7 +381,7 @@ function readWebhookFields() {
 // mode, from the setpoints the page loaded with. Purely a preview; the
 // server does the real check on save.
 let rangePreviewModes = {};
-const RANGE_PREVIEW_LABELS = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+const RANGE_PREVIEW_LABELS = {dormant: 'Dormant', breeding: 'Breeding', ready: 'Ready', cleaning: 'Cleaning'};
 function renderRangePreview() {
   const el = document.getElementById('rangePreview');
   const t = Number(document.getElementById('rangeMarginTemp').value);

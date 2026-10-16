@@ -368,9 +368,15 @@ The database file itself doesn't shrink on the SD card when rows are deleted (or
 
 | Mode | Behavior |
 |---|---|
-| **Dormant** | Lower temp band (55–60°F default) — slows the colony down. |
-| **Ready** | Warmer/humid band (78–85°F, 50% RH default) — active feeding/breeding. |
-| **Cleaning** | Same as Ready, plus scheduled forced ventilation (default: 5 min every 30 min) to control odor. |
+| **Dormant** | 60–65°F, 45% RH ceiling — off-season. Development nearly stops below ~64°F, so the colony eats and breeds very little. |
+| **Breeding** | 84–86°F, 55% RH ceiling — fastest development, for ~6–8 weeks before the season to build the colony back up. Needs steady feeding. |
+| **Ready** | 75–80°F, 50% RH ceiling — active, waiting for a specimen. A few degrees under Cleaning so a colony with little food doesn't burn through its reserves. |
+| **Cleaning** | 80–85°F, 45% RH ceiling — specimen in the box. Drier to favor the beetles over flies and limit mold/odor, plus scheduled forced ventilation (default: 5 min every 30 min). |
+
+Typical season: Dormant for the off-season → Breeding → Ready ⇄ Cleaning. The humidity number is a **ceiling**,
+not a target: the only humidity device is a dehumidifier (on above setpoint +3%, off below setpoint −3%), so
+nothing raises humidity if the box runs dry. Defaults assume *Dermestes maculatus*; an existing `config.json`
+keeps its saved setpoints (a newly added mode starts at its defaults).
 
 Defaults are a starting point, not a care sheet — tune from the dashboard based on how your colony responds.
 
