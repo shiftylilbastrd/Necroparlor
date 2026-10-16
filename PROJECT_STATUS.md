@@ -680,6 +680,9 @@ that aren't obvious from reading the code cold.
     pill linking to Timelapse; mode-switch box says "Recording X keeps running"; switching INTO Cleaning with
     nothing recording offers **Switch + start recording** / Switch only (recording named "Cleaning – <date>", last
     used interval, started after the switch succeeds). Stopping a recording with zero frames discards it.
+    *(Moved same day, Ryan: the REC pill now sits directly under the relay badges - badges and pill share a
+    `.badges-col` column in the header. Checked at 390/700/1280px: 6px under the badges, left-aligned with them,
+    hidden when not recording, mode dropdown still fits, no horizontal scroll.)*
   - **Verified** off-Pi: 50-check backend suite built from an OLD-schema DB with a Cleaning session mid-recording
     (4 concurrent `init_db()` -> exactly one migration; capture continues in the carried-over recording through a
     mode switch and a restart; no compile from the loop; one-at-a-time; compile/preview/delete/lock conflicts

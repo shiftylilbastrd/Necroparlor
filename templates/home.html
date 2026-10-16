@@ -54,10 +54,11 @@
     .mode-dropdown { width: 100%; }
     .mode-options { left: 0; right: 0; width: auto; }
   }
-  /* [2026-10-16] "REC <name>" pill under the header while a timelapse
+  /* [2026-10-16] "REC <name>" pill under the relay badges while a timelapse
      recording is running - links to the Timelapse page. */
+  .badges-col { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; max-width: 100%; }
   .rec-indicator {
-    display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 8px; max-width: 100%;
+    display: inline-flex; align-items: center; gap: 6px; margin: 0; max-width: 100%;
     font-size: 0.75rem; font-weight: 700; letter-spacing: 0.03em; text-decoration: none;
     color: #fff; background: var(--danger); border-radius: 999px; padding: 3px 10px;
   }
@@ -159,6 +160,9 @@
 
 <div class="header-row">
   <h1>🪲 Necroparlor</h1>
+  <!-- [2026-10-16] Column so the REC pill sits directly under the relay
+       badges (Ryan), at every width. -->
+  <div class="badges-col">
   <div class="status-badges">
     <div class="output-badge off" id="lightBadge" title="Internal light"><span class="badge-icon" id="lightIcon">💡</span> Light</div>
     <div class="output-badge off" id="fanBadge" title="Fan/Vent"><span class="badge-icon" id="fanIcon"><img src="{{ url_for('static', filename='fan-icon.png') }}" alt=""></span> Fan</div>
@@ -178,6 +182,10 @@
         </g>
       </svg>
     </span> Dry</div>
+  </div>
+  <a class="rec-indicator" id="recIndicator" href="/timelapse" hidden>
+    <span class="rec-dot"></span>REC <span id="recIndicatorLabel"></span>
+  </a>
   </div>
   <div class="mode-dropdown" id="modeDropdownWrapper">
     <button id="modeTrigger" type="button" onclick="toggleModeDropdown()">
@@ -200,9 +208,6 @@
   </div>
 </div>
 <div class="subtitle" id="lastUpdateLine">Last update: --</div>
-<a class="rec-indicator" id="recIndicator" href="/timelapse" hidden>
-  <span class="rec-dot"></span>REC <span id="recIndicatorLabel"></span>
-</a>
 <div class="save-msg" id="modeMsg" style="margin-bottom:10px;"></div>
 
 <div class="banner" id="staleBanner">⚠ No sensor update in over 90 seconds - check the climate service on the Pi.</div>
