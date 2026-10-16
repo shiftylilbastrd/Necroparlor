@@ -798,22 +798,19 @@ def run_cycle():
     # immediately, every cycle, which is exactly what they're supposed to
     # do. Alerting on that same crossing would fire constantly during
     # perfectly normal hysteresis-driven swings the control loop is
-    # already correcting. Instead this watches a wider band -
-    # notifications.range_limits, one global set of absolute limits for
-    # every mode (2026-10-16; was each mode's setpoints +/- a per-mode
-    # margin) - and only fires after staying outside it for
-    # notifications.range_alert_minutes (same 0-disables-it /
-    # dwell-before-alerting pattern as the door-open alert in
-    # light_loop()), so it's meant to catch a genuine problem (equipment
-    # failure, a door that silently failed to close, a heat wave
-    # overwhelming the AC) rather than ordinary operation.
+    # already correcting. Instead this watches a wider band - the current
+    # mode's setpoints widened by notifications.range_margins, one global
+    # margin for every mode (2026-10-16; was a per-mode margin) - and only
+    # fires after staying outside it for notifications.range_alert_minutes
+    # (same 0-disables-it / dwell-before-alerting pattern as the door-open
+    # alert in light_loop()), so it's meant to catch a genuine problem
+    # (equipment failure, a door that silently failed to close, a heat
+    # wave overwhelming the AC) rather than ordinary operation.
     notify_cfg = config.get("notifications", {})
     range_alert_minutes = notify_cfg.get("range_alert_minutes", 15)
-    range_limits = notify_cfg.get("range_limits", state.DEFAULT_CONFIG["notifications"]["range_limits"])
-    alert_low_temp = range_limits["low_temp_f"]
-    alert_high_temp = range_limits["high_temp_f"]
-    alert_low_humidity = range_limits["low_humidity"]
-    alert_high_humidity = range_limits["high_humidity"]
+    range_margins = notify_cfg.get("range_margins", state.DEFAULT_CONFIG["notifications"]["range_margins"])
+    alert_low_temp, alert_high_temp, alert_low_humidity, alert_high_humidity = \
+        state.range_band(setpoints, range_margins)
 
     if internal_temp < alert_low_temp or internal_temp > alert_high_temp:
         if temp_range_since is None:

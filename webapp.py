@@ -701,8 +701,8 @@ def api_set_notification_settings():
     if not email.get("smtp_password"):
         email["smtp_password"] = existing_password
 
-    # modes= makes the critical and out-of-range limits get checked against
-    # every mode's current setpoints, not just for shape/bounds.
+    # modes= makes the critical limits and out-of-range margins get checked
+    # against every mode's current setpoints, not just for shape/bounds.
     cleaned, error = state.validate_notification_settings(body, modes=config["modes"])
     if error:
         return jsonify({"error": error}), 400
@@ -988,13 +988,13 @@ def api_set_setpoints():
     body = request.get_json(force=True, silent=True) or {}
     mode = body.get("mode")
     config = state.load_config()
-    # Passing the saved critical and out-of-range limits makes this reject
-    # a setpoint that would sit at/past either (see setpoint_limits_conflict
-    # in shared_state.py) - the mirror of the same check on the
+    # Passing the saved critical limits and out-of-range margins makes this
+    # reject a setpoint at/past a critical limit, or whose warning band would
+    # reach one (see shared_state.py) - the mirror of the same check on the
     # Notifications page's save.
     cleaned, error = state.validate_setpoints(
         mode, body, critical_limits=config["notifications"]["critical_limits"],
-        range_limits=config["notifications"]["range_limits"])
+        range_margins=config["notifications"]["range_margins"])
     if error:
         return jsonify({"error": error}), 400
     config["modes"][mode] = cleaned

@@ -250,16 +250,16 @@ session, etc.).
 
 **Internal temp/humidity out of range** is a separate alert from the heat/cool/dehumidify control logic
 itself: each mode's setpoints (Config page) are what the control loop reacts to every cycle, but alerting on
-that exact same crossing would fire constantly during perfectly normal hysteresis-driven swings. Instead there
-is **one global warning band** (Notifications page, "Out-of-range warning" card) - low/high °F and low/high %RH,
-defaults 50-90°F / 25-75%RH, applied in every mode. Only once the internal reading drifts outside it, and
+that exact same crossing would fire constantly during perfectly normal hysteresis-driven swings. Instead, the
+current mode's setpoints are widened by **one global margin** (Notifications page, "Out-of-range warning" card;
+defaults 5°F past low/high temp and 15%RH either side of the humidity setpoint) into a bigger "still basically
+fine" band that follows whichever mode is active. Only once the internal reading drifts past that band, and
 stays there for that card's **warn-after minutes** (default 15, 0 disables it - same convention as the
 door-open alert), does a `warning`/`temp_out_of_range` or `humidity_out_of_range`
 event fire - meant to catch an actual problem (equipment failure, a stuck door, a heat wave overwhelming
-cooling) rather than routine operation. Because it's one band for every mode, it has to be wide enough for
-every mode's setpoints (saving is refused otherwise), and it must sit inside the critical limits below.
-External/BLE readings are not watched by this - it only looks at the internal sensor, the same one the
-control loop itself uses.
+cooling) rather than routine operation. Every mode's band must sit inside the critical limits below (saving
+is refused otherwise). External/BLE readings are not watched by this - it only looks at the internal sensor,
+the same one the control loop itself uses.
 
 **Critical limits** (Notifications page, "Critical limits" card) are the "colony is in danger" tier, separate
 from and wider than the out-of-range warning above. There is **one global set** - low/high °F and low/high
@@ -357,7 +357,7 @@ The database file itself doesn't shrink on the SD card when rows are deleted (or
 - **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
 - **Timelapse** (`/timelapse`) — compiled per-session videos.
 - **Config** (`/config`) — per-mode setpoints.
-- **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open alert timing, and the global out-of-range warning and critical temp/humidity limits.
+- **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open alert timing, the global out-of-range warning margin, and the global critical temp/humidity limits.
 - **Settings** (`/settings`) — sensor source/calibration, BLE and camera settings, software updates, data history retention/clearing, restarting the Pi.
 
 ## Activity modes

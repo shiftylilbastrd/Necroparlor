@@ -640,7 +640,29 @@ that aren't obvious from reading the code cold.
   no path filtering. Offered a docs-only skip (`*.md`, `docs/`, `Claude outputs/`); **Ryan chose to keep the plain
   version check.** Don't add path filtering without asking.
 
-- **[2026-10-16, `dev`] Out-of-range warning is now one global set of fixed limits, next to Critical limits.**
+- **[2026-10-16, `dev`] Out-of-range warning = one global MARGIN around the current mode's setpoints, next to
+  Critical limits.** Ryan's actual intent (clarified after the fixed-limits version below shipped to `dev`): "alert
+  if it's N out of what the current mode is set for." **Supersedes the fixed-limits entry below** - Ryan had
+  picked "fixed limits" in the multiple-choice question by mistake. Don't go back to absolute limits.
+  - `shared_state.py`: `notifications.range_margins` = `{temp_f, humidity}` (defaults 5°F / 15%RH, the old
+    per-mode defaults; bounds 0.5-30 / 1-50, the old per-mode bounds), backfilled per-key. New `range_band()` is
+    the ONE place the band is computed (low-m, high+m, setpoint±m) - `climate.py` and both save validations call
+    it. Rule, enforced on both saves: every mode's band strictly inside the critical limits
+    (`range_band_critical_conflict`, message names the mode and where its warning would start). The fixed
+    `range_limits` code is gone; a stale `range_limits` key from a Pi that ran the earlier `dev` commit is ignored
+    and dropped on the next Notifications save. Old per-mode margins: still ignored / dropped on next Setpoints
+    save. **Migration note:** existing per-mode margin values are NOT carried over - the global margin starts at
+    the defaults (same numbers as the old per-mode defaults).
+  - `templates/notifications.html`: the card now has temp margin, humidity margin, "warn after" minutes, and a
+    live "Warns outside:" line per mode computed from the loaded setpoints.
+  - **Verified** off-Pi: 37 checks incl. real `run_cycle()` runs (ready warns below 73°F/above 65%RH, dormant
+    follows its own setpoints - 72°F warns in dormant, which the fixed 50-90 band would have missed; stale
+    per-mode 0.5 margin ignored; 0 disables). Headless Chromium at phone width: defaults, live preview, save/
+    reload, critical-conflict and empty-field errors in the card, no horizontal scroll, no JS errors. NOT
+    verified on the Pi.
+
+- **[2026-10-16, `dev`, SUPERSEDED same day by the margin entry above] Out-of-range warning is now one global set
+  of fixed limits, next to Critical limits.**
   Ryan: "make the out of range setpoints be global and move them with the critical limits." Asked which kind of
   global - **Ryan chose fixed absolute limits** (low/high °F, low/high %RH) over one shared ± margin. Known
   tradeoff, accepted when choosing: the band has to be wide enough for every mode's setpoints, so it won't catch

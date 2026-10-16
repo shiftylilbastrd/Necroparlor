@@ -55,33 +55,26 @@
     <div class="save-msg" id="notifySettingsMsg"></div>
   </div>
 
-  <!-- Out-of-range warning: one global set of absolute limits for every
-       mode, sitting inside the critical limits (2026-10-16 - replaced the
-       per-mode alert margins on the Setpoints page). Explicit Save, same
-       as the critical card. -->
+  <!-- Out-of-range warning: one global margin around whichever mode is
+       active (2026-10-16 - replaced the per-mode alert margins on the
+       Setpoints page). Explicit Save, same as the critical card. -->
   <div class="card">
     <h2>Out-of-range warning</h2>
     <div class="stat-sub" style="margin-bottom:8px;">
-      Internal reading only, same limits in every mode. Sends a <strong>warning</strong> once the reading has
-      stayed outside these limits for the time below (once per episode). Must sit inside the critical limits,
-      and every mode's setpoints must sit inside these - so they need to be wide enough for both dormant's and
-      ready's targets.
+      Internal reading only. Sends a <strong>warning</strong> once the reading has stayed more than this far
+      outside the <em>current mode's</em> setpoints for the time below (once per episode). Same margin in every
+      mode; each mode's resulting range must stay inside the critical limits.
     </div>
     <div class="field">
-      <label>Temperature (°F) - low / high</label>
-      <div style="display:flex; gap:8px;">
-        <input type="number" step="0.1" id="rangeLowTemp" style="width:50%;">
-        <input type="number" step="0.1" id="rangeHighTemp" style="width:50%;">
-      </div>
+      <label>Temperature margin (°F past the mode's low/high temp)</label>
+      <input type="number" step="0.5" min="0.5" max="30" id="rangeMarginTemp" oninput="renderRangePreview()">
     </div>
     <div class="field">
-      <label>Humidity (%RH) - low / high</label>
-      <div style="display:flex; gap:8px;">
-        <input type="number" step="0.1" min="0" max="100" id="rangeLowHumidity" style="width:50%;">
-        <input type="number" step="0.1" min="0" max="100" id="rangeHighHumidity" style="width:50%;">
-      </div>
+      <label>Humidity margin (%RH either side of the mode's humidity setpoint)</label>
+      <input type="number" step="1" min="1" max="50" id="rangeMarginHumidity" oninput="renderRangePreview()">
     </div>
-    <div class="field">
+    <div class="stat-sub" id="rangePreview" style="margin-top:2px;"></div>
+    <div class="field" style="margin-top:10px;">
       <label>Warn after staying outside for (minutes, 0 = never)</label>
       <input type="number" min="0" max="1440" id="notifyRangeAlertInput">
     </div>
@@ -98,8 +91,8 @@
       Internal reading only, same limits in every mode. The first reading at or past a limit sends a
       <strong>critical</strong> alert right away (no waiting period), then repeats while it stays there.
       Critical alerts skip the cooldown above, still come through quiet hours if "Still notify for critical
-      events" is checked, and go to Pushover as high priority. Must sit outside the out-of-range warning
-      limits.
+      events" is checked, and go to Pushover as high priority. Every mode's setpoints, and its out-of-range
+      warning range, must sit inside these limits.
     </div>
     <div class="field">
       <label>Temperature (°F) - low / high</label>
@@ -207,6 +200,7 @@ async function loadNotificationSettings() {
   // populateNotificationCategories()'s render needs to already be
   // correct, not the page's default HTML value, before it draws the
   // (severity-filtered) checkbox list for the first time.
+  rangePreviewModes = data.config.modes || {};
   applyNotificationSettings(data.config.notifications || {});
   await populateNotificationCategories();
 }
@@ -287,11 +281,10 @@ function applyNotificationSettings(n) {
   document.getElementById('notifyDoorOpenInput').value = n.door_open_alert_minutes ?? 15;
   document.getElementById('notifyRangeAlertInput').value = n.range_alert_minutes ?? 15;
 
-  const rng = n.range_limits || {};
-  document.getElementById('rangeLowTemp').value = rng.low_temp_f ?? 50;
-  document.getElementById('rangeHighTemp').value = rng.high_temp_f ?? 90;
-  document.getElementById('rangeLowHumidity').value = rng.low_humidity ?? 25;
-  document.getElementById('rangeHighHumidity').value = rng.high_humidity ?? 75;
+  const rng = n.range_margins || {};
+  document.getElementById('rangeMarginTemp').value = rng.temp_f ?? 5;
+  document.getElementById('rangeMarginHumidity').value = rng.humidity ?? 15;
+  renderRangePreview();
 
   const crit = n.critical_limits || {};
   document.getElementById('criticalLowTemp').value = crit.low_temp_f ?? 45;
@@ -384,6 +377,25 @@ function readWebhookFields() {
 // added after a real mix-up where credentials typed into the Pushover
 // card looked unsaved because the only Save button was all the way up
 // in the General card, easy to miss/skip after just editing one card.
+// Live "what this works out to" line under the margin fields - one row per
+// mode, from the setpoints the page loaded with. Purely a preview; the
+// server does the real check on save.
+let rangePreviewModes = {};
+const RANGE_PREVIEW_LABELS = {dormant: 'Dormant', ready: 'Ready', cleaning: 'Cleaning'};
+function renderRangePreview() {
+  const el = document.getElementById('rangePreview');
+  const t = Number(document.getElementById('rangeMarginTemp').value);
+  const h = Number(document.getElementById('rangeMarginHumidity').value);
+  const modes = Object.keys(RANGE_PREVIEW_LABELS).filter(m => rangePreviewModes[m]);
+  if (!modes.length || !Number.isFinite(t) || !Number.isFinite(h)) { el.innerHTML = ''; return; }
+  const fmt = v => (Math.round(v * 10) / 10).toString();
+  el.innerHTML = 'Warns outside:<br>' + modes.map(m => {
+    const sp = rangePreviewModes[m];
+    return `${RANGE_PREVIEW_LABELS[m]}: ${fmt(sp.low_temp_f - t)}–${fmt(sp.high_temp_f + t)}°F, ` +
+           `${fmt(sp.humidity_setpoint - h)}–${fmt(sp.humidity_setpoint + h)}%RH`;
+  }).join('<br>');
+}
+
 function readCriticalNumber(id) {
   const raw = document.getElementById(id).value.trim();
   if (raw === '') return null;
@@ -406,12 +418,10 @@ async function saveNotificationSettings(msgId) {
     range_alert_minutes: parseInt(document.getElementById('notifyRangeAlertInput').value, 10),
     // readCriticalNumber(): an empty field is sent as null (server rejects
     // it with a clear error) - plain Number("") would silently send 0,
-    // which is a VALID critical low humidity. Same for range_limits.
-    range_limits: {
-      low_temp_f: readCriticalNumber('rangeLowTemp'),
-      high_temp_f: readCriticalNumber('rangeHighTemp'),
-      low_humidity: readCriticalNumber('rangeLowHumidity'),
-      high_humidity: readCriticalNumber('rangeHighHumidity'),
+    // which is a VALID critical low humidity. Same for range_margins.
+    range_margins: {
+      temp_f: readCriticalNumber('rangeMarginTemp'),
+      humidity: readCriticalNumber('rangeMarginHumidity'),
     },
     critical_limits: {
       low_temp_f: readCriticalNumber('criticalLowTemp'),
