@@ -649,6 +649,26 @@ that aren't obvious from reading the code cold.
   no path filtering. Offered a docs-only skip (`*.md`, `docs/`, `Claude outputs/`); **Ryan chose to keep the plain
   version check.** Don't add path filtering without asking.
 
+- **[2026-10-16, `dev`] Setpoint range drawn on the Home charts, following the mode that was active.** Ryan
+  looked at a mock-up of two versions and picked "B": each point is drawn against the setpoints of the mode active
+  at that point, so a mode switch is a step - not "A", the current mode's range flat across the chart, which made
+  everything before a switch look out of range. Both legend entries are titled **"Setpoint range"** and sit
+  **last** in the legend (Ryan's call).
+  - `shared_state.get_history()`: each bucket now also returns `mode` - the mode of the bucket's latest reading
+    (SQLite's bare-column-with-`MAX(ts)` behaviour; no extra query).
+  - `templates/home.html` `refreshHistory()`: temperature gets a neutral grey band (low-high, dashed edges, stepped)
+    and humidity a dashed stepped line (one setpoint, and it's a ceiling - see the Breeding entry), appended
+    after the data series so they're last in the legend, with `order: 10` so Chart.js draws them behind the
+    readings. Excluded from tooltips. Legend tap hides both band edges together (same `group` mechanism as the
+    min/max bands) and survives a refresh. Neutral colours on purpose - a reference zone, not a data series.
+  - **Known limitations, accepted:** uses each mode's CURRENT setpoints (past setpoint values aren't stored), so
+    changing a mode's range redraws its older stretches; on the 7d/30d views a switch lands on the nearest
+    6h/1-day bucket; the y-axis now always stretches to include the range.
+  - **Verified** in headless Chromium with the real Chart.js 4.4.4 served locally and 24h of synthetic readings
+    (Ready, then Cleaning at 3 AM): legend order on both charts at 1100 and 390px, band values step 75->80°F and
+    ceiling 50->45%, drawn behind the data, not in tooltips, legend tap hides it, a refresh keeps it, no JS errors.
+    Not verified on the Pi.
+
 - **[2026-10-16, `dev`] Timelapse is now start/stop RECORDINGS, separate from the climate mode; compiling is
   manual.** Ryan asked whether timelapse should be "started and controlled separately from the mode switch";
   decisions, all his: yes; **compile is manually triggered for now** (no automatic/overnight compile); and a

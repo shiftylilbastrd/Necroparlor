@@ -2183,7 +2183,8 @@ def get_history(hours):
                AVG(ble_temp), MIN(ble_temp), MAX(ble_temp),
                AVG(ble_humidity), MIN(ble_humidity), MAX(ble_humidity),
                AVG(wired_temp), MIN(wired_temp), MAX(wired_temp),
-               AVG(wired_humidity), MIN(wired_humidity), MAX(wired_humidity)
+               AVG(wired_humidity), MIN(wired_humidity), MAX(wired_humidity),
+               mode, MAX(ts)
         FROM readings
         WHERE ts >= ?
         GROUP BY bucket
@@ -2201,6 +2202,11 @@ def get_history(hours):
             "ble_humidity": r[10], "ble_humidity_min": r[11], "ble_humidity_max": r[12],
             "wired_temp": r[13], "wired_temp_min": r[14], "wired_temp_max": r[15],
             "wired_humidity": r[16], "wired_humidity_min": r[17], "wired_humidity_max": r[18],
+            # [2026-10-16] The mode of the bucket's LATEST reading (SQLite
+            # returns the bare `mode` column from the row that MAX(ts)
+            # picked) - lets the Home charts draw each stretch's setpoint
+            # range against the mode that was actually active then.
+            "mode": r[19],
         }
         for r in rows
     ]

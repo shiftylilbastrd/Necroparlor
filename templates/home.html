@@ -587,6 +587,27 @@ function timeScaleOptions(hours) {
   return { unit: 'day', tooltipFormat: 'MMM d', displayFormats: { day: 'MMM d' } };
 }
 
+// [2026-10-16] Setpoint range on the Home charts (Ryan picked "B" from a
+// mock-up): each point is drawn against the setpoints of the mode that was
+// active at that point (/api/history's per-bucket `mode`), so a mode switch
+// shows up as a step instead of everything before it looking out of range.
+// Uses each mode's CURRENT setpoints - past setpoint values aren't recorded,
+// so changing a mode's range redraws its older stretches too. Neutral,
+// recessive colours on purpose: a reference zone, not another data series.
+const SETPOINT_EDGE = 'rgba(231,236,239,0.55)';
+const SETPOINT_FILL = 'rgba(231,236,239,0.07)';
+async function setpointConfig() {
+  if (lastStatusConfig) return lastStatusConfig;
+  try {
+    const res = await fetch('/api/status');
+    return (await res.json()).config;
+  } catch (e) { return null; }
+}
+function setpointsAt(cfg, p) {
+  if (!cfg || !cfg.modes) return null;
+  return cfg.modes[p.mode || cfg.current_mode] || null;
+}
+
 async function refreshHistory() {
   const res = await fetch(`/api/history?hours=${currentRangeHours}`);
   const points = await res.json();
@@ -606,6 +627,19 @@ async function refreshHistory() {
   if (hasBle) {
     tempDatasets.push(...bandDatasets('External °F', points.map(p => p.ble_temp), points.map(p => p.ble_temp_min), points.map(p => p.ble_temp_max), '#d9a441'));
   }
+  // Setpoint range for whichever mode was active at each point (see
+  // setpointsAt) - appended LAST so it's last in the legend; `order` puts it
+  // behind the readings when drawn.
+  const cfg = await setpointConfig();
+  const sp = points.map(p => setpointsAt(cfg, p));
+  tempDatasets.push(
+    { label: 'Setpoint range high', data: sp.map(s => s ? s.high_temp_f : null), borderColor: SETPOINT_EDGE, borderDash: [5, 4],
+      borderWidth: 1, backgroundColor: 'transparent', pointRadius: 0, fill: false, stepped: true,
+      isBand: true, isSetpoint: true, group: 'Setpoint range', order: 10 },
+    { label: 'Setpoint range', data: sp.map(s => s ? s.low_temp_f : null), borderColor: SETPOINT_EDGE, borderDash: [5, 4],
+      borderWidth: 1, backgroundColor: SETPOINT_FILL, pointRadius: 0, fill: '-1', stepped: true,
+      isSetpoint: true, group: 'Setpoint range', order: 10 }
+  );
   updateChart('tempChart', 'tempChartInstance', labels, tempDatasets, { min: undefined, max: undefined }, timeOptions);
 
   const humidityDatasets = [
@@ -615,6 +649,13 @@ async function refreshHistory() {
   if (hasBle) {
     humidityDatasets.push(...bandDatasets('External %RH', points.map(p => p.ble_humidity), points.map(p => p.ble_humidity_min), points.map(p => p.ble_humidity_max), '#d9a441'));
   }
+  // Humidity has a single setpoint, and it's a ceiling (the dehumidifier is
+  // the only humidity actuator), so it's a dashed line rather than a band.
+  humidityDatasets.push(
+    { label: 'Setpoint range', data: sp.map(s => s ? s.humidity_setpoint : null), borderColor: SETPOINT_EDGE, borderDash: [5, 4],
+      borderWidth: 1.5, backgroundColor: 'transparent', pointRadius: 0, fill: false, stepped: true,
+      isSetpoint: true, group: 'Setpoint range', order: 10 }
+  );
   updateChart('humidityChart', 'humidityChartInstance', labels, humidityDatasets, { min: undefined, max: undefined }, timeOptions);
 }
 
@@ -683,7 +724,7 @@ function updateChart(canvasId, instanceKey, labels, datasets, yRange, timeOption
           labels: { color: '#e7ecef', filter: (item, data) => !data.datasets[item.datasetIndex].isBand },
           onClick: (e, item, legend) => toggleSeriesGroup(legend.chart, item.datasetIndex)
         },
-        tooltip: { filter: (item) => !item.dataset.isBand }
+        tooltip: { filter: (item) => !item.dataset.isBand && !item.dataset.isSetpoint }
       }
     }
   });
