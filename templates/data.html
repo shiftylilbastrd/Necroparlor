@@ -26,6 +26,9 @@
   th.rowspan-cell { vertical-align: bottom; }
   th.group { border-bottom-width: 0; }
   th.sub { font-weight: 500; font-size: 0.78rem; }
+  /* Timelapse recording name: left-aligned like Time/Mode, capped so a long
+     client/specimen name can't stretch the table - full name in the tooltip. */
+  table.data-table td.rec-cell { text-align: left; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
   .out-flag { display: inline-block; font-size: 0.95rem; }
   .out-flag.on { color: var(--accent); }
   .out-flag.off { color: var(--text-dim); opacity: 0.4; }
@@ -68,6 +71,7 @@
         <th class="rowspan-cell" rowspan="2">Fan</th>
         <th class="rowspan-cell" rowspan="2">Heat</th>
         <th class="rowspan-cell" rowspan="2">Dehum</th>
+        <th class="rowspan-cell" rowspan="2" style="text-align:left;">Timelapse</th>
         <th class="group" colspan="2">Pi</th>
       </tr>
       <tr>
@@ -163,6 +167,20 @@ function srcAbbrev(src) {
   return '<span class="null-cell">--</span>';
 }
 
+function recordingCell(r) {
+  // The timelapse recording that was running when this reading was taken
+  // (readings.recording_id, joined to its current name). An id with no
+  // name means that recording has since been deleted.
+  if (r.recording_id === null || r.recording_id === undefined) {
+    return '<td class="rec-cell"><span class="null-cell">--</span></td>';
+  }
+  if (!r.recording_name) {
+    return '<td class="rec-cell"><span class="null-cell" title="This recording was deleted">(deleted)</span></td>';
+  }
+  const name = escapeHtml(r.recording_name);
+  return `<td class="rec-cell" title="${name}">${name}</td>`;
+}
+
 function renderRows(rows) {
   const tbody = document.getElementById('dataRows');
   const html = rows.map(r => `
@@ -179,11 +197,12 @@ function renderRows(rows) {
       <td>${fanState(!!r.fan, !!r.vent)}</td>
       <td>${flag(!!r.heater)}</td>
       <td>${flag(!!r.dehumidifier)}</td>
+      ${recordingCell(r)}
       <td>${num(r.cpu_temp_f, 1)}</td>
       <td>${num(r.cpu_load_1m, 2)}</td>
     </tr>
   `).join('');
-  tbody.innerHTML = html || '<tr><td colspan="14" class="stat-sub">No data yet</td></tr>';
+  tbody.innerHTML = html || '<tr><td colspan="15" class="stat-sub">No data yet</td></tr>';
   oldestLoadedTs = rows.length > 0 ? rows[rows.length - 1].ts : null;
   lastPageHadFullRows = rows.length >= pageSize;
   updatePagerControls();

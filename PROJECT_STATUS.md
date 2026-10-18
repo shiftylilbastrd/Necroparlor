@@ -669,6 +669,27 @@ that aren't obvious from reading the code cold.
     compile confirmation box warns about this issue. `nice -n 19` is still the only throttle; `ionice` /
     `-threads` still untried.
 
+- **[2026-10-18, `dev`] Data page: new "Timelapse" column** (Ryan: "add a timelapse column to the log table" -
+  read as Logs -> Data, the readings table). Shows the name of the timelapse recording that was running when each
+  reading was taken, "--" when none, "(deleted)" when that recording has since been deleted.
+  - **Stored, not derived:** new nullable `readings.recording_id`, filled by `log_reading()` itself (one extra
+    SELECT for the running recording, inside the same connection), so neither `climate.py` call site changed.
+    Deriving it from recording start/stop times at query time was rejected: deleted recordings would vanish,
+    and the migrated "(before recordings)" spans overlap each other. The name is joined from
+    `timelapse_recordings` at read time, so a rename shows on old rows. `READINGS_EXPORT_KEYS`/`_READINGS_SELECT`
+    in `shared_state.py` are now the one column list for the table API and the CSV (which gained
+    `recording_id`, `recording_name`).
+  - **Backfill (once, `_backfill_reading_recordings()` in `init_db()`, BEGIN IMMEDIATE + `app_meta` marker):** rows
+    from before the column get their recording from start/stop times, counting only time after the 2026-10-16
+    recordings migration - so pre-recordings history stays blank and "(carried over)" only claims rows from the
+    migration on.
+  - **Verified** off-Pi: 14 checks on an old-schema DB - 6 concurrent `init_db()` (no crash, one backfill, exact
+    ranges, pre-migration rows untouched, migrated spans clamped), live tagging during/after a recording, rename,
+    deleted recording, `before` paging through the join, CSV header + row, `/data` renders. Headless Chromium at
+    1280/390px: header + 15 cells per row, names/"--"/"(deleted)" right, no JS errors. Not yet on the Pi.
+  - Noticed, pre-existing, not touched: at 390px the Data page scrolls sideways by ~7px - the fixed 180px
+    Download/Clear buttons don't fit a phone-width card (Logs uses the same buttons).
+
 - **[2026-10-18, `dev`] Documentation review against the code - and a regression it turned up.** Ryan
   asked for every doc to be checked against the current state. Docs fixed in the same commit as this entry
   (README, this file, `docs/camera-streamer-setup.md`, a few code comments) plus the pin fix below; what turned up:

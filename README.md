@@ -380,7 +380,7 @@ Four top-level tabs; Logs and Settings each have a second row of sub-tabs. Pi CP
 - **Timelapse** (`/timelapse`) — start/stop recordings, compile them into videos, previews, video settings, and the video gallery.
 - **Logs**
   - **Events** (`/logs`) — event log with level filter, paging, retention, download/clear.
-  - **Data** (`/data`) — raw readings table (one row per control cycle, every column as stored), paging, retention, download/clear.
+  - **Data** (`/data`) — raw readings table (one row per control cycle, every column as stored, including which timelapse recording was running), paging, retention, download/clear.
 - **Settings** (the tab opens Setpoints)
   - **Setpoints** (`/config`) — per-mode temperature range, humidity ceiling, and Cleaning's vent schedule.
   - **Sensors** (`/settings`) — calibration offsets for all three sensors, BLE sensor brand/address and Discover.

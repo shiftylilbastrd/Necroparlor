@@ -1302,6 +1302,7 @@ def init_db():
     conn.commit()
     conn.close()
     _migrate_mode_sessions_to_recordings()
+    _backfill_reading_recordings()
 
 
 def _add_column(conn, sql):
@@ -1398,6 +1399,45 @@ def _migrate_mode_sessions_to_recordings():
         log_event("info", "Timelapse: converted mode-based sessions to recordings - " + "; ".join(created))
 
 
+def _backfill_reading_recordings():
+    """One-time fill of readings.recording_id for rows written before the
+    column existed (2026-10-18), from each recording's started/stopped
+    times. Only counts time AFTER the 2026-10-16 recordings migration:
+    the migrated "(before recordings)" entries are just the first-to-last
+    frame span of old per-mode sessions, which can overlap each other and
+    include stretches when nothing was captured, so they'd mislabel
+    readings. A "(carried over)" recording is clamped the same way - from
+    the migration on it really was the running recording. Same BEGIN
+    IMMEDIATE + app_meta marker pattern as the recordings migration, so
+    services starting together backfill exactly once."""
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM app_meta WHERE key = 'readings_recording_backfill'").fetchone():
+            conn.rollback()
+            return
+        row = conn.execute("SELECT value FROM app_meta WHERE key = 'recordings_migrated'").fetchone()
+        migrated_at = float(row[0]) if row else 0.0
+        cur = conn.execute(
+            "UPDATE readings SET recording_id = ("
+            "  SELECT r.id FROM timelapse_recordings r"
+            "  WHERE readings.ts >= MAX(r.started_ts, CASE WHEN r.source = 'migrated' THEN ? ELSE 0 END)"
+            "    AND (r.stopped_ts IS NULL OR readings.ts <= r.stopped_ts)"
+            "  ORDER BY r.id DESC LIMIT 1"
+            ") WHERE recording_id IS NULL AND ts >= ?",
+            (migrated_at, migrated_at))
+        conn.execute("INSERT INTO app_meta (key, value) VALUES ('readings_recording_backfill', ?)",
+                     (str(time.time()),))
+        conn.commit()
+        if cur.rowcount:
+            logging.info(f"Readings: checked {cur.rowcount} rows for a running timelapse recording")
+    except Exception:
+        conn.rollback()
+        logging.exception("Readings: timelapse recording backfill failed - will retry next start")
+    finally:
+        conn.close()
+
+
 def _migrate_readings_columns(conn):
     """Adds columns to readings for DBs that predate them."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(readings)").fetchall()}
@@ -1435,6 +1475,15 @@ def _migrate_readings_columns(conn):
         _add_column(conn, "ALTER TABLE readings ADD COLUMN cpu_temp_f REAL")
     if "cpu_load_1m" not in existing:
         _add_column(conn, "ALTER TABLE readings ADD COLUMN cpu_load_1m REAL")
+    # [2026-10-18] Which timelapse recording was running when the reading
+    # was taken (NULL = none) - the Data page's "Timelapse" column. Written
+    # by log_reading() itself, so neither climate.py call site changes.
+    # Stored per row (not derived from recording start/stop times at
+    # query time) so it stays true after a recording is deleted or the
+    # migrated pre-recordings ranges, which can overlap, are involved.
+    # Older rows are filled in once by _backfill_reading_recordings().
+    if "recording_id" not in existing:
+        _add_column(conn, "ALTER TABLE readings ADD COLUMN recording_id INTEGER")
     # [2026-09-17] camera_actual_fps/camera_target_fps actually DROPPED
     # here now, not just left unwritten. They were history columns from
     # when camera_service.py measured its own continuous capture rate
@@ -1569,15 +1618,18 @@ def log_reading(mode, internal_temp, internal_humidity, external_temp, external_
     2026-09-14), so removing them here is a no-op for every real
     caller."""
     conn = get_db()
+    # The running timelapse recording, if any (at most one runs at a time).
+    rec = conn.execute("SELECT id FROM timelapse_recordings WHERE status = 'recording' "
+                       "ORDER BY id DESC LIMIT 1").fetchone()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
         "fan, heater, dehumidifier, vent, ble_temp, ble_humidity, wired_temp, wired_humidity, "
-        "active_external_source, cpu_temp_f, cpu_load_1m) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "active_external_source, cpu_temp_f, cpu_load_1m, recording_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
          int(fan), int(heater), int(dehumidifier), int(vent), ble_temp, ble_humidity, wired_temp, wired_humidity,
-         active_external_source, cpu_temp_f, cpu_load_1m)
+         active_external_source, cpu_temp_f, cpu_load_1m, rec[0] if rec else None)
     )
     conn.commit()
     conn.close()
@@ -2315,6 +2367,23 @@ def validate_update_interval(minutes):
     return minutes, None
 
 
+# Column order shared by the Data page table, its CSV export, and
+# webapp.py's CSV header. recording_name comes from timelapse_recordings
+# (current name, so a rename shows everywhere); recording_id without a
+# name means that recording was deleted since.
+READINGS_EXPORT_KEYS = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
+                        "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
+                        "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m",
+                        "recording_id", "recording_name"]
+_READINGS_SELECT = (
+    "SELECT rd.ts, rd.mode, rd.internal_temp, rd.internal_humidity, rd.external_temp, rd.external_humidity, "
+    "rd.ble_temp, rd.ble_humidity, rd.wired_temp, rd.wired_humidity, rd.active_external_source, "
+    "rd.fan, rd.heater, rd.dehumidifier, rd.vent, rd.cpu_temp_f, rd.cpu_load_1m, "
+    "rd.recording_id, tr.name "
+    "FROM readings rd LEFT JOIN timelapse_recordings tr ON tr.id = rd.recording_id"
+)
+
+
 def get_readings_table(limit=50, before_ts=None):
     """Raw, un-bucketed readings rows for the Data page - every column,
     newest first, same before_ts cursor-pagination pattern as
@@ -2330,23 +2399,16 @@ def get_readings_table(limit=50, before_ts=None):
     exactly what each sensor was reporting independent of which one was
     driving control at the time."""
     conn = get_db()
-    query = (
-        "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "ble_temp, ble_humidity, wired_temp, wired_humidity, active_external_source, "
-        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m FROM readings WHERE 1=1"
-    )
+    query = _READINGS_SELECT + " WHERE 1=1"
     params = []
     if before_ts:
-        query += " AND ts < ?"
+        query += " AND rd.ts < ?"
         params.append(before_ts)
-    query += " ORDER BY ts DESC LIMIT ?"
+    query += " ORDER BY rd.ts DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-            "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
-            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
-    return [dict(zip(keys, r)) for r in rows]
+    return [dict(zip(READINGS_EXPORT_KEYS, r)) for r in rows]
 
 
 def get_recent_events(limit=50, level=None, before_ts=None):
@@ -2396,16 +2458,9 @@ def get_all_readings():
     assumed - so this just doesn't share that code path instead of
     adding a conditional LIMIT only this one caller would ever need."""
     conn = get_db()
-    rows = conn.execute(
-        "SELECT ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
-        "ble_temp, ble_humidity, wired_temp, wired_humidity, active_external_source, "
-        "fan, heater, dehumidifier, vent, cpu_temp_f, cpu_load_1m FROM readings ORDER BY ts ASC"
-    ).fetchall()
+    rows = conn.execute(_READINGS_SELECT + " ORDER BY rd.ts ASC").fetchall()
     conn.close()
-    keys = ["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-            "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
-            "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]
-    return [dict(zip(keys, r)) for r in rows]
+    return [dict(zip(READINGS_EXPORT_KEYS, r)) for r in rows]
 
 
 def get_history_stats():

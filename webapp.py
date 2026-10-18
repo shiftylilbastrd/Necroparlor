@@ -991,19 +991,14 @@ def api_readings_download():
     (or the retention prune) removes it for good. Unlike /api/events/
     download above (hand-built plain text, since an event log reads
     naturally as lines), this uses the csv module properly - readings
-    rows are genuinely tabular (17 columns) and worth opening in a
+    rows are genuinely tabular (19 columns) and worth opening in a
     spreadsheet, where correct quoting actually matters."""
     rows = state.get_all_readings()
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["ts", "mode", "internal_temp", "internal_humidity", "external_temp", "external_humidity",
-                      "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
-                      "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"])
+    writer.writerow(state.READINGS_EXPORT_KEYS)
     for r in rows:
-        writer.writerow([r[k] for k in ["ts", "mode", "internal_temp", "internal_humidity", "external_temp",
-                                         "external_humidity", "ble_temp", "ble_humidity", "wired_temp",
-                                         "wired_humidity", "active_external_source", "fan", "heater",
-                                         "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m"]])
+        writer.writerow([r[k] for k in state.READINGS_EXPORT_KEYS])
     filename = f"necroparlor-readings-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.csv"
     return Response(buf.getvalue(), mimetype="text/csv",
                      headers={"Content-Disposition": f"attachment; filename={filename}"})
