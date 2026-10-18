@@ -48,14 +48,12 @@ auto-summaries]**
    don't suggest an external PSU as a near-term fix without checking
    whether one has become available.
 
-- **[2026-10-18] Branches: `dev` is 15 commits ahead of `main`; `main` has nothing `dev` lacks.** `main` is
-  still at `98cf477` (where `dev` was branched on 2026-10-12). Everything since - critical limits, the global
-  out-of-range margin, Breeding mode, the timelapse recordings redesign, setpoint bands on the charts, the
-  mode-switch confirmation, the System-page branch select change - is on `dev` only, and the Pi is tracking
-  `dev`. Every one of those entries is marked confirmed on the Pi except the 2026-10-12 legend fix and critical
-  alerts, which have no recorded confirmation. Merging `dev` -> `main` is waiting on Ryan's call.
-  *(Superseded: this bullet used to say "`main` is current and complete", written when `ble-genericization`
-  was merged and the Pi was switched back to tracking `main`.)*
+- **[2026-10-18] `main` = `2872d04`, fast-forwarded from `dev` at Ryan's request** as a known-good restore point
+  before the compile-hang fix attempt. It holds everything from 2026-10-12 to 2026-10-18 (critical limits,
+  global out-of-range margin, Breeding mode, timelapse recordings, chart setpoint bands, mode-switch
+  confirmation, branch select change, today's doc pass, light/reed-switch pins, SHT31 failure logging, the Data
+  page Timelapse column). The last three weren't yet confirmed on the Pi when merged. The Pi still tracks `dev`.
+  *(Superseded: "`main` is current and complete", then "`dev` is 15 commits ahead of `main`".)*
 - **[2026-10-12] New standing workflow: all changes go on `dev`**, per Ryan
   ("all changes will be done in the dev branch ... and then merged when
   fully tested"). `dev` was created from `main` at `98cf477` and pushed.
@@ -668,6 +666,23 @@ that aren't obvious from reading the code cold.
     suspects 1/2 (I/O or CPU starvation), and `journalctl -u dermestid-web` is where its log lines land. The
     compile confirmation box warns about this issue. `nice -n 19` is still the only throttle; `ionice` /
     `-threads` still untried.
+  - **[2026-10-18 update, `dev`] Fix attempt for suspects 1 and 2 - NOT yet tested on the Pi.** Every encode
+    (preview, dashboard compile, `compile_timelapse.py`) now runs as `nice -n 19 ionice -c3 ffmpeg ...
+    -filter_threads 1 ... -threads 2` (`ENCODE_THREADS`/`_low_priority_prefix()` in `timelapse_encode.py`).
+    The 2-thread cap leaves two of the Pi 4's four cores free and should keep it cooler; expect a compile to
+    take roughly twice as long (the 0.072s/frame measured 2026-09-29 was with all four cores; the 1.0s/frame
+    timeout still leaves ~6x headroom). `ionice -c3` is only honoured by the BFQ I/O scheduler - check
+    `cat /sys/block/mmcblk0/queue/scheduler` on the Pi; under mq-deadline/none it does nothing. Verified
+    off-Pi: real ffmpeg encodes with and without the overlay succeed, 301 frames at 12fps, the command
+    carries the new flags and ffmpeg runs at nice 19. The sandbox has only 2 cores, so the CPU saving itself
+    couldn't be measured here.
+    **Also likely relevant - suspect 4 looks live:** on 2026-10-18 `apt update` on the Pi fetched at ~1.7 KB/s
+    (992 kB in 9m22s) with repeated retries - the in-container Wi-Fi is still bad. A "frozen" dashboard during a
+    compile may partly be the link. Worth trying `iw dev wlan0 get power_save` / `sudo iw dev wlan0 set
+    power_save off` (a common brcmfmac stabiliser) until the Pi moves or gets a better antenna/Ethernet.
+    **Remote-shell notes from the same day:** computer use can't type into PuTTY (terminals are click-only),
+    and `ttyd` isn't in the Trixie repositories - a web terminal would need the upstream `ttyd.aarch64` binary,
+    which wasn't worth downloading over that link.
 
 - **[2026-10-18, `dev`] Data page: new "Timelapse" column** (Ryan: "add a timelapse column to the log table" -
   read as Logs -> Data, the readings table). Shows the name of the timelapse recording that was running when each

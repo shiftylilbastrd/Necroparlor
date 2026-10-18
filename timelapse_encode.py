@@ -33,6 +33,27 @@ import shared_state as state
 # for CPU.
 X264_PRESET = "veryfast"
 
+# [2026-10-18] Fix attempt for the compile-makes-the-Pi-unresponsive issue
+# (PROJECT_STATUS.md, 2026-10-14). nice only lowers CPU *priority* - x264
+# still spreads across all four cores and ffmpeg reads every frame off the
+# SD card with nothing holding it back, so sshd/Flask/sqlite can starve.
+#   - ENCODE_THREADS caps x264 (and the filter graph) at 2 of the Pi 4's 4
+#     cores: the encode takes roughly twice as long, but half the CPU is
+#     always free and the SoC runs cooler (no thermal throttling).
+#   - `ionice -c3` (idle class) lets ffmpeg read the SD card only when
+#     nothing else wants it. Only honoured by the BFQ I/O scheduler - with
+#     mq-deadline/none it's a harmless no-op, so check
+#     /sys/block/mmcblk0/queue/scheduler on the Pi before counting on it.
+ENCODE_THREADS = 2
+
+
+def _low_priority_prefix():
+    """nice (+ ionice when installed) - prepended to every ffmpeg encode."""
+    prefix = ["nice", "-n", "19"]
+    if shutil.which("ionice"):
+        prefix += ["ionice", "-c3"]
+    return prefix
+
 # Safety cap on the ffmpeg process. [2026-09-29] This used to be a flat
 # 300s regardless of session size, which made any long session impossible
 # to compile (an 8048-frame cleaning session timed out). It now scales
@@ -217,16 +238,17 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
     for use_overlay in attempts:
         list_path = os.path.join(list_dir, f".list_{mode}_{os.getpid()}_{int(time.time() * 1000)}.txt")
         _write_list(list_path, mode, frames, use_overlay, fps)
-        cmd = ["nice", "-n", "19", "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-               "-f", "concat", "-safe", "0", "-i", list_path]
+        cmd = _low_priority_prefix() + ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                                        "-filter_threads", "1",
+                                        "-f", "concat", "-safe", "0", "-i", list_path]
         if use_overlay:
             cmd += ["-vf", _drawtext_filter()]
         # -r is an OUTPUT constant frame rate - deliberately NOT combined
         # with -vsync/-fps_mode vfr, which newer ffmpeg rejects as
         # contradictory with an explicit -r. fps (resolved above from
         # state.timelapse_fps()) is the real playback-speed knob.
-        cmd += ["-c:v", "libx264", "-preset", X264_PRESET, "-pix_fmt", "yuv420p",
-                "-r", str(fps),
+        cmd += ["-c:v", "libx264", "-preset", X264_PRESET, "-threads", str(ENCODE_THREADS),
+                "-pix_fmt", "yuv420p", "-r", str(fps),
                 # moov atom up front so the dashboard can start playing a
                 # big video before the whole file has downloaded
                 "-movflags", "+faststart"]
