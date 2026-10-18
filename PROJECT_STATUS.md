@@ -678,8 +678,7 @@ that aren't obvious from reading the code cold.
     `climate.py`'s 2026-09-29 light/reed-switch pin swap (`PIN_LIGHT` 24 -> 26, `PIN_SWITCH` 26 -> 24 - now
     restored, below); (b)
     dropped `climate.py`'s SHT31 failure logging (the 2026-09-29 fix after a missing library left both tiles
-    blank with nothing in any log - `read_internal_sht31_f()`/`read_external_sht31_f()` again swallow every
-    error silently); (c) removed the 2026-09-29 README wiring details (sensor GND pins, lead colours, the i2c5
+    blank with nothing in any log - restored, below); (c) removed the 2026-09-29 README wiring details (sensor GND pins, lead colours, the i2c5
     `i2cdetect` check, the pull-up advice); (d) **deleted 13 entries (2026-09-29/30) from this file**. They're
     restored verbatim at the bottom of Open threads, tagged. The inline I2C-bus opener it also dropped doesn't
     matter any more: the 2026-10-05 rework uses `adafruit-extended-bus`, confirmed installed and working on the
@@ -690,7 +689,14 @@ that aren't obvious from reading the code cold.
     i.e. the 2026-09-29 one (relay inputs on 11/15/16/18, reed switch on 37 + GND 39). `climate.py`, README and
     diagram now all agree. Not hardware-tested (nothing wired); on the Pi it's just a restart of
     `dermestid-climate` via the normal update.
-  - **SHT31 failure logging**: worth restoring (small, `climate.py`) - not done in a docs pass.
+  - **SHT31 failure logging - restored (separate commit, same day).** `read_internal_sht31_f()`/
+    `read_external_sht31_f()` now go through a shared `_read_sht31_f(get_sensor, label)`: the failure reason
+    is logged to climate.log/journalctl once per streak ("Internal/Fallback SHT31 read failed: ..."), recovery
+    logs "... reading again", and a missing library also raises one dashboard `error`/`control_loop_error`
+    event naming the exact pip package (`adafruit-circuitpython-sht31d`, or `adafruit-extended-bus` for the
+    fallback). Same design as 2026-09-29, adapted to the current two-getter code. **Verified** with stubbed
+    GPIO/board and fake sensors: 3 cycles of a missing library -> 1 log line + 1 event; recovery logged once;
+    I/O errors and empty readings log-only; readings still converted correctly (25°C -> 77.0°F).
   - Doc fixes, for the record: README files table (missing `timelapse_encode.py`, `compile_timelapse.py`,
     `static/`, `docs/`, five templates), page names/locations throughout (Config/Settings page -> Setpoints,
     Sensors, Camera, Notifications, System; the Data history card that moved to the Logs pages), dashboard page
@@ -3859,7 +3865,7 @@ that aren't obvious from reading the code cold.
   with pull-up and never written. Reed switch ground pin not yet stated
   (39 suggested).
 
-- **[hardware facts current; the failure logging described here was lost in `efd3664` and is not in the code now]** **[2026-09-29] SHT31 bring-up on the real Pi (benchtop).** Confirmed
+- **[hardware facts current; the failure logging described here was lost in `efd3664` and restored 2026-10-18]** **[2026-09-29] SHT31 bring-up on the real Pi (benchtop).** Confirmed
   on hardware: `dtoverlay=i2c5` gives `/dev/i2c-5` (so
   `EXTERNAL_SHT31_I2C_BUS = 5` is right; `/dev/i2c-20`/`-21` are the Pi
   4's HDMI DDC buses, ignore); `i2cdetect` sees an SHT31 at 0x44 on both

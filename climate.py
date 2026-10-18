@@ -247,37 +247,73 @@ def set_servo_angle(angle):
         current_servo_angle = angle
 
 
-def read_internal_sht31_f():
-    """Internal SHT31 over I2C. Returns (None, None) on any I2C/CRC failure,
-    or if it's not actually wired up/responding - either way it flows into
-    the same validation/failsafe pipeline as any other failed read, rather
-    than crashing the script."""
+# Last failure reason per sensor label ("internal"/"fallback"), so a failure
+# is logged once when it starts (or its reason changes) and once when the
+# sensor recovers - not every 15s cycle.
+_sht31_last_error = {}
+
+# Which pip package to suggest when an import fails, keyed by the module
+# name Python reports as missing.
+_SHT31_PACKAGES = {
+    "adafruit_sht31d": "adafruit-circuitpython-sht31d",
+    "adafruit_extended_bus": "adafruit-extended-bus",
+}
+
+
+def _read_sht31_f(get_sensor, label):
+    """Reads one SHT31 and returns (temp_f, humidity), or (None, None) on any
+    failure - a failed read flows into the same validation/failsafe pipeline
+    as any other bad reading rather than crashing the script.
+
+    Failures are NOT silent: the reason goes to climate.log/journalctl once
+    per failure streak, plus a "reading again" line on recovery. A missing
+    Python library also goes on the dashboard as a control_loop_error with
+    the install command, since it's a setup mistake no rewiring fixes.
+    (Restored 2026-10-18: first added 2026-09-29 after a missing
+    adafruit-circuitpython-sht31d left both tiles blank with nothing in any
+    log, then lost in commit efd3664 - see PROJECT_STATUS.md.)"""
     try:
-        sensor = _get_sht31_sensor()
+        sensor = get_sensor()
         temp_c = sensor.temperature
         humidity = sensor.relative_humidity
-    except (OSError, RuntimeError, ValueError, ImportError):
+    except ImportError as e:
+        _note_sht31_failure(label, f"library missing ({e})", missing_module=getattr(e, "name", None))
+        return None, None
+    except (OSError, RuntimeError, ValueError) as e:
+        _note_sht31_failure(label, f"{type(e).__name__}: {e}")
         return None, None
     if temp_c is None or humidity is None:
+        _note_sht31_failure(label, "sensor returned no value")
         return None, None
+    if _sht31_last_error.pop(label, None) is not None:
+        logging.info(f"{label.capitalize()} SHT31 reading again")
     return temp_c * 9.0 / 5.0 + 32.0, humidity
+
+
+def _note_sht31_failure(label, reason, missing_module=None):
+    if _sht31_last_error.get(label) == reason:
+        return
+    _sht31_last_error[label] = reason
+    logging.warning(f"{label.capitalize()} SHT31 read failed: {reason}")
+    if missing_module is not None:
+        package = _SHT31_PACKAGES.get(missing_module, missing_module)
+        state.log_event(
+            "error",
+            f"{label.capitalize()} SHT31: Python library '{missing_module}' isn't installed - "
+            f"run: pip3 install {package} --break-system-packages (as pi, no sudo), "
+            "then restart dermestid-climate",
+            category="control_loop_error")
+
+
+def read_internal_sht31_f():
+    """Internal SHT31 over I2C (bus 1) - see _read_sht31_f()."""
+    return _read_sht31_f(_get_sht31_sensor, "internal")
 
 
 def read_external_sht31_f():
     """External/fallback SHT31 over its own I2C bus (see
-    _get_sht31_sensor_external above). Returns (None, None) on any I2C/CRC
-    failure, or if the overlay/hardware isn't actually present - either way
-    it flows into the same validation/failsafe pipeline as any other
-    failed read, rather than crashing the script."""
-    try:
-        sensor = _get_sht31_sensor_external()
-        temp_c = sensor.temperature
-        humidity = sensor.relative_humidity
-    except (OSError, RuntimeError, ValueError, ImportError):
-        return None, None
-    if temp_c is None or humidity is None:
-        return None, None
-    return temp_c * 9.0 / 5.0 + 32.0, humidity
+    _get_sht31_sensor_external above) - see _read_sht31_f()."""
+    return _read_sht31_f(_get_sht31_sensor_external, "fallback")
 
 
 def _plausible(value, low, high):
