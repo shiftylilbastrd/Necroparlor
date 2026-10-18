@@ -245,7 +245,7 @@
   <a href="/timelapse" class="{{ 'active' if active_page == 'timelapse' }}">Timelapse</a>
   <a href="/logs" class="{{ 'active' if active_page in logs_group }}">Logs</a>
   <a href="/config" class="{{ 'active' if active_page in settings_group }}">Settings</a>
-  <div class="nav-pi-stats" id="navPiStats" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings. Useful while tuning the camera's capture/relay settings on the Camera page: watch this doesn't climb into the warning range as those get pushed faster."></div>
+  <div class="nav-pi-stats" id="navPiStats" title="The Pi's own CPU temperature and load - separate from the enclosure's climate readings. Worth a glance during a timelapse compile, which is CPU-heavy."></div>
 </nav>
 {% if active_page in logs_group %}
 <nav class="subnav">

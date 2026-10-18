@@ -84,8 +84,17 @@ PIN_SERVO = 18            # PWM-capable pin
 # PROJECT_STATUS.md for the removal note, and for the GPIO4-is-dead-on-
 # this-board history that led to GPIO5 in the first place). Both pins
 # are unused/free for future wiring.
-PIN_LIGHT = 26            # moved off GPIO15 (was sharing UART0 RXD - see README)
-PIN_SWITCH = 24
+# Light relay and door reed switch, laid out so wiring groups by component
+# (Ryan, 2026-09-29, re-confirmed 2026-10-18): all four relay inputs sit
+# together on physical pins 11/15/16/18, and the reed switch's two leads
+# land on adjacent physical pins 37 (GPIO26) + 39 (GND). This swap was
+# first made 2026-09-29, then silently reverted by commit efd3664
+# (2026-10-05, built from a stale copy) - see PROJECT_STATUS.md 2026-10-18.
+# Wire to THIS layout: with the reed switch on the light's output pin,
+# driving that pin HIGH at startup would short it to ground whenever the
+# switch is closed. docs/gpio-pinout.svg shows the same layout.
+PIN_LIGHT = 24            # physical 18 (was 26, and GPIO15 before that - shared UART0 RXD, see README)
+PIN_SWITCH = 26           # physical 37, GND on 39
 
 # === GPIO SETUP ===
 GPIO.setwarnings(False)

@@ -10,16 +10,20 @@ Raspberry Pi climate control for a dermestid beetle colony living in a converted
 |---|---|
 | `climate.py` | Main control loop — heater, fan/vent servo, dehumidifier, door light. Always running. |
 | `webapp.py` | Flask dashboard — live readings/history, mode switching, setpoints. |
-| `shared_state.py` | Shared config + SQLite helpers used by every other script. Must live in the same folder. |
-| `templates/` | Dashboard pages: `base.html` (nav/layout), `home.html`, `logs.html`, `data.html`, `config.html`, `timelapse.html`. |
-| `config.json` | Current mode, setpoints, sensor/camera settings. Auto-created if missing. |
+| `shared_state.py` | Shared config + SQLite helpers used by every other script, including notification dispatch. Must live in the same folder. |
+| `templates/` | Dashboard pages: `base.html` (nav/layout, shared confirm dialog), `home.html`, `timelapse.html`, `logs.html` (Events), `data.html`, `config.html` (Setpoints), `settings.html` (Sensors), `camera.html`, `notifications.html`, `system.html`. |
+| `static/` | Home-screen icon and the fan badge icon. |
+| `config.json` | Current mode, setpoints, sensor/camera/notification settings. Not git-tracked; auto-created if missing. |
 | `ble_listener.py` | Optional — listens for a BLE temp/humidity sensor (SensorPush, Govee, INKBIRD, Xiaomi, RuuviTag) as the external reading. |
 | `ble_battery.py` | Optional — periodic battery check (SensorPush HT1 only; other brands broadcast battery for free). |
 | `discover_ble_sensor.py` | One-time helper to find a BLE sensor's address. |
 | `camera_service.py` | Optional — timelapse capture for the running recording only (pulls snapshots from camera-streamer's HTTP API). Live view itself is served by camera-streamer, a separate daemon — see `docs/camera-streamer-setup.md`. |
 | `discover_camera.py` | One-time helper to find the webcam's `/dev/videoN` index. |
+| `timelapse_encode.py` | The one ffmpeg encode used for every timelapse video and preview (timestamp overlay, timeout, truncation check), plus `compile_recording()`. |
+| `compile_timelapse.py` | Compiles a stopped timelapse recording over SSH, with no time limit. |
 | `auto_update.sh` | Pulls from git and restarts the affected services. |
 | `systemd/` | Unit/timer files so everything runs on boot and restarts on crash. |
+| `docs/` | camera-streamer setup guide and the GPIO pinout diagram (plus the script that generates it). |
 
 ## Hardware / wiring
 
@@ -35,14 +39,16 @@ GPIO pin assignments (BCM numbering, set in `climate.py`):
 | Door servo (PWM) | GPIO18 | 12 |
 | Heater relay | GPIO22 | 15 |
 | Dehumidifier relay | GPIO23 | 16 |
-| Door reed switch | GPIO24 | 18 |
-| Light relay | GPIO26 | 37 |
+| Light relay | GPIO24 | 18 |
+| Door reed switch | GPIO26 | 37 (its other lead on GND, pin 39) |
 | Internal SHT31 SDA | GPIO2 | 3 |
 | Internal SHT31 SCL | GPIO3 | 5 |
 | External/fallback SHT31 SDA (i2c5) | GPIO12 | 32 |
 | External/fallback SHT31 SCL (i2c5) | GPIO13 | 33 |
 
-**GPIO4 (physical pin 7)** is dead on this specific board (confirmed via `pinctrl` — see `PROJECT_STATUS.md`) and is not used. **GPIO15/RXD** is avoided for the same reason it's marked unused above — it doubles as UART0 RXD and misbehaves if the serial console is enabled. GPIO27 and GPIO5 (physical pins 13/29) are free/unused — the old wired DHT22 probes that lived there have been retired in favor of two SHT31s (see "Sensors" below and `PROJECT_STATUS.md`).
+All four relay inputs sit together on physical pins 11/15/16/18, and the reed switch's two leads land on adjacent pins 37 + 39. **Wire to this layout before running `climate.py`** — the light pin is driven HIGH as an output at startup, so a reed switch left on it would short that pin to ground whenever the switch is closed.
+
+**GPIO4 (physical pin 7)** is not used: it read stuck-low on this build (via `pinctrl`), most likely because of the Argon ONE case's pass-through riser rather than the Pi itself — never re-tested outside the case (see `PROJECT_STATUS.md`). **GPIO15/RXD** is avoided for the same reason it's marked unused above — it doubles as UART0 RXD and misbehaves if the serial console is enabled. GPIO27 and GPIO5 (physical pins 13/29) are free/unused — the old wired DHT22 probes that lived there have been retired in favor of two SHT31s (see "Sensors" below and `PROJECT_STATUS.md`).
 
 If `PIN_*` in `climate.py` ever changes again, regenerate the diagram with `python3 docs/gen_gpio_pinout.py` after updating its `ROWS` table to match.
 
@@ -56,20 +62,22 @@ sudo raspi-config   # Interface Options -> I2C -> Enable, then reboot
 
 Internal SHT31 (hardware I2C1, the Pi's default I2C bus):
 
-| Internal SHT31 pin | Pi pin |
-|---|---|
-| VIN | 3.3V (pin 1) |
-| GND | GND (pin 6) |
-| SCL | GPIO3 (pin 5) |
-| SDA | GPIO2 (pin 3) |
+| Internal SHT31 wire | Lead color | Pi pin |
+|---|---|---|
+| VIN | red | 3.3V (pin 1) |
+| GND | black | GND (pin 9) |
+| SCL | yellow | GPIO3 (pin 5) |
+| SDA | green | GPIO2 (pin 3) |
 
-Both SHT31s have an onboard heater `climate.py` uses to recover from condensation (>99% humidity for a minute triggers a 10s heater pulse, rate-limited to once/10min per sensor).
+Lead colors are the prewired probes' own (yellow = SCL, green = SDA, confirmed with `i2cdetect` on this build). Keep sensor power on the **3.3V** pins, never 5V: an SHT31 tolerates 5V itself, but its pull-ups to VIN would then put 5V on the Pi's 3.3V-only SDA/SCL pins. The Argon ONE case's fan controller also sits on bus 1 (address `0x1a`) — that's expected, not a fault.
+
+The internal SHT31 has an onboard heater `climate.py` uses to recover from condensation (>99% humidity for a minute triggers a 10s heater pulse, rate-limited to once/10min).
 
 ### External sensor: BLE primary + wired/local SHT31 fallback
 
 The external reading comes from a BLE sensor (primary) and the second, local SHT31 (always-on backup). `climate.py` reads both every cycle and automatically uses whichever is fresher (BLE within 90s, otherwise the fallback probe) — no manual switching, and every failover is logged.
 
-The fallback SHT31 needs its **own** I2C bus, separate from the internal sensor's: two SHT31 breakouts both default to address 0x44, so they can't share one bus. Rather than bit-banging a software bus, this uses the Pi 4/CM4's extra built-in hardware I2C controller (BCM2711 has more than just the one on GPIO2/3), enabled via the `i2c5` overlay — defaults to GPIO12/13, exposed to Linux as `/dev/i2c-5`:
+The fallback SHT31 needs its **own** I2C bus, separate from the internal sensor's. Both default to address 0x44, but the real reason is fault isolation: one faulty probe or chafed lead can hold a bus's data line low and hang everything on it, so sharing would let a single fault take out the internal reading *and* its independent backup together. Don't "simplify" this onto one bus. Rather than bit-banging a software bus, this uses the Pi 4/CM4's extra built-in hardware I2C controller (BCM2711 has more than just the one on GPIO2/3), enabled via the `i2c5` overlay — defaults to GPIO12/13, exposed to Linux as `/dev/i2c-5`:
 
 ```bash
 # /boot/firmware/config.txt (or /boot/config.txt on older Raspberry Pi OS):
@@ -79,12 +87,22 @@ dtoverlay=i2c5
 
 (`dtoverlay=i2c5,baudrate=50000` also works if you want a slower, more reliable bus — same as the main `i2c_arm_baudrate` setting, just scoped to this one. Pi 3 and earlier don't have this extra controller, so this overlay is Pi 4/400/CM4-only.)
 
-| 2nd SHT31 pin | Pi pin |
-|---|---|
-| VIN | 3.3V (pin 1) |
-| GND | GND (pin 6) |
-| SCL | GPIO13 (pin 33) |
-| SDA | GPIO12 (pin 32) |
+Then check the bus exists and the sensor answers:
+
+```bash
+ls /dev/i2c-*            # expect /dev/i2c-5 (/dev/i2c-20 and -21 are the HDMI buses - ignore)
+sudo apt install i2c-tools
+i2cdetect -y 5           # expect 44
+```
+
+| Fallback SHT31 wire | Lead color | Pi pin |
+|---|---|---|
+| VIN | red | 3.3V (pin 17) |
+| GND | black | GND (pin 34) |
+| SDA | green | GPIO12 (pin 32) |
+| SCL | yellow | GPIO13 (pin 33) |
+
+**Pull-ups:** GPIO2/3 have strong 1.8kΩ pull-ups on the Pi board itself; GPIO12/13 only get the chip's weak internal ones (~50kΩ), which may not be enough for a 5-foot lead. If the fallback probe gives read errors and has no pull-ups of its own, add a 4.7kΩ resistor from each of SDA (pin 32) and SCL (pin 33) to 3.3V at the Pi end. (It reads fine on this build without them so far.)
 
 This path also needs the `adafruit-extended-bus` package (see Install below) — Blinka's `busio.I2C` only auto-detects the board's *default* hardware I2C bus (board.SCL/board.SDA, GPIO2/3), not this second one, even though it's real hardware too - so this uses `adafruit_extended_bus.ExtendedI2C(5)` to open `/dev/i2c-5` directly instead.
 
@@ -98,13 +116,13 @@ sudo apt install python3-pip python3-rpi.gpio
 pip3 install flask adafruit-circuitpython-sht31d adafruit-extended-bus --break-system-packages
 ```
 
-If you set a live-view/timelapse crop (see "Live view crop" on the Settings page), `camera_service.py` also needs Pillow to do the actual cropping:
+If you set a live-view/timelapse crop (the "Live view crop" card under Settings → Camera), `camera_service.py` also needs Pillow to do the actual cropping:
 
 ```bash
 pip3 install Pillow --break-system-packages
 ```
 
-This is only imported when a crop is actually configured — with no crop set (the default), snapshots pass through uncropped and Pillow is never touched, so you can skip this unless you use that feature.
+This is only imported when a crop is actually configured — with no crop set (the default), snapshots pass through uncropped and Pillow is never touched, so you can skip this unless you use that feature. If a crop is set and Pillow is missing, frames are still saved, just uncropped (the camera log says "Failed to crop timelapse snapshot").
 
 Copy this whole folder to the Pi, e.g. `/home/pi/dermestid/`.
 
@@ -135,8 +153,8 @@ pip3 install sensorpush-ble bleak --break-system-packages   # swap for your bran
 
 Requires Python 3.11+ (default on current Raspberry Pi OS).
 
-1. Find the sensor's address: `python3 discover_ble_sensor.py`, or use the Config page's External card **Discover** button (reads `ble_listener.py`'s own already-running scan — doesn't start a second one).
-2. Set it on the Config page, or in `config.json`:
+1. Find the sensor's address: `python3 discover_ble_sensor.py`, or the **Discover** button on the External card under Settings → Sensors (reads `ble_listener.py`'s own already-running scan — doesn't start a second one).
+2. Set it on that same card, or in `config.json`:
    ```json
    "ble_mac": "AA:BB:CC:DD:EE:FF",
    "ble_sensor_type": "sensorpush"
@@ -152,15 +170,13 @@ sudo cp systemd/dermestid-battery.service systemd/dermestid-battery.timer /etc/s
 sudo systemctl daemon-reload
 sudo systemctl enable --now dermestid-battery.timer
 ```
-Checks at most once/day; warns at 15% or below.
+The timer fires every 4 hours, but the script only actually connects when the last *successful* check is over 20 hours old — so it reads the battery about once a day and retries a failed check within a few hours. Warns at 15% or below.
 
 ## Camera (optional)
 
-[2026-09-14] Live view is served by **camera-streamer** now, a separate
-hardware-accelerated streaming daemon — not this project's own OpenCV
-capture loop anymore. Full build/config walkthrough (including two
-flags you'll need to confirm from `camera-streamer --help` on your own
-Pi, since they weren't pinned down from documentation alone) is in
+Live view is served by **camera-streamer**, a separate hardware-accelerated
+streaming daemon (since 2026-09-17; before that it was this project's own
+OpenCV capture loop). The full build/config walkthrough is in
 **[`docs/camera-streamer-setup.md`](docs/camera-streamer-setup.md)** —
 follow that doc for the actual setup. Short version once it's built and
 running:
@@ -169,8 +185,8 @@ running:
 sudo apt install ffmpeg   # needed to compile timelapse recordings into .mp4
 ```
 
-1. Find the device index: `python3 discover_camera.py`, or the Config page's Camera card **Discover** button (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
-2. Set device/resolution/port on the Config page, or in `config.json`:
+1. Find the device index: `python3 discover_camera.py`, or the **Discover** button on the USB webcam card under Settings → Camera (also shows each device's actually-supported resolutions, and briefly stops/restarts `camera-streamer.service` so it can probe the device — needs the sudoers `stop`/`start` lines below).
+2. Set device/resolution/port on that same card, or in `config.json`:
    ```json
    "camera": {
      "device": "0",
@@ -179,7 +195,7 @@ sudo apt install ffmpeg   # needed to compile timelapse recordings into .mp4
      "streamer_port": 8090
    }
    ```
-   `streamer_port` can't be `8080` — that's this dashboard's own port. A save here regenerates `camera-streamer.env` and restarts `camera-streamer.service` automatically. JPEG quality and capture rate are camera-streamer's own CLI flags now (see `docs/camera-streamer-setup.md`), not a Config-page setting.
+   `streamer_port` can't be `8080` — that's this dashboard's own port. A save here regenerates `camera-streamer.env` and restarts `camera-streamer.service` automatically. JPEG quality and capture rate are camera-streamer's own CLI flags now (see `docs/camera-streamer-setup.md`), not a dashboard setting.
 3. `camera_service.py` no longer opens the USB device at all — it only wakes up to pull a timelapse snapshot from camera-streamer's own `/snapshot` endpoint at the running timelapse recording's interval (nothing is captured when no recording is running). Run/enable it as before:
 
 ```bash
@@ -190,7 +206,9 @@ sudo systemctl enable --now camera-streamer.service
 sudo systemctl enable --now dermestid-camera.service
 ```
 
-**Live view** (Home page) connects straight to camera-streamer's own `/stream` endpoint — not relayed through this dashboard's own server anymore — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) works in **recordings**, separate from the climate mode: **Start recording** (optional name, e.g. "Smith – whitetail", and a snapshot interval) when a specimen goes in, **Stop recording** when it comes out, then press **Compile video** when you're ready. Compiling turns the frames into an `.mp4` in the gallery (named after the recording, so the download is ready to send to a client) and deletes the frames. Switching modes never stops or compiles anything; switching *into* Cleaning while nothing is recording offers to start one, and Home shows a red **REC** pill while one runs. Only one recording runs at a time, and only one preview or compile runs at a time. If a dashboard compile times out, `python3 compile_timelapse.py` (no arguments lists recordings; `python3 compile_timelapse.py <id>` compiles one with no time limit) does the same compile from SSH. A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
+**Live view** (Home page) connects straight to camera-streamer's own `/stream` endpoint — not relayed through this dashboard's own server anymore — a 💡 icon overlaid on it toggles the enclosure light for 5 minutes (auto-expires; the physical door switch always overrides it). **Timelapse** (its own page) works in **recordings**, separate from the climate mode: **Start recording** (optional name, e.g. "Smith – whitetail", and a snapshot interval) when a specimen goes in, **Stop recording** when it comes out, then press **Compile video** when you're ready. Compiling turns the frames into an `.mp4` in the gallery (named after the recording, so the download is ready to send to a client) and deletes the frames. Switching modes never stops or compiles anything; switching *into* Cleaning while nothing is recording offers to start one, and Home shows a red **REC** pill while one runs. Only one recording runs at a time, and only one preview or compile runs at a time. If a dashboard compile times out, `python3 compile_timelapse.py` (no arguments lists recordings; `python3 compile_timelapse.py <id>` compiles one with no time limit) does the same compile from SSH. The **Video settings** card sets playback speed (fps, default 12) and whether the capture time and elapsed time are burned into each frame (top-left); both apply to new compiles and previews. A hardcoded safety net prunes the oldest snapshots if free disk space drops below 200MB.
+
+**Known issue (open, top priority):** compiling has made the Pi unresponsive at least once — see `PROJECT_STATUS.md` before compiling a long recording.
 
 ## Notifications (optional)
 
@@ -220,10 +238,10 @@ glitchy reading is off by default - it's the noisiest, least actionable one) wit
 for everything else. A **cooldown** (per event type, default 15 min) keeps a flapping condition from turning
 into a wall of identical pushes, and optional **quiet hours** can suppress everything except critical events
 overnight. The master enable checkbox, minimum severity, every per-event-type checkbox, and both quiet-hours
-checkboxes all **auto-save the moment you change them** - no separate click needed, same as the Settings
-page's branch-to-track and internal-source selects. Cooldown/door-open minutes and the quiet-hours start/end
-times still need an explicit **Save**, since those are free-typed values where saving on every keystroke
-would commit a half-typed number.
+checkboxes all **auto-save the moment you change them** - no separate click needed, same as the System
+page's branch-to-track select. Cooldown/door-open minutes and the quiet-hours start/end times still need an
+explicit **Save**, since those are free-typed values where saving on every keystroke would commit a
+half-typed number.
 
 A **"Send test"** button on the General card fires a real message through every *saved and enabled* channel
 immediately, so a bad token or SMTP password shows up right away instead of only being discovered the next
@@ -249,7 +267,7 @@ generic "Camera / timelapse problem" category (camera-streamer being unreachable
 session, etc.).
 
 **Internal temp/humidity out of range** is a separate alert from the heat/cool/dehumidify control logic
-itself: each mode's setpoints (Config page) are what the control loop reacts to every cycle, but alerting on
+itself: each mode's setpoints (Settings → Setpoints) are what the control loop reacts to every cycle, but alerting on
 that exact same crossing would fire constantly during perfectly normal hysteresis-driven swings. Instead, the
 current mode's setpoints are widened by **one global margin** (Notifications page, "Out-of-range warning" card;
 defaults 5°F past low/high temp and 15%RH either side of the humidity setpoint) into a bigger "still basically
@@ -307,7 +325,7 @@ Unit files assume `/home/pi/dermestid` and user `pi` — edit `WorkingDirectory`
 
 ## Automatic updates
 
-`webapp.py` checks GitHub every 15 minutes (configurable) and shows a banner with an **Update now** button when a commit is waiting — read-only until you click it. The Config page's branch dropdown lets you track something other than `main` for testing.
+`webapp.py` checks GitHub every 15 minutes (configurable on the System page) and shows a banner when a commit is waiting, with **Update now** on the System page — read-only until you click it. The check compares commit hashes only, so a docs-only commit also shows up as an update (deliberate). The System page's branch dropdown (auto-saves on change) lets you track something other than `main` for testing — development happens on `dev`, which is merged to `main` once tested.
 
 Applying an update (via the button, or the fully-hands-off timer below) restarts services without anyone there to type a password, so it needs a one-time setup:
 
@@ -339,30 +357,36 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now dermestid-autoupdate.timer
 ```
 
-Local `config.json` changes are stashed before pulling and restored after (a warning is logged if that ever conflicts). Anything pushed to your GitHub repo can end up running on the Pi within the check interval.
+`config.json` (not tracked by git) is copied aside before pulling and put back afterwards; any locally modified *tracked* file is stashed and restored (a warning is printed if that conflicts). An update restarts `dermestid-climate`, `dermestid-ble` and `dermestid-camera` (if enabled), then `dermestid-web` last. It does **not** re-install changed files under `systemd/` or restart `camera-streamer.service` — after a commit that changes a unit/timer file, copy it to `/etc/systemd/system/`, `daemon-reload` and restart it by hand. Anything pushed to the tracked branch can end up running on the Pi within the check interval.
 
 ## Restarting the Pi
 
-The Settings page's **System** card has a **Restart Pi** button for a full reboot of the Raspberry Pi itself - not just one service, everything (climate control, the camera, this dashboard). It asks for confirmation first, since it's disruptive and can't be undone once clicked. Needs the same `systemctl reboot` sudoers line added above - without it, the button logs an attempt but the actual reboot silently fails (check `logs/restart_pi.log`). Like "Update now," the request is handed off to a detached background process so the reboot isn't blocked on this very request still being in flight when `dermestid-web.service` goes down with everything else.
+The **Restart** card under Settings → System has a **Restart Pi** button for a full reboot of the Raspberry Pi itself - not just one service, everything (climate control, the camera, this dashboard). It asks for confirmation first, since it's disruptive and can't be undone once clicked. Needs the same `systemctl reboot` sudoers line added above - without it, the button logs an attempt but the actual reboot silently fails (check `logs/restart_pi.log`). Like "Update now," the request is handed off to a detached background process so the reboot isn't blocked on this very request still being in flight when `dermestid-web.service` goes down with everything else.
 
 ## Data history (retention & clearing)
 
-The Settings page's **Data history** card shows how much is currently stored (row counts, oldest timestamp, and the SQLite file's size on disk) for the two tables that grow over time - sensor readings (one row per control cycle) and the event log. Two independent controls:
+The two tables that grow over time - sensor readings (one row per control cycle) and the event log - each have their own controls at the bottom of their page (Logs → Data for readings, Logs → Events for the event log):
 
-- **Retention** - "Keep sensor readings & event log for (days)", 0 (the default) keeps everything forever, otherwise 7–3650 days. A background thread prunes anything older than the window once an hour - a shortened window takes effect within the hour, not instantly. Settings, timelapse videos, and camera snapshot frames are never touched by this; it only ever deletes from the `readings`/`events` SQLite tables.
-- **Clear selected history** - wipes readings and/or the event log right now, with a confirmation dialog first (spelling out exactly how many rows of each, pulled live right before the dialog opens) since it can't be undone. Download a copy first if you might want it: `readings (.csv)` and `event log (.txt)` links sit right above the checkboxes.
+- **Retention** - "Keep ... for (days)", 0 (the default) keeps everything forever, otherwise 7–3650 days. It's **one shared setting** covering both tables, so saving it on either page changes both. A background thread prunes anything older than the window once an hour - a shortened window takes effect within the hour, not instantly. Settings, timelapse videos, and camera snapshot frames are never touched by this; it only ever deletes from the `readings`/`events` SQLite tables. The card also shows how much is stored (row counts, oldest timestamp, database size).
+- **Clear readings / Clear event log** - wipes just that page's table right now. **Download** sits next to it (CSV for readings, plain text for events), and the confirmation dialog (which states the exact row count) offers **Download & clear** as well as Clear, since it can't be undone.
 
 The database file itself doesn't shrink on the SD card when rows are deleted (ordinary SQLite behavior, not a bug here) - the freed space is reused for new history rather than returned to the filesystem.
 
 ## Dashboard pages
 
-- **Home** (`/`) — live readings, relay states, mode switch, live camera view, and the temp/humidity history graph (1h–30d).
-- **Logs** (`/logs`) — event log with level filter and pagination.
-- **Data** (`/data`) — raw readings table, one row per control cycle, every column as stored.
-- **Timelapse** (`/timelapse`) — start/stop recordings, compile them into videos, previews, and the video gallery.
-- **Config** (`/config`) — per-mode setpoints.
-- **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open alert timing, the global out-of-range warning margin, and the global critical temp/humidity limits.
-- **Settings** (`/settings`) — sensor source/calibration, BLE and camera settings, software updates, data history retention/clearing, restarting the Pi.
+Four top-level tabs; Logs and Settings each have a second row of sub-tabs. Pi CPU temp, load and free disk space show in the nav bar on every page (hidden on phones).
+
+- **Home** (`/`) — live readings, relay states, mode switch (asks for confirmation), live camera view with fullscreen/zoom and the 💡 light button, a REC pill while a timelapse is recording, and the temp/humidity history charts (1h–30d) with each mode's setpoint range drawn behind the readings.
+- **Timelapse** (`/timelapse`) — start/stop recordings, compile them into videos, previews, video settings, and the video gallery.
+- **Logs**
+  - **Events** (`/logs`) — event log with level filter, paging, retention, download/clear.
+  - **Data** (`/data`) — raw readings table (one row per control cycle, every column as stored), paging, retention, download/clear.
+- **Settings** (the tab opens Setpoints)
+  - **Setpoints** (`/config`) — per-mode temperature range, humidity ceiling, and Cleaning's vent schedule.
+  - **Sensors** (`/settings`) — calibration offsets for all three sensors, BLE sensor brand/address and Discover.
+  - **Camera** (`/camera`) — USB webcam device/resolution/port with Discover, and the live view/timelapse crop.
+  - **Notifications** (`/notifications`) — Pushover/email/webhook channels, minimum severity, per-event-type toggles, cooldown, quiet hours, door-open alert timing, the global out-of-range warning margin, and the global critical temp/humidity limits.
+  - **System** (`/system`) — branch to track, update check interval, Check now / Update now, and Restart Pi.
 
 ## Activity modes
 

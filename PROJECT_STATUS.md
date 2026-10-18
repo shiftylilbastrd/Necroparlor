@@ -48,11 +48,14 @@ auto-summaries]**
    don't suggest an external PSU as a near-term fix without checking
    whether one has become available.
 
-- **`main` is current and complete.** The `ble-genericization` branch
-  (full SensorPush→generic-BLE rebrand, the fixed-sensor-identity
-  dashboard redesign, branch-selection in the update system, and
-  several smaller fixes) has been merged into `main`, and the Pi has
-  been switched back to tracking `main`.
+- **[2026-10-18] Branches: `dev` is 15 commits ahead of `main`; `main` has nothing `dev` lacks.** `main` is
+  still at `98cf477` (where `dev` was branched on 2026-10-12). Everything since - critical limits, the global
+  out-of-range margin, Breeding mode, the timelapse recordings redesign, setpoint bands on the charts, the
+  mode-switch confirmation, the System-page branch select change - is on `dev` only, and the Pi is tracking
+  `dev`. Every one of those entries is marked confirmed on the Pi except the 2026-10-12 legend fix and critical
+  alerts, which have no recorded confirmation. Merging `dev` -> `main` is waiting on Ryan's call.
+  *(Superseded: this bullet used to say "`main` is current and complete", written when `ble-genericization`
+  was merged and the Pi was switched back to tracking `main`.)*
 - **[2026-10-12] New standing workflow: all changes go on `dev`**, per Ryan
   ("all changes will be done in the dev branch ... and then merged when
   fully tested"). `dev` was created from `main` at `98cf477` and pushed.
@@ -70,10 +73,11 @@ auto-summaries]**
   GitHub PR** - worth remembering because that path does NOT delete the
   source branch automatically the way a PR merge (with "Delete branch"
   clicked, or auto-delete-head-branches enabled) does; `add-webcam`
-  stayed on the remote until manually deleted afterward. Still not run
-  against real deployed hardware - see Open threads' camera/timelapse
-  entries above for what remains unconfirmed on that front regardless
-  of which branch it lives on now.
+  stayed on the remote until manually deleted afterward. *(The "still
+  not run against real hardware" note that was here is long stale: the
+  camera has run on the Pi 4 since 2026-09-13, live view moved to
+  camera-streamer on 2026-09-17, and timelapse became start/stop
+  recordings on 2026-10-16.)*
 - **Pi 4 8GB migration completed (2026-09-13)** - moved the existing SD
   card into the Pi 4 as planned (no re-flash/re-clone needed; Raspberry
   Pi OS auto-detected the board via device-tree). Original motivation:
@@ -110,10 +114,13 @@ auto-summaries]**
   fix up `/boot/firmware/cmdline.txt`'s PARTUUID the way it does
   `/etc/fstab`) worth knowing before doing this again. Confirmed booting
   and running with 48.1GB free. Old 16GB card kept as an untouched spare.
-- The Pi should have `dermestid-ble.service` installed and enabled
-  (replacing the old `dermestid-sensorpush.service`, which should be
-  stopped/disabled/removed). Sudoers should authorize
-  `dermestid-ble.service`, not the old name.
+- `dermestid-ble.service` is installed and healthy on the Pi (0 restarts, no
+  errors - 2026-10-06 verification); the old `dermestid-sensorpush.service`
+  doesn't exist there ("could not be found", 2026-09-13). Sudoers should
+  authorize `dermestid-ble.service`, not the old name.
+- **[2026-10-18] Light relay = GPIO24 (pin 18), reed switch = GPIO26 (pin 37, GND on 39)** - the
+  grouped layout, restored in `climate.py` after `efd3664` had reverted it (see the 2026-10-18 entry near the
+  top of Open threads). Neither is physically connected yet; wire them to this layout.
 - **[correction, 2026-09-12]** `config.json` is *supposed to be*, and
   as of this entry actually IS again, not git-tracked - but it had
   silently drifted back to being tracked (last touched by a normal
@@ -223,12 +230,11 @@ pattern has been consistent: tie things to identity, never to role.
 ### BLE sensor support
 - Brand is pluggable via `shared_state.BLE_SENSOR_LIBRARIES` (a
   registry of package/class per brand: SensorPush, Govee, INKBIRD,
-  Xiaomi, RuuviTag). SensorPush, Govee, and INKBIRD's exact class names
-  were directly verified against real source/usage examples; Xiaomi
-  and RuuviTag follow the same well-established naming convention but
-  weren't individually confirmed - `ble_listener.py` fails with a
-  clear, actionable error (not a silent crash) if a class name turns
-  out to be wrong.
+  Xiaomi, RuuviTag). All five class names have been checked against the
+  real library source (2026-10-06; RuuviTag's was wrong -
+  `RuuvitagBluetoothDeviceData`, lowercase t - and was fixed then).
+  `ble_listener.py` fails with a clear, actionable error (not a silent
+  crash) if a class name is ever wrong.
 - `ble_battery.py` is genuinely SensorPush-HT1-specific and **cannot**
   be generalized the same way as the listener - its GATT characteristic
   and voltage formula are reverse-engineered for that one device's
@@ -292,6 +298,20 @@ pattern has been consistent: tie things to identity, never to role.
   hand, same as the BLE rename itself needed.
 
 ### Camera / timelapse (added on `add-webcam`, 2026-09-12)
+
+**[2026-10-18 note - two later redesigns changed several decisions in this section. They're kept below as
+history, each marked where it no longer holds.]**
+1. **Live view moved to camera-streamer (2026-09-17).** camera-streamer is now the one process that opens the
+   USB device and serves `/stream` + `/snapshot` itself. `camera_service.py` no longer captures or writes
+   `camera/latest.jpg`; it only pulls `/snapshot` over HTTP for timelapse frames. `/api/camera/stream.mjpg` and
+   the OpenCV settings are gone. The *reasons* in the first bullet below (one owner for the device; timelapse
+   capture independent of the web process) still hold - camera-streamer + `dermestid-camera.service` keep them.
+2. **Timelapse became start/stop recordings (2026-10-16, see Open threads).** No per-mode
+   `snapshot_interval_minutes`, no per-mode sessions, no compile on a mode change, no `maybe_compile_session()`,
+   no "Purge pending frames". Compiling is manual (Timelapse page or `compile_timelapse.py <id>`) via
+   `timelapse_encode.compile_recording()`. What still holds: frames are kept, not rotated (only the 200MB
+   low-disk safety net deletes them); frames are deleted only after a verified video exists; `timelapse_videos`
+   keys on an autoincrement `id`; webapp.py stays `cv2`-free; the Discover/BLE constraints; the light override.
 - **Separate systemd service (`camera_service.py`), not code inside
   `webapp.py`** - deliberately mirrors the BLE listener's architecture
   rather than having Flask open the device itself. Two concrete reasons,
@@ -327,13 +347,14 @@ pattern has been consistent: tie things to identity, never to role.
   remains: frame rate is a shared-CPU-with-`climate.py` budget on a Pi
   3B+, so it's a config setting to tune per-hardware, not a bigger
   default baked in - see README's Camera section.
-- **Timelapse interval is per-mode** (`snapshot_interval_minutes` inside
+- **[superseded 2026-10-16 - the interval belongs to the recording now]** **Timelapse interval is per-mode** (`snapshot_interval_minutes` inside
   each mode's block in `config.json`, alongside its setpoints), not a
   single global setting - explicit request, since a mode you barely
   visit (Dormant) plausibly warrants a different cadence than one you're
   actively watching. `0` is the sentinel for "never" and is exempt from
   the normal minutes bounds check.
-- **One global `last_snapshot_time`, not one per mode** - deliberately
+- **[superseded 2026-10-16 - capture follows the running recording, and its timer is seeded from that
+  recording's newest frame on startup]** **One global `last_snapshot_time`, not one per mode** - deliberately
   NOT reset on a mode switch. Switching from a long-interval mode to a
   short-interval one doesn't itself fire an immediate snapshot just
   because the mode changed; the newly-active interval simply starts
@@ -361,7 +382,10 @@ pattern has been consistent: tie things to identity, never to role.
 - **Hardware verification status** - see the dated webcam entry under
   "Open threads" below for current state; this has moved past "no real
   hardware available" and into real-Pi testing as of 2026-09-13.
-- **[added, 2026-09-13] Timelapse now compiles real `.mp4` video files,
+- **[partly superseded 2026-10-16: still real `.mp4` files, but compiled manually per recording, never on a
+  mode change; the encode lives in `timelapse_encode.py` with a frame-count-scaled timeout, `veryfast` preset
+  and `nice -n 19`; fps is a Timelapse-page setting (default 12)]**
+  **[added, 2026-09-13] Timelapse now compiles real `.mp4` video files,
   not just a renamed still-frame gallery** - explicit request, and
   explicitly the "compile real video files" option over a
   frame-gallery-with-a-new-name alternative that was also offered.
@@ -378,7 +402,8 @@ pattern has been consistent: tie things to identity, never to role.
   session is skipped entirely (too short to bother). If `ffmpeg` isn't
   installed, compiling is skipped with a logged warning, not a crash -
   see README's Camera section for the `apt install ffmpeg` step.
-- **Zero persisted session-boundary state, by design.** Nothing records
+- **[superseded 2026-10-16 - recordings ARE persisted state now (`timelapse_recordings` table, frames carry
+  `recording_id`), so this recovery logic and its invariant are gone]** **Zero persisted session-boundary state, by design.** Nothing records
   "session started at time T" to disk - `camera_service.py` recovers it
   on every startup (including after a restart mid-session) via
   `get_earliest_camera_snapshot_ts(mode)`, which relies on a database
@@ -399,7 +424,9 @@ pattern has been consistent: tie things to identity, never to role.
   keys off `id`, not `ts`, as a result (`/api/timelapse/video/<id>`,
   etc.) - don't "simplify" this back to `ts` without re-introducing that
   bug.
-- **Page reorg (2026-09-13, explicit request):** the live MJPEG stream
+- **[partly superseded - the live view is still on Home, but the Config-page sections described here were later
+  split into Settings → Camera / Sensors / System (2026-10-06), and the Timelapse page is now recordings-based]**
+  **Page reorg (2026-09-13, explicit request):** the live MJPEG stream
   moved from its own page onto the Home page (between the sensor tiles
   and the History chart) - it's the actual point of the camera feature,
   wanted at a glance without a page navigation. What used to be the
@@ -432,7 +459,8 @@ pattern has been consistent: tie things to identity, never to role.
     dashboard (this property already mattered once this session: the
     missing-Camera-nav-link bug was initially suspected to be a `cv2`
     problem before the real cause - stale duplicate templates - was
-    found). It also stops `dermestid-camera.service` before probing and
+    found). It also stops `dermestid-camera.service` *(since 2026-09-17:
+    `camera-streamer.service`, the process that now holds the device)* before probing and
     restarts it after (in a `finally`, so a failed or timed-out probe
     still restarts the service) - most UVC webcams only allow one open
     client, so without this the service's own in-use index would never
@@ -443,7 +471,9 @@ pattern has been consistent: tie things to identity, never to role.
     already has open (a warning `hint` field in the response says so).
 - **Discovery/config UX polish (2026-09-13, real-hardware follow-up
   after BLE discovery was confirmed working on the Pi 4)**:
-  - **Config-page saves now auto-restart the affected service when the
+  - *(Since 2026-09-17 the camera half of this restarts `camera-streamer.service`, and
+    `jpeg_quality`/`live_capture_interval_seconds` no longer exist - see the note at the top of this section.)*
+    **Config-page saves now auto-restart the affected service when the
     change actually needs it, instead of just telling the user to do it
     by hand.** A shared `_restart_service()` helper (`sudo -n systemctl
     restart <unit>`, best-effort) is called from `/api/ble-mac` only
@@ -559,7 +589,8 @@ that aren't obvious from reading the code cold.
   `door_open_timeout` (new). `EVENT_CATEGORIES` in `shared_state.py` is the single source of truth the Config
   page's checklist renders from (`/api/notification-categories`) - adding a new categorized alert later means
   adding one entry there and passing `category=` at that one `log_event()` call site, nothing else.
-- **Not yet tested against a real Pushover account, real SMTP server, or real webhook receiver** - no
+- **[resolved 2026-09-17/18 - all three channels confirmed with real credentials via Send test; see the
+  resolved entries in Open threads]** **Not yet tested against a real Pushover account, real SMTP server, or real webhook receiver** - no
   credentials were available while building this. The "Send test" button exists specifically so this gets a
   real end-to-end check the first time real credentials are entered, rather than only finding out a channel is
   broken the next time something actually goes wrong. Verify all three (or whichever you configure) with Send
@@ -572,26 +603,25 @@ that aren't obvious from reading the code cold.
   only true for the minutes between a push and his check - when he says a change looks good, mark that entry
   confirmed on the Pi rather than leaving it flagged as unverified for a future session to re-check.
 
-- **[updated 2026-10-06]** Deployment is via **GitHub Desktop** from
-  Ryan's local clone at `D:\GitHub\Necroparlor` (Windows laptop; moved
-  there from a OneDrive-synced path that broke change detection) - Claude
-  hands off changed files, Ryan copies them into that clone and commits/
-  pushes. **[2026-10-06]** GitHub is now connected, so Claude can push
-  directly - it shows the commit message and waits for Ryan's go-ahead
-  before every push, since `main` is what the Pi auto-pulls. Hand-offs should include 3
-  ready-to-paste commit summary options (lowercase, no `feat:`/`fix:`
-  prefixes, terse, matching the repo's history style). Earlier entries in
-  this file describe the older drag-into-GitHub's-web-UI workflow - the
-  same caution applies either way: **check the current branch is the
-  intended one before committing**.
+- **[updated 2026-10-18]** Current deploy path: Claude commits on `dev` in its own clone and pushes it
+  directly (GitHub connected since 2026-10-06). Every batch comes with 3 ready-to-paste commit summary options
+  (lowercase, no `feat:`/`fix:` prefixes, terse, matching the repo's history style); **Ryan picking one is the
+  go-ahead to push** - no second confirmation. The Pi tracks `dev` and Ryan applies each push right away;
+  `main` only changes by merging a tested `dev`. Ryan's own clone is at `D:\GitHub\Necroparlor` (Windows,
+  GitHub Desktop; moved off a OneDrive-synced path that broke change detection). Earlier entries describe
+  older workflows (GitHub web-UI drag-and-drop, then GitHub Desktop hand-offs) - the same caution applies
+  either way: **check the current branch is the intended one before committing**, and pull first - a commit
+  built from a stale copy of a file silently reverts whatever landed in between (that is exactly what
+  `efd3664` did; see the 2026-10-18 entry).
 - `auto_update.sh`'s own executable permission bit (`chmod +x`) shows
   up as a "local change" on essentially every pull or branch switch,
   since GitHub's web uploader doesn't preserve the exec bit. This is
   expected and harmless - the stash/restore cycle handles it silently
   most of the time; don't chase it as a real issue if it appears in a
   "local changes detected" message.
-- The `update-dermestid` shell alias just does `cd ~/dermestid &&
-  ./auto_update.sh` - if it's "not found," it's almost always either a
+- The `update-dermestid` shell alias (Ryan's `~/.bashrc`, not in this repo) does `cd ~/dermestid &&
+  bash auto_update.sh` (changed from `./auto_update.sh` on 2026-09-13 so a lost exec bit can't break it) - if
+  it's "not found," it's almost always either a
   fresh shell that hasn't sourced `.bashrc` yet, or the word order
   typo (`dermestid-update` instead of `update-dermestid`).
 - Testing a branch: either use the dashboard's branch dropdown now
@@ -638,6 +668,39 @@ that aren't obvious from reading the code cold.
     suspects 1/2 (I/O or CPU starvation), and `journalctl -u dermestid-web` is where its log lines land. The
     compile confirmation box warns about this issue. `nice -n 19` is still the only throttle; `ionice` /
     `-threads` still untried.
+
+- **[2026-10-18, `dev`] Documentation review against the code - and a regression it turned up.** Ryan
+  asked for every doc to be checked against the current state. Docs fixed in the same commit as this entry
+  (README, this file, `docs/camera-streamer-setup.md`, a few code comments) plus the pin fix below; what turned up:
+  - **`efd3664` ("Extereme alert", 2026-10-05) reverted far more than the 2026-10-06 "MAJOR FIND" entry
+    recorded.** That entry traced the missing `shared_state.py`/`webapp.py` timelapse functions to it. The same
+    commit was evidently built from a copy of the files from *before* 2026-09-29 and also: (a) reverted
+    `climate.py`'s 2026-09-29 light/reed-switch pin swap (`PIN_LIGHT` 24 -> 26, `PIN_SWITCH` 26 -> 24 - now
+    restored, below); (b)
+    dropped `climate.py`'s SHT31 failure logging (the 2026-09-29 fix after a missing library left both tiles
+    blank with nothing in any log - `read_internal_sht31_f()`/`read_external_sht31_f()` again swallow every
+    error silently); (c) removed the 2026-09-29 README wiring details (sensor GND pins, lead colours, the i2c5
+    `i2cdetect` check, the pull-up advice); (d) **deleted 13 entries (2026-09-29/30) from this file**. They're
+    restored verbatim at the bottom of Open threads, tagged. The inline I2C-bus opener it also dropped doesn't
+    matter any more: the 2026-10-05 rework uses `adafruit-extended-bus`, confirmed installed and working on the
+    Pi 2026-10-06.
+  - **Fixed in code - light relay back on GPIO24 (pin 18), reed switch on GPIO26 (pin 37).** After the revert
+    the code had light = GPIO26, switch = GPIO24 while the diagram still showed the 2026-09-29 layout. Ryan
+    (2026-10-18): neither is connected yet, and he wants the layout "where the pins are close to each other" -
+    i.e. the 2026-09-29 one (relay inputs on 11/15/16/18, reed switch on 37 + GND 39). `climate.py`, README and
+    diagram now all agree. Not hardware-tested (nothing wired); on the Pi it's just a restart of
+    `dermestid-climate` via the normal update.
+  - **SHT31 failure logging**: worth restoring (small, `climate.py`) - not done in a docs pass.
+  - Doc fixes, for the record: README files table (missing `timelapse_encode.py`, `compile_timelapse.py`,
+    `static/`, `docs/`, five templates), page names/locations throughout (Config/Settings page -> Setpoints,
+    Sensors, Camera, Notifications, System; the Data history card that moved to the Logs pages), dashboard page
+    list rewritten for the current nav, internal-only condensation heater, GPIO4 cause, update section
+    (System page, `dev`, what `auto_update.sh` does and doesn't restart), battery timer behaviour. This file:
+    "Current state" (`main` vs `dev`), the camera/timelapse decisions superseded by camera-streamer and
+    recordings, the deploy workflow, and stale `[open]` tags below. camera-streamer doc rewritten around what's
+    confirmed (unit running since at least 2026-10-06; the H264 "overloaded the Pi" claim corrected).
+  - Leftover in the repo, untouched: `Claude outputs/header-mockup.html` (a 2026-09-17 Data-table header
+    mockup, not used by the app).
 
 - **[2026-10-16, `dev`] Removed the System page's "Save branch" button** (Ryan: the branch select already
   auto-saves, so the button was superfluous). Its one real job - retrying a failed auto-save - is covered
@@ -745,7 +808,8 @@ that aren't obvious from reading the code cold.
   - **Confirmation:** `selectMode()` now shows the shared `confirmDanger()` modal: "Switch to X?", the target
     mode's temp range and humidity ceiling (from the last `/api/status` config), and a note that it ends the
     current mode's timelapse session, which compiles if it has enough frames - relevant while the compile-hang
-    top-priority issue is open. Picking the already-active mode just closes the menu. `confirmDanger()` gained
+    top-priority issue is open. *(Superseded later the same day by the recordings redesign: a mode switch no
+    longer touches the timelapse, and the box now says "Recording X keeps running" instead.)* Picking the already-active mode just closes the menu. `confirmDanger()` gained
     an optional 5th arg `okClass` (default `danger-btn`) so this non-destructive confirm uses the green
     `save-btn`; every existing caller is unchanged (Timelapse page re-checked: still red). Verified in headless
     Chromium: Cancel and Escape leave the mode alone, Confirm switches, no JS errors. **Confirmed on the Pi by Ryan (2026-10-16)** - he tests each commit on the Pi as soon as it lands.
@@ -925,8 +989,9 @@ that aren't obvious from reading the code cold.
        "reduced frame rate."
   - A "Could not reach camera-streamer" notification at ~09:50 was just camera-streamer restarting after the
     resolution change (Camera page save restarts it) - confirmed recovered (restart 09:50:43, snapshot 0.08s).
-  - Still open from the pass below: **Pillow not installed** (timelapse frames saved uncropped), and the
-    timelapse auto-compile awaits its first real mode change.
+  - Still open from the pass below: **Pillow not installed** (timelapse frames saved uncropped) - no later
+    entry says it was installed; check with `python3 -c "import PIL"` on the Pi. ~~The timelapse auto-compile
+    awaits its first real mode change~~ - moot since 2026-10-16: compiling is manual, per recording.
 
 - **[2026-10-06] Verification pass on the real Pi - what's actually deployed vs. what this file claimed.**
   Ryan noticed several items here had been done but never checked off, so we went through every open/
@@ -956,7 +1021,9 @@ that aren't obvious from reading the code cold.
   - **Timelapse auto-compile fix** is deployed. The September backlog is gone - but `timelapse_videos` is
     EMPTY, so it was purged, not compiled; no compile has ever succeeded on the Pi yet. Only pending frames:
     the current `cleaning` session (918 frames from 2026-10-05 17:21, ~15s at the 60fps Ryan set). The real
-    proof is the next mode change: that session should appear in the gallery on its own.
+    proof is the next mode change: that session should appear in the gallery on its own. *(Moot since
+    2026-10-16 - there's no compile on a mode change any more; that `cleaning` session's frames were carried
+    into the recordings model by the migration.)*
   - **iPhone crop/zoom/pan** - was working, but couldn't be re-confirmed because the dashboard was too slow
     to use at the time (see the Wi-Fi item below). Retry once it's responsive.
   **Confirmed done:**
@@ -1303,7 +1370,7 @@ that aren't obvious from reading the code cold.
   account password in the SMTP password field; not a code bug, no code change needed). Still worth confirming
   a real triggering event (not just the test button) produces a push, e.g. leaving the door open past
   `door_open_alert_minutes`.
-- **[2026-09-17]** Config page split into **Config** (per-mode setpoints + the Notifications card) and a new
+- **[superseded - pages reorganized again 2026-10-05/06; see README "Dashboard pages"]** **[2026-09-17]** Config page split into **Config** (per-mode setpoints + the Notifications card) and a new
   **Settings** page (sensor sources/calibration, USB webcam, software-update branch/interval/apply) - same
   underlying `/api/*` endpoints, just regrouped across two `<nav>` tabs (see base.html) so the page people
   tune often (setpoints, notification thresholds) isn't buried under the stuff set up once and rarely touched.
@@ -1590,7 +1657,7 @@ that aren't obvious from reading the code cold.
   config.json`, `git stash drop` (the unrecoverable conflicted stash
   entry), plus removing a couple of stray files
   (`.git_update.lock`-adjacent junk from mangled terminal pastes).
-- **[open, 2026-09-13]** Full feature batch implemented and
+- **[superseded - deployed on the Pi 4 2026-09-13/14; live view later moved to camera-streamer, timelapse to recordings]** **[was: open, 2026-09-13]** Full feature batch implemented and
   unit/smoke-tested (in the dev sandbox, not on real hardware yet):
   Home-page live feed, Camera page renamed to Timelapse with real
   ffmpeg-compiled `.mp4` videos (download/delete/multi-select), merged
@@ -1609,7 +1676,7 @@ that aren't obvious from reading the code cold.
   lines added on the Pi, or it'll silently only find indices the camera
   service isn't already holding open). `config.json`'s camera block
   needs no migration for this batch - no key was renamed.
-- **[open, 2026-09-13]** BLE battery check retry cadence fixed:
+- **[resolved - 4h timer confirmed installed on the Pi, 2026-10-06]** **[was: open, 2026-09-13]** BLE battery check retry cadence fixed:
   `ble_battery.py` failing (e.g. the SensorPush phone app happened to
   be connected) used to mean waiting a full 24h+ for the next
   `OnCalendar=daily` timer fire before retrying - user reported this
@@ -1632,7 +1699,7 @@ that aren't obvious from reading the code cold.
   `daemon-reload` + timer restart on the Pi (same one-time-install
   caveat as any `.timer`/`.service` change - `git pull`/`auto_update.sh`
   alone won't pick this up).
-- **[open, 2026-09-13]** `climate.py`'s `read_temp_and_humidity_f()`
+- **[obsolete - DHT22 support removed 2026-10-05]** **[was: open, 2026-09-13]** `climate.py`'s `read_temp_and_humidity_f()`
   (the wired DHT22 probe reader, used for both the internal sensor in
   `dht22` mode and the external sensor's `local_gpio` fallback) never
   logged anything on failure - it silently returned `(None, None)`
@@ -1668,7 +1735,7 @@ that aren't obvious from reading the code cold.
   Which of the two was the actual cause wasn't specified back, but
   either way this confirms the deploy-visibility-gap diagnosis was
   right, not a code bug.
-- **[open, 2026-09-13]** Video "still choppy... nothing like a true
+- **[resolved - camera-streamer, 2026-09-17]** **[was: open, 2026-09-13]** Video "still choppy... nothing like a true
   live feed" reported again after the Discover/auto-restart UX batch
   shipped. Root cause is almost certainly still the same one already
   identified two rounds ago, not a new problem: the user had
@@ -1700,7 +1767,7 @@ that aren't obvious from reading the code cold.
   see the Pi
   3B+-era live-view-performance entry above, which may or may not
   still be relevant post-Pi-4-migration).
-- **[open, 2026-09-13]** `journalctl -u dermestid-climate.service`
+- **[obsolete - resolved by the GPIO5 move below, and DHT22 removed 2026-10-05]** **[was: open, 2026-09-13]** `journalctl -u dermestid-climate.service`
   provided for the missing wired/Fallback sensor investigation - showed
   `External: --F/--%` on literally every single logged cycle across
   ~18 minutes and two service restarts, with **no** `DHT22 on GPIOx
@@ -1722,7 +1789,7 @@ that aren't obvious from reading the code cold.
   Worth checking `dermestid-ble.service`'s own recent freshness
   alongside the redeployed climate log, not just climate.py in
   isolation.
-- **[open, 2026-09-13]** User asked directly why not just switch the
+- **[done - camera-streamer switch, 2026-09-17]** **[was: open, 2026-09-13]** User asked directly why not just switch the
   live-view pipeline to `camera-streamer` instead of continuing to tune
   `camera_service.py`'s own OpenCV-based capture. Honest assessment:
   this wasn't a "considered and rejected" decision before now - it's a
@@ -1788,7 +1855,7 @@ that aren't obvious from reading the code cold.
   speed-bump test first; if still choppy with headroom to spare, that's
   real evidence for camera-streamer being worth its cost. Not yet
   tried.
-- **[open, 2026-09-13]** Correction to my own prior guidance: I told the
+- **[superseded - the fps/relay settings went away with camera-streamer; the Pi health readout lives in the nav bar now]** **[was: open, 2026-09-13]** Correction to my own prior guidance: I told the
   user to "bump `live_capture_interval_seconds` and
   `STREAM_RELAY_INTERVAL` up" to test for smoother video on the Pi 4 -
   backwards. Lower = faster/smoother for both (fewer seconds *between*
@@ -1856,7 +1923,7 @@ that aren't obvious from reading the code cold.
     `camera_service.py` itself is untouched by this batch (the relay
     interval is read by `webapp.py`, not the camera service), so
     `dermestid-camera.service` doesn't need restarting for this.
-- **[open, 2026-09-13]** User-requested simplification, before the
+- **[superseded - fps settings removed with camera-streamer; the resolution dropdown survives on the Camera page]** **[was: open, 2026-09-13]** User-requested simplification, before the
   batch above even got deployed: (1) re-express the camera's two
   frame-rate settings as frames/sec instead of seconds-between-frames,
   and (2) replace the separate width/height number inputs with a single
@@ -1915,7 +1982,7 @@ that aren't obvious from reading the code cold.
   - **Not yet deployed** - same restart requirements as the Pi-health
     batch directly above (this shipped in the same push, before that
     batch had been deployed/tested on real hardware yet either).
-- **[open, 2026-09-13]** Wired/fallback external DHT22 (GPIO4,
+- **[resolved 2026-09-13, then obsolete - DHT22 removed 2026-10-05]** **[was: open, 2026-09-13]** Wired/fallback external DHT22 (GPIO4,
   `PIN_EXTERNAL_TEMP`) investigation - user provided fresh
   `journalctl -u dermestid-climate.service` output after the DHT-
   failure-logging fix went in. Findings:
@@ -2052,7 +2119,7 @@ that aren't obvious from reading the code cold.
       (technology vs. tile identity) noticed while watching this table
       during the fix above. `templates/data.html`'s `srcAbbrev()` now
       returns "Ext"/"FB" to match.
-- **[open, 2026-09-13]** Three header/nav UI requests, done together:
+- **[confirmed 2026-09-14 - see the camera-fps entry below]** **[was: open, 2026-09-13]** Three header/nav UI requests, done together:
   - **Door badge replaced with a light badge.** The header used to show
     a door open/closed badge (initially just recolored to grayscale-when-
     closed per an earlier request, then replaced outright here rather
@@ -2465,7 +2532,7 @@ that aren't obvious from reading the code cold.
     through Desktop without it being confirmed back in the same
     conversation.
 
-- **[open, 2026-09-14] Frequent "Internal sensor reading unavailable"
+- **[obsolete - both sensors are SHT31s on 3.3V since 2026-10-05; README and diagram document that]** **[was: open, 2026-09-14] Frequent "Internal sensor reading unavailable"
   warnings - investigation started**
   - User reported dashboard logs full of "Internal sensor reading
     unavailable - starting failsafe countdown" (internal DHT22, GPIO27)
@@ -2608,7 +2675,7 @@ that aren't obvious from reading the code cold.
   - Old 16GB SanDisk card is now a spare/backup, untouched throughout
     this whole process.
 
-- **[2026-09-14, end of session] Next planned work: a new branch to
+- **[done 2026-09-17]** **[2026-09-14, end of session] Next planned work: a new branch to
   explore switching the live-view pipeline to `camera-streamer`.** See
   the existing camera-streamer analysis in the "Camera / timelapse"
   load-bearing-decisions section above (around the MJPEG-relay-vs-
@@ -2697,7 +2764,7 @@ that aren't obvious from reading the code cold.
     that testing, which would have crashed the new `limit=None` export
     path with a param-count mismatch).
 
-- **[2026-09-14] `camera-streamer` branch brought up to date with
+- **[closed - the branch was merged and no longer exists on the remote]** **[2026-09-14] `camera-streamer` branch brought up to date with
   `main` for testing.** Confirmed directly from `.git/logs/HEAD` and
   both branches' own ref files (not just assumed from GitHub Desktop's
   UI) that this is a pure fast-forward, not a real merge:
@@ -2770,7 +2837,7 @@ that aren't obvious from reading the code cold.
   addressing both remaining bottlenecks at once rather than one at a
   time.
 
-- **[2026-09-17] `camera-streamer` switch actually implemented on the
+- **[superseded - confirmed working on the Pi and on `main` since ~2026-09-17; see docs/camera-streamer-setup.md]** **[2026-09-17] `camera-streamer` switch actually implemented on the
   `camera-streamer` branch.** Ryan said explicitly not to worry about
   preserving `camera_service.py`/`webapp.py`'s old camera code as long
   as live view + timelapse both still work - this is a real rewrite of
@@ -3535,3 +3602,404 @@ that aren't obvious from reading the code cold.
   `ffprobe` that the actual output file's frame rate is `24/1` - not just that the code path didn't error;
   rendered `/timelapse` in headless Chromium and confirmed `#fpsSelect` shows the saved value (30) correctly
   pre-selected among its options on page load.
+
+- **[2026-10-18] RESTORED: thirteen 2026-09-29/30 entries deleted by `efd3664`.** Copied back verbatim from
+  `0640fc6:PROJECT_STATUS.md` (the commit before the deletion); only the leading status tag on each is new.
+  They describe the code as of 2026-09-30 - read each tag first.
+
+- **[history - the encode now lives in `timelapse_encode.py` with this preset/timeout/nice; the per-mode lock became one shared encode lock and `compile_timelapse.py` now takes a recording id (2026-10-16)]** **[2026-09-29] Timelapse compile timed out on a real session: "ffmpeg
+  timed out compiling cleaning session (8048 frames) after 300s".**
+  Root cause: `COMPILE_TIMEOUT_SECONDS` was a flat 300s no matter how
+  many frames, but encode time scales linearly with frame count - and
+  the command didn't name an encoder, so ffmpeg used libx264's default
+  `medium` preset, its slowest reasonable one. 8048 frames (~5.6 days
+  at a 1-minute interval) in 300s needs ~27 frames/s sustained, which a
+  Pi can't do at 720p on `medium`; the cap was effectively only ever
+  going to work for sessions of a few hundred frames. Nothing was lost -
+  the frames were kept exactly as designed.
+
+  **Second bug found while tracing it**: after a failed/skipped compile,
+  the leftover frames were NOT picked up by the next session's compile,
+  despite the `MINIMUM_FRAMES_FOR_VIDEO` comment saying they would be -
+  `maybe_compile_session()` only queried `[session_start_ts, now]`, and
+  `session_start_ts` resets to the transition time on every mode change.
+  They only resurfaced after a service restart (via
+  `get_earliest_camera_snapshot_ts()` in `main()`), at which point they'd
+  merge into an even bigger session and hit the same timeout again.
+  Also: a timeout left a truncated, unplayable `.mp4` behind, and the
+  concat list filename (`.compile_<int ts>.txt`) could collide between
+  two modes compiling in the same second.
+
+  **Fixes (`camera_service.py`)**: explicit `-c:v libx264 -preset
+  veryfast` (measured ~2.5x faster than `medium` on identical 1280x720
+  frames on the dev sandbox, with no size penalty - static scene);
+  ffmpeg runs under `nice -n 19` so a long encode can't compete with
+  climate.py; timeout now `max(300, frames x 1.0s)` via
+  `compile_timeout_for()` - still a hang watchdog, just not one a
+  legitimate big job can hit; `-movflags +faststart`; partial `.mp4`
+  deleted on timeout; mode added to the list filename;
+  `maybe_compile_session()` extends its start to the mode's earliest
+  uncompiled frame; a per-mode `fcntl` lock file
+  (`timelapse_videos/.compile_<mode>.lock`) so a manual compile and the
+  service can't double-compile the same frames; encode time now logged
+  on success so the per-frame budget can be checked against the real Pi.
+
+  **New: `compile_timelapse.py`** - manual recovery CLI. No args lists
+  modes with kept frames; `python3 compile_timelapse.py <mode>` compiles
+  them through the same `compile_session_video()` with no time limit and
+  ffmpeg progress shown. Refuses to run as root (root-owned output files
+  would block the pi-user service from cleaning up later) and refuses
+  the active mode unless `--include-current`.
+
+  **Verified** (sandbox, real ffmpeg 6.1.1 + real SQLite, not on the
+  Pi): forced timeout removes the partial mp4 + list file and keeps all
+  frames; leftover rollover compiles 300 orphaned + 50 new frames into
+  one 350-frame video and clears the table; held lock makes the compile
+  skip with frames untouched; CLI list / active-mode guard / unknown
+  mode / root refusal / successful compile all behave as intended.
+  **Confirmed on the benchtop Pi 4 (same day)**: `compile_timelapse.py
+  cleaning` recovered the real 8048-frame backlog - "compiled a 671s
+  video from 8048 cleaning frames (261.5MB) in 583s", raw frames
+  removed. That's ~13.8 fps / 0.072s per frame at 1280x720 `veryfast`,
+  so the automatic path's 1.0s/frame timeout budget has ~13x headroom.
+  By the ~2.5x `medium`-vs-`veryfast` ratio measured in the sandbox, the
+  old command would have run ~5 fps here - it could only ever have
+  compiled ~1500 frames (~25h at a 1-minute interval) inside the old
+  300s cap. During the encode: CPU ~40C (105F), load average ~9-10 on 4
+  cores (expected - x264 is heavily threaded, and it's niced). ~3.1
+  Mbps output (261.5MB for 11 min); if SD-card space for videos ever
+  matters, an explicit higher `-crf` is the knob, not a slower preset.
+
+- **[resolved]** **[2026-09-29] Status-file staleness noted**: the 2026-09-17
+  `camera-streamer` entry above still describes that rewrite as living on
+  the `camera-streamer` branch, but `main`'s `camera_service.py` already
+  has it (no OpenCV, pulls `/snapshot` over HTTP) and the branch no
+  longer exists on the remote. It was evidently merged/pushed to `main`
+  around 2026-09-17 without an entry recording it. Whether
+  camera-streamer's setup has since been verified on the Pi is not
+  recorded here either - the timelapse error itself implies snapshots
+  are being captured, so at least `/snapshot` works.
+
+- **[removed 2026-10-16 with the recordings redesign]** **[2026-09-29] "Purge pending frames" button on the Timelapse page
+  (explicit request).** Deletes every kept, not-yet-compiled frame (DB
+  rows + JPEGs) behind a native `<dialog>` confirmation that states the
+  frame count and size, says the in-progress session is included, and
+  that compiled videos are untouched. Cancel and Esc both back out;
+  the button is disabled at 0 pending frames. Backend:
+  `POST /api/timelapse/pending/purge` ->
+  `shared_state.purge_camera_snapshots()`, logged as an info event.
+  **Deliberately takes the same per-mode compile lock** as
+  `camera_service.compile_session_video()` (path now shared as
+  `state.compile_lock_path()`), and refuses with a 409 ("a <mode>
+  timelapse is compiling right now") rather than deleting JPEGs ffmpeg
+  is mid-way through reading. Also sweeps stray `.jpg` files with no DB
+  row, but **only ones older than 60s** - `save_camera_snapshot()`
+  writes the file before inserting its row, so a brand-new frame is
+  briefly "stray"; deleting it in that window would leave a row pointing
+  at a missing file and make that mode's next compile fail. Verified in
+  the sandbox with a real Flask server + headless Chromium: dialog
+  content, Cancel/Esc, the 409 while a lock is held (0 frames deleted),
+  and a real purge (DB emptied, header updates to 0, button disables,
+  fresh stray kept, old stray removed). Not yet clicked on the real Pi.
+
+- **[current - `confirmDanger()` now lives in `base.html`]** **[2026-09-29] Confirmation on timelapse video deletes (explicit
+  request - previously a single click on Delete / Delete selected
+  deleted immediately, with no way back).** The purge dialog was
+  generalized into one shared `<dialog id="confirmDialog">` +
+  `confirmDanger(title, paragraphs, confirmLabel)` promise in
+  `timelapse.html`, used by all three destructive actions: per-video
+  Delete (names the mode/date/length/frames/size), Delete selected
+  (count + total size), and Purge pending frames. Resolves true only on
+  the red button; Cancel, Esc, or any other close is false. Any
+  future destructive action on this page should go through
+  `confirmDanger()` rather than adding another dialog. Verified with a
+  real Flask server + headless Chromium against real compiled videos:
+  each dialog's text, Cancel and Esc deleting nothing, confirm deleting
+  exactly the chosen video(s), selection surviving a cancelled bulk
+  delete, 0 JS errors.
+
+- **[mostly moot - auto-compile/rollover/purge were replaced by recordings 2026-10-16; overlay/previews ran on the Pi 2026-09-30 (the overlay was diagnosed there and moved top-left); still unchecked: failover to the fallback SHT31; the light/reed-switch item waits on the wiring (see the 2026-10-18 entry)]** **[2026-09-29] Pending on-Pi verification (Ryan: "verify function of
+  all that later")** - checklist for the three 2026-09-29 timelapse
+  entries above. Tick these off (or record what broke) here:
+  - [ ] **Automatic compile on a mode change** completes without timing
+        out, and its log line's "in Ns" is in line with ~0.07s/frame.
+        The manual `compile_timelapse.py` recovery path is already
+        confirmed (8048 frames, 583s); the automatic path after a real
+        mode switch is not.
+  - [ ] **Leftover-frame rollover**: frames left behind by a skipped or
+        failed compile get included in that mode's next automatic
+        compile (without needing a service restart).
+  - [ ] **Purge pending frames** button: enables once Pending frames > 0,
+        dialog shows the right count/size, Cancel/Esc delete nothing,
+        confirm empties the pending count; ideally also see it refuse
+        with the "compiling right now" message during a compile.
+  - [ ] **Video delete confirmations**: single Delete and Delete selected
+        both open the dialog first; Cancel/Esc keep the video(s); the
+        red button deletes exactly the chosen one(s).
+  - [x] **Fallback SHT31** (entry below): `/dev/i2c-5` exists after the
+        overlay, `i2cdetect -y 5` shows 44, readings appear on the
+        dashboard with Probe type = SHT31 - **confirmed 2026-09-29** on
+        the benchtop Pi, along with the internal SHT31 on bus 1; a
+        hand-warming test moved only the matching tile for each probe,
+        so neither is mislabeled. (Benchtop only - see standing
+        context.)
+  - [ ] **Failover to the fallback SHT31**: with BLE stale/removed, the
+        external reading switches to the wired SHT31 and the failover is
+        logged. Not yet exercised.
+  - [ ] **Light relay (GPIO24, pin 18) / reed switch (GPIO26, pin 37)
+        after the pin swap**: lid open/close toggles the light relay and
+        the dashboard's door state.
+  - [ ] **Data history**: Settings -> Data history shows sensible counts;
+        clearing benchtop history works on the real Pi (download a copy
+        first if wanted); the hourly trim leaves nothing older than the
+        retention setting.
+  - [ ] **Timelapse overlay + previews**: a preview of the current session
+        builds and plays in a real browser with the timestamp overlay
+        visible; the next real compile also has it (Pi's ffmpeg is 7.x vs
+        the sandbox's 6.1.1).
+
+- **[superseded 2026-10-05 - DHT22 removed, so no probe-type select; the fallback now uses the `adafruit-extended-bus` package, which installed and works on the Pi (2026-10-06). The own-bus decision still stands]** **[2026-09-29] External fallback probe can now be an SHT31 (explicit
+  request).** Ryan has two prewired SHT31 probes (~5 ft leads): one
+  replaces the internal DHT22 (already supported via `internal_source`),
+  one replaces the wired external fallback DHT22. **BLE stays the primary
+  external sensor** - only the wired backup changes. The external probe
+  sits in the external hardware space, not the ductwork.
+
+  **Load-bearing decision - the fallback SHT31 is on its OWN I2C bus,
+  never the internal SHT31's.** Two SHT31s would normally share one bus
+  (0x44 + 0x45 via ADDR), but one faulty sensor or chafed lead can hold
+  SDA low and hang every device on that bus - which would take out the
+  internal reading (-> failsafe) AND its independent wired backup in the
+  same moment, exactly the coupling the two separate DHT22 pins never
+  had. Uses the Pi 4's extra hardware controller `i2c5` on GPIO12 (SDA,
+  pin 32) / GPIO13 (SCL, pin 33), enabled by `dtoverlay=i2c5,baudrate=50000`.
+  Pin mapping and params checked against the raspberrypi/linux overlays
+  README + i2c5-overlay.dts + bcm2711.dtsi, not from memory (which had
+  i2c4's default pins wrong). Both sensors stay at the default 0x44.
+  Don't "simplify" this onto one bus.
+
+  **Pull-ups**: GPIO2/3 have 1.8k pull-ups on the Pi board; GPIO12/13
+  only get the SoC's weak internal bias (~50k), not enough for a 5 ft
+  lead - README says to add 4.7k from each of SDA/SCL to 3.3V at the Pi
+  end unless the probe has its own. Whether Ryan's probes include
+  pull-ups is **unknown** (not yet checked).
+
+  **Code**: new config key `external_fallback_source` ("dht22" default |
+  "sht31"), Settings page Fallback card "Probe type" select, `POST
+  /api/external-fallback-source` (same shape as `/api/internal-source`).
+  `climate.py`: `EXTERNAL_SHT31_I2C_BUS = 5`, `_open_i2c_bus_by_number()`
+  - an inlined copy of Adafruit's `adafruit-extended-bus` ExtendedI2C,
+  **deliberately not the pip package**: it's an old setup.py-only
+  release that failed to build under current setuptools in the sandbox,
+  and an unbuildable dependency is a bad thing to discover mid-install on
+  the Pi. `_read_sht31_f()` now shared by internal + fallback. The
+  1s DHT read gap only runs when BOTH sensors are DHT22s. **No
+  condensation-heater recovery for the fallback** - that mechanism exists
+  because a pegged internal reading gets delta-rejected until it trips
+  the emergency failsafe; the fallback never feeds the failsafe and sits
+  in the dry hardware space.
+
+  Also fixed while here: Settings page said the wired probe was on
+  **GPIO4** (the dead pin) in two places - it's been GPIO5 since the
+  move; README said the internal-source switch was on the Config page
+  (it's on Settings). Pinout diagram regenerated via
+  `docs/gen_gpio_pinout.py` (pins 32/33 now I2C, fallback power/ground
+  labels cover either probe type).
+
+  **Verified in sandbox**: the real fallback read path through real
+  Blinka + real `adafruit_sht31d` against a fake SMBus speaking the SHT31
+  protocol with correct CRCs (opens bus 5, 77.0F/40.0% converted right,
+  missing bus / unplugged sensor -> (None, None) with no crash, recovers
+  on replug); the real `climate.run_cycle()` with stubbed GPIO for all
+  four internal/fallback combinations (right sensor read each way, GPIO5
+  untouched when fallback is SHT31, DHT gap only for DHT22+DHT22);
+  Settings select saves/persists across reload/rejects bad values with a
+  400/logs an event, 0 JS errors. **Not verified**: anything on the real
+  Pi - that `i2c5` really appears as `/dev/i2c-5` on this kernel (README
+  says to check with `ls /dev/i2c-*` and adjust the constant), real
+  sensor reads over 5 ft leads, and whether pull-ups are needed.
+
+- **[current - this is the diagram in the repo, but see the 2026-10-18 pin question]** **[2026-09-29] Pinout diagram reworked for the two SHT31 probes
+  (explicit request).** Sensor power/ground pins are now labeled simply
+  "Internal power/ground" (pins 1/6) and "External power/ground" (pins
+  17/9); sensor pins use the probes' own lead colors - red power, black
+  ground, yellow SCL, green SDA. **Yellow=SCL/green=SDA is an assumption**
+  (the common convention for 4-wire SHT31 probes; some vendors swap them)
+  - not yet confirmed against Ryan's probe listing; swapping is a
+  COLORS-only change in `docs/gen_gpio_pinout.py`. The diagram now shows
+  the target build, so the DHT22 DATA pins (13, 29) show as "unused (…if
+  used instead)" even though `dht22` is still the code default for both
+  sources until the Settings page is switched. Sensor 3.3V power is drawn
+  **orange**, not the probes' red lead color (Ryan's call), so it can't be
+  confused with the red 5V pins - a sensor lead moved onto 5V would put
+  5V on the Pi's SDA/SCL via the probe's pull-ups. README's SHT31 wiring
+  tables gained a lead-color column to match. Also corrected: the two
+  5V pins aren't both relay-board power - one feeds the relay board, the
+  other the door servo (Ryan, 2026-09-29). **Which pin is which wasn't
+  stated**; the diagram assumes pin 2 = relay board, pin 4 = servo.
+  Ground pins (Ryan, same day): **relay board GND = pin 6, internal
+  sensor GND = pin 9, external sensor GND = pin 34** - earlier versions of
+  the diagram never showed the relay board's ground at all (every spare
+  GND was just "GND"). Relay ground drawn black (assumed jumper color).
+  Still not on the diagram: the servo's and reed switch's ground returns
+  - pins not yet stated.
+
+- **[reverted in code by `efd3664` (2026-10-05), RESTORED 2026-10-18 - current again]** **[2026-09-29] Light relay and door reed switch swapped pins (explicit
+  request - consolidating wiring by component).** `PIN_LIGHT` 26 -> 24
+  (physical 37 -> 18), `PIN_SWITCH` 24 -> 26 (18 -> 37). All four relay
+  inputs are now grouped on physical 11/15/16/18, and the reed switch's
+  two leads can sit on adjacent pins 37 + 39 (GND). **Deploy order
+  matters**: relays are active-low, so climate.py drives `PIN_LIGHT` HIGH
+  at startup (relay off); with the OLD wiring still in place that would
+  drive GPIO24 into the reed switch, a dead short to ground whenever the
+  switch is closed. Rewire first (Pi powered off), then let the update
+  deploy. Both GPIO24 and GPIO26 default to pull-down at power-on, so the
+  relay's pre-script boot behaviour is unchanged. Verified with stubbed
+  GPIO: pin 24 set up as output and first driven HIGH, pin 26 as input
+  with pull-up and never written. Reed switch ground pin not yet stated
+  (39 suggested).
+
+- **[hardware facts current; the failure logging described here was lost in `efd3664` and is not in the code now]** **[2026-09-29] SHT31 bring-up on the real Pi (benchtop).** Confirmed
+  on hardware: `dtoverlay=i2c5` gives `/dev/i2c-5` (so
+  `EXTERNAL_SHT31_I2C_BUS = 5` is right; `/dev/i2c-20`/`-21` are the Pi
+  4's HDMI DDC buses, ignore); `i2cdetect` sees an SHT31 at 0x44 on both
+  bus 1 and bus 5, which also **confirms the probes' lead colors -
+  yellow = SCL, green = SDA** (the diagram's assumption) and that `pi`
+  can open both buses without sudo. **Bus 1 also shows 0x1a - that's
+  the Argon ONE case's fan/power-button controller**, which lives on I2C
+  bus 1 at 0x1a (still present with the probe unplugged). Not a fault;
+  don't go hunting it. Consequence: the internal SHT31 shares bus 1 with
+  the case fan controller, so a fault on the internal probe's lead that
+  hangs bus 1 would also freeze case fan control (the internal reading
+  dropping out already starts the failsafe, so it's visible).
+
+  **Both tiles were blank after switching to SHT31**: the
+  `adafruit-circuitpython-sht31d` package had never been installed on
+  the Pi (README's install line lists it, but the Pi's setup predates
+  anyone needing it). Fix: `pip3 install adafruit-circuitpython-sht31d
+  --break-system-packages` as pi. Root problem was `_read_sht31_f()`
+  swallowing ImportError silently, identical to "no sensor wired" -
+  **now logs the failure reason once per failure streak** (and recovery),
+  and a missing library also goes on the dashboard as a
+  `control_loop_error` with the install command. Verified with the real
+  climate.py + stubbed GPIO: 3 failing cycles -> exactly 1 dashboard
+  event, recovery logged, I/O errors log-only.
+
+- **[superseded - lost in `efd3664`, rebuilt 2026-10-05 (default 0 = keep forever; plain single DELETEs, no 2,000-row batching or HISTORY_TABLES allow-list) and moved to the Data/Logs pages 2026-10-06]** **[2026-09-29] Data history retention + "Clear history" (explicit
+  request).** Before this, nothing ever deleted sensor history:
+  climate.py writes a `readings` row every 15s cycle (~5,800/day, ~2M/yr)
+  and `events` also grew forever. New Settings section **Data history**:
+  - `history_retention_days` (default 365; 7-3650, 0 = keep forever).
+    `webapp.py`'s new `history_retention_loop` thread trims older
+    readings/events hourly (first pass 60s after startup, so the restart
+    every applied update does isn't also a big delete); logs a dashboard
+    event only for catch-up trims of 10k+ rows.
+  - "Clear selected history" (readings and/or events, all rows) behind the
+    shared confirm dialog showing exact counts; logs a "History cleared"
+    event afterwards, so a cleared event log starts with the reason it's
+    empty. Download links next to it: new `/api/readings/download` (CSV,
+    streamed row-by-row) and the existing `/api/events/download`.
+
+  **Load-bearing details:** `shared_state.HISTORY_TABLES = ("readings",
+  "events")` is a closed allow-list - `prune_history()` raises for
+  anything else. Never add `camera_snapshots` (its "only uncompiled
+  frames" invariant is what timelapse session recovery relies on),
+  `timelapse_videos` (video files are addressed by those rows),
+  `ble_readings`/`door_state`/`update_state` (live state, not history).
+  Deletes run in 2,000-row batches with 50ms pauses because SQLite
+  allows one writer and climate.py's writes wait on a 10s lock timeout;
+  measured with a separate writer process inserting every 20ms while
+  200k rows were deleted: **worst writer wait 5ms**. No VACUUM on
+  purpose (exclusive lock for the whole rewrite) - the file doesn't
+  shrink, freed pages are reused.
+
+  The Timelapse page's confirm dialog (`confirmDanger()`, markup, CSS)
+  moved into `base.html` so Settings can share it - any page's
+  destructive action should use it. Regression-tested: the Timelapse
+  single/bulk delete + purge browser test passes unchanged, all six
+  pages load with 0 JS errors. README's "Dashboard pages" list was also
+  stale (no Settings page; credited Config with sections that moved) -
+  fixed. **Verified in sandbox only**, not on the Pi.
+
+- **[current in spirit - previews are per recording since 2026-10-16]** **[2026-09-30] Timestamp overlay + progress previews on the Timelapse
+  page (explicit requests), and a real frame-loss bug found while
+  testing them.**
+
+  **Shared encoder, `timelapse_encode.py` (new).** The ffmpeg command,
+  x264 preset, and timeout budget moved out of `camera_service.py` so the
+  real compile, `compile_timelapse.py` (via camera_service) and previews
+  all encode identically. `camera_service.COMPILE_*` /
+  `compile_timeout_for` remain as aliases.
+
+  **Overlay**: `Cleaning · Sep 29, 2:05 PM · +2d 04h 12m` bottom-left on
+  every frame (capture time in `state.LOCAL_TZ`, elapsed since the first
+  frame being encoded). Done without rewriting JPEGs: each concat-list
+  entry gets `file_packet_metadata 'overlay=<label>'` (the value MUST be
+  quoted - unquoted it's cut at the first space) and one drawtext prints
+  `%{metadata:overlay}`. No measurable encode cost (400 frames: 5.0s vs
+  5.5s plain). Config `timelapse_overlay` (default true), checkbox on the
+  Timelapse page. If an overlay encode fails for a non-timeout reason it
+  retries once without the overlay (logged warning) - a font/filter
+  problem costs the timestamps, never the video. Uses DejaVuSans-Bold,
+  falls back to fontconfig's default.
+
+  **Previews**: "Build preview" per mode with pending frames ->
+  `POST /api/timelapse/preview/<mode>`; runs in a webapp.py thread,
+  one at a time, niced; builds to `.building_<mode>.mp4` and swaps in on
+  success; stored in the new `camera/timelapse_previews/` (NOT the
+  gallery dir, no `timelapse_videos` row, never deletes frames). Live
+  progress via ffmpeg `-progress pipe:1`. **Deliberately does not take
+  the per-mode compile lock** - a preview must never delay or skip a real
+  compile; if the frames get compiled/purged mid-build the preview just
+  fails and says so. Previews are deleted when their frames are compiled
+  (camera_service) or purged (purge_camera_snapshots), and
+  `/api/timelapse/sessions` self-heals any preview whose mode has no
+  pending frames left.
+
+  **Bug fixed (pre-existing, affected the real compile):** when a frame's
+  JPEG is missing, ffmpeg's concat demuxer logs "Impossible to open",
+  **stops reading the list, and still exits 0** - a truncated video that
+  looked like success. `camera_service` then deleted ALL the session's
+  frames, silently losing everything after the gap (e.g. if the
+  low-disk safety net pruned frames mid-encode, or a DB row existed
+  without its file). `encode()` now skips frames whose file is already
+  missing (logged; their dangling rows are cleaned up with the rest) and
+  verifies the finished video's duration via ffprobe - short = failure,
+  frames kept. Verified: 300 of 800 files deleted mid-compile -> "video
+  came out truncated (500 of 800 frames)", 0 rows deleted; 2 files
+  missing beforehand -> 48-frame video + warning + rows cleaned.
+
+  **Verified in sandbox** (real ffmpeg 6.1.1, Flask, headless Chromium):
+  overlay text on real frames of both preview and final video; preview
+  build with climbing progress, second build -> 409, frames and gallery
+  untouched, "N newer frames since" after new captures, overlay toggle
+  persists, purge removes previews; preview failing cleanly when frames
+  vanish; `compile_timelapse.py` end to end; Timelapse delete/bulk/purge
+  regression, 0 JS errors. Couldn't play the MP4 in the test browser
+  (Playwright's Chromium has no H.264) - checked the file with ffprobe
+  and the route serves it with range requests (206) instead. **Not on the
+  Pi yet** - in particular the overlay's font path and the Pi's ffmpeg
+  7.x `file_packet_metadata` behaviour.
+
+- **[current]** **[2026-09-30] Overlay moved to TOP-left - it was in the file but
+  hidden on the real Pi.** Ryan saw no timestamp on a preview. Diagnosed
+  on the Pi itself (ffmpeg `7.1.5-0+deb13u1+rpt2`): drawtext present,
+  DejaVuSans-Bold present, `file_packet_metadata` labels reach the frames,
+  the label draws (raw-frame hash differs from plain), and a
+  blend=difference of the preview's corner vs its source JPEG gave
+  YAVG 53.8 - i.e. the text WAS encoded. Cause: bottom-left is exactly
+  where the browser's native `<video controls>` bar sits, and it stays up
+  once a clip ends - a 5-frame preview ends in 0.4s, so the label sat
+  permanently behind the play button/timeline. Now `x=16:y=16`. The
+  preview row also says "with timestamps" / "no timestamps" (from the
+  preview's own `overlay` flag) so this is checkable at a glance.
+  Previews/videos built before this keep the label at the bottom -
+  Rebuild preview to get the new position. Same day, explicit request: a
+  **Download** button on the preview row (`/api/timelapse/preview/<mode>.mp4
+  ?download=1` -> attachment named `<mode>-preview-YYYYMMDD-HHMM.mp4`, so
+  successive downloads of a growing session don't overwrite each other).
+
+- **[current]** **[2026-09-30] Overlay label no longer includes the mode name** (Ryan's
+  request) - now just `Sep 29, 2:05 PM · +2d 04h 12m`. The mode is
+  already shown on the gallery card / preview row. Earlier entries' label
+  examples predate this.

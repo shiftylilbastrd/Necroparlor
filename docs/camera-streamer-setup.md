@@ -1,24 +1,22 @@
 # Setting up camera-streamer (live view)
 
-[2026-09-14] Live view switched from this project's own OpenCV capture
-loop to [camera-streamer](https://github.com/ayufan/camera-streamer), a
-purpose-built V4L2 streaming daemon that uses the Pi's hardware JPEG
-encoder. See `PROJECT_STATUS.md`'s 2026-09-14 entries for the full
-reasoning (the old pipeline did 100% software JPEG encoding and relayed
-frames through Flask's dev server - both real, identified bottlenecks
-camera-streamer removes).
+Live view is served by [camera-streamer](https://github.com/ayufan/camera-streamer),
+a purpose-built V4L2 streaming daemon that uses the Pi's hardware JPEG
+encoder. It replaced this project's own OpenCV capture loop on 2026-09-17
+(decided 2026-09-14) - see `PROJECT_STATUS.md` for the reasoning: the old
+pipeline did 100% software JPEG encoding and relayed frames through
+Flask's dev server, both real bottlenecks camera-streamer removes.
 
-**[2026-09-17 UPDATE] Confirmed working against a real Pi + USB webcam**
-(camera-streamer v0.4.2) - standalone `/stream` and `/snapshot` both
-tested and produced "100% live view with no jitter," a real fix for the
-choppiness this whole switch was meant to solve. See
-`PROJECT_STATUS.md`'s 2026-09-17 entry for the full record, including
-one thing this doc got wrong at first (flagged inline below, in step 2)
-and corrected once real `--help` output was in hand. The steps below are
-now written from that confirmed run, not just documentation - though
-wiring it up as a permanent systemd service (vs. the standalone
-foreground test that was actually run) is still the next thing to
-verify.
+**Status:** running on the Pi 4 as `camera-streamer.service` (v0.4.2;
+standalone test 2026-09-17, systemd unit confirmed installed and running
+in the 2026-10-06 verification pass). Live view, `/snapshot`, the
+dashboard's reachability check, and the Camera page's save-and-restart
+all work.
+
+camera-streamer is the only process that opens the USB webcam.
+`camera_service.py` never touches the device - it pulls a JPEG from
+camera-streamer's `/snapshot` endpoint at the running timelapse
+recording's interval (nothing is captured when no recording is running).
 
 ## 1. Build camera-streamer on the Pi
 
@@ -36,51 +34,34 @@ make
 sudo make install
 ```
 
-Requires a 5.15+ or 6.1+ (LTS) kernel and Debian Bookworm - check
-`uname -r` first; camera-streamer's own docs call out older setups
-(Bullseye) needing their `stable-0.3` branch instead.
+camera-streamer's own docs ask for a 5.15+ or 6.1+ (LTS) kernel and
+Debian Bookworm or newer (this Pi runs Raspberry Pi OS Trixie) - check
+`uname -r` first; older Bullseye setups need their `stable-0.3` branch.
 
-**Confirmed** - `sudo make install` does put the binary at
-`/usr/local/bin/camera-streamer` (verified with `which camera-streamer`
-on 2026-09-17). `systemd/camera-streamer.service`'s `ExecStart=` already
-points there; no fix needed. Worth double-checking on your own install
-anyway with `which camera-streamer`, just in case a future
-camera-streamer release changes its install layout.
+`sudo make install` puts the binary at `/usr/local/bin/camera-streamer`
+(confirmed with `which camera-streamer`), which is what
+`systemd/camera-streamer.service`'s `ExecStart=` points at.
 
-## 2. Find the real CLI flags
+## 2. The flags this project relies on
 
-```bash
-camera-streamer --help
-```
+Confirmed against `camera-streamer --help` on the real Pi (v0.4.2):
 
-**Both things this doc originally asked you to confirm here are now
-settled**, from a real 2026-09-17 run (camera-streamer v0.4.2) - kept
-here for the record:
+- **`--http-port`** sets the HTTP port. Needed because camera-streamer
+  defaults to **8080**, the same port `webapp.py` uses. This project
+  uses **8090** (`config.json`'s `camera.streamer_port`), and
+  `validate_camera_settings()` in `shared_state.py` rejects 8080 outright.
+- **`--camera-type=v4l2`**, NOT `libcamera`. libcamera is built around
+  the Pi's CSI camera + ISP; a plain USB UVC webcam is `v4l2`.
+- **`--camera-format=MJPEG`** - the webcam's compressed capture format
+  (raw YUYV at high resolution saturates USB2).
+- **`--camera-video.disabled=1`** - turns the H264 encoder off. It
+  defaults to *enabled*, so this is set explicitly rather than just
+  omitted. See "H264 / `/video`" below.
 
-- **The HTTP port flag is `--http-port`** - confirmed directly in
-  `--help`'s own output, exactly as `systemd/camera-streamer.service`
-  already uses it. (Needed regardless of version: camera-streamer's
-  default port is **8080**, the same port `webapp.py` uses - see
-  `config.json`'s `camera.streamer_port`, defaulted to **8090** here to
-  avoid the collision, and `validate_camera_settings()` in
-  `shared_state.py`, which rejects 8080 outright.)
-- **USB camera type is `--camera-type=v4l2`, NOT `libcamera`.** This
-  doc originally said `libcamera` based on an indirect summary of
-  camera-streamer's own docs - wrong. `--help`'s own example command
-  line defaults to `v4l2`, and that's what was actually run and
-  confirmed working below. libcamera's pipeline is built around the
-  Pi's CSI camera + ISP, not a generic USB UVC device - `v4l2` is the
-  right type for exactly this project's hardware.
-  `--camera-format=MJPEG` was correct as originally written (forces the
-  same compressed capture format that fixed the old OpenCV pipeline's
-  choppiness too - see the MJPG capture-format entries in
-  `PROJECT_STATUS.md`).
+## 3. Try it standalone first
 
-## 3. Try it standalone first - before wiring up systemd
-
-Confirms the device/flags actually work before trusting a background
-service to it - this is the exact command that was run and confirmed
-working on 2026-09-17:
+Confirms the device and flags work before trusting a background service
+to it - this is the command that was run and confirmed on 2026-09-17:
 
 ```bash
 camera-streamer --camera-path=/dev/video0 --camera-type=v4l2 \
@@ -89,41 +70,20 @@ camera-streamer --camera-path=/dev/video0 --camera-type=v4l2 \
     --camera-video.disabled=1
 ```
 
-(swap in whichever `/dev/videoN` `discover_camera.py` - or the Config
-page's Discover button - finds for your webcam). Then from another
-device on the same LAN:
+(swap in whichever `/dev/videoN` `discover_camera.py` finds for your
+webcam). Then from another device on the same LAN:
 
 - `http://<pi-ip>:8090/` - the index page
-- `http://<pi-ip>:8090/stream` - should show a live MJPEG feed in a
-  browser. **Confirmed 2026-09-17: real live view, no jitter** - the
-  actual fix this whole camera-streamer switch was for.
-- `http://<pi-ip>:8090/snapshot` - should return a single JPEG.
-  **Confirmed 2026-09-17**: real requests logged and handled correctly
-  in camera-streamer's own console output.
+- `http://<pi-ip>:8090/stream` - live MJPEG feed in a browser
+- `http://<pi-ip>:8090/snapshot` - a single JPEG
 
-**`--camera-video.disabled=1` is deliberate, not an oversight** - H264
-output via the adaptive `/video` endpoint was tried (2026-10-06) as a
-smoother alternative to the iOS Safari snapshot-polling fallback (see
-`PROJECT_STATUS.md`). It fixed `/video`'s frozen-first-frame problem,
-but running the H264 encoder continuously alongside MJPEG capture
-overloaded the Pi badly enough to slow down the whole dashboard and
-make `/api/camera/status`'s own availability check start flapping -
-worse than the problem it was meant to solve. Reverted. If this gets
-revisited, measure CPU/temp under load first (`top`, `vcgencmd
-measure_temp`) rather than just confirming playback works.
-
-Ctrl-C it once confirmed working, before moving on to step 4.
+Ctrl-C it once confirmed working.
 
 ## 4. Wire it up
 
-```bash
-cd ~/dermestid
-git pull   # picks up camera_service.py, webapp.py, and this doc
-```
-
-Set the device/resolution/port either via the Config page's Camera card
-(writes `camera-streamer.env` and restarts the service for you), or by
-hand:
+Set the device/resolution/port on the dashboard (Settings → Camera, USB
+webcam card - saving writes `camera-streamer.env` and restarts the
+service for you), or by hand:
 
 ```bash
 cat > ~/dermestid/camera-streamer.env <<EOF
@@ -134,9 +94,12 @@ CAMERA_STREAMER_PORT=8090
 EOF
 ```
 
+`camera-streamer.env` is generated, host-specific, and not git-tracked
+(same as `config.json`).
+
 ```bash
 sudo cp ~/dermestid/systemd/camera-streamer.service /etc/systemd/system/
-sudo cp ~/dermestid/systemd/dermestid-camera.service /etc/systemd/system/   # updated - timelapse only now
+sudo cp ~/dermestid/systemd/dermestid-camera.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now camera-streamer.service
 sudo systemctl enable --now dermestid-camera.service
@@ -147,16 +110,25 @@ systemctl status camera-streamer.service
 journalctl -u camera-streamer.service -f
 ```
 
-Then open the dashboard's Home page - the live view `<img>` should point
-at `http://<pi-ip>:8090/stream` (visible in your browser's dev tools, or
-via the "available"/`stream_url` fields `/api/camera/status` returns).
+The Home page's live view then points straight at camera-streamer's
+`/stream` on port 8090, using whatever host name or IP you reached the
+dashboard by (`/api/camera/status` returns it as `stream_url`).
+iPhone/iPad browsers can't show an MJPEG stream in an `<img>`, so on
+those the page detects the failure after ~3s and falls back to
+reloading `/snapshot` (labelled "Live (reduced frame rate ...)").
 
-## 5. Sudoers, if you want the Config page's Discover button and camera
-   settings to work without SSHing in
+**`auto_update.sh` never re-installs this unit or restarts
+camera-streamer.** If a commit changes `systemd/camera-streamer.service`,
+re-run the `cp` + `daemon-reload` above and
+`sudo systemctl restart camera-streamer.service` - the 2026-10-06
+verification found the Pi had run an outdated copy for ~14 hours for
+exactly this reason.
 
-Same pattern as the rest of this project's sudoers setup - see the main
-README's "Automatic updates" section for the full file, and add these
-three lines to it (`sudo visudo -f /etc/sudoers.d/dermestid`):
+## 5. Sudoers, for the Camera page's Discover button and settings save
+
+Add these to `/etc/sudoers.d/dermestid` (`sudo visudo -f
+/etc/sudoers.d/dermestid`) - the main README's "Automatic updates"
+section has the full file:
 
 ```
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart camera-streamer.service
@@ -164,38 +136,31 @@ pi ALL=(root) NOPASSWD: /usr/bin/systemctl stop camera-streamer.service
 pi ALL=(root) NOPASSWD: /usr/bin/systemctl start camera-streamer.service
 ```
 
-## What changed vs. what's still open
+Without them, saving still works but the restart has to be done by
+hand, and Discover can't see the device camera-streamer is holding open.
 
-**Confirmed against real hardware (2026-09-17):** the standalone
-`camera-streamer --camera-path=/dev/video0 --camera-type=v4l2 ...`
-command in step 3 above, run manually in the foreground - real
-`/stream` and `/snapshot` requests, genuinely smooth live view.
+## H264 / `/video` (tried, reverted)
 
-**Not yet confirmed:** running it as the actual `camera-streamer.service`
-systemd unit (step 4) - EnvironmentFile substitution, `Restart=on-failure`
-recovery, and the dashboard's own reachability check
-(`/api/camera/status`) all still need a real test once it's enabled as a
-background service rather than a foreground command. The sudoers lines
-(step 5) haven't been added yet either, so the Config page's Discover
-button and camera-settings Save will keep failing to auto-restart the
-service until they are.
+camera-streamer's adaptive `/video` endpoint (HLS/MP4, which iOS can
+play natively) was tried on 2026-10-06 as a smoother alternative to the
+iOS snapshot fallback. Adding the H264 tuning flags from `--help` fixed
+`/video`'s frozen first frame, but the dashboard got noticeably slower
+and the camera availability check started flapping, so it was reverted
+(`--camera-video.disabled=1`).
 
-**Done, written against camera-streamer's documented API:**
-`camera_service.py` no longer opens the USB device at all - it only
-pulls a timelapse snapshot from camera-streamer's own `/snapshot`
-endpoint on each mode's `snapshot_interval_minutes`. `webapp.py`'s live
-view now points the dashboard straight at camera-streamer's `/stream`
-instead of relaying frames itself through Flask's dev server. The
-Config page's Camera card now configures camera-streamer's own
-device/resolution/port (written to `camera-streamer.env`) instead of a
-`cv2.VideoCapture` this project no longer has.
+It was **not** a CPU problem - the logged load stayed around 0.1 and the
+Pi stayed cool. Best guess, unconfirmed: a slow HLS client tying up
+camera-streamer's HTTP connection handling. If this is revisited, look
+at camera-streamer's connection/threading behaviour first, not just
+bitrate or resolution. `home.html` still contains the unused
+`tryVideoFallback()` path and `/api/camera/status` still returns
+`video_url`, ready for that.
 
-**Not yet done / explicitly deferred:** JPEG quality and capture-rate
-tuning are camera-streamer's own CLI flags now (see `docs/configure.md`
-in its repo - `--camera-snapshot.options=compression_quality=NN` and
-similar), not wired into the Config page - edit
-`systemd/camera-streamer.service`'s `ExecStart=` by hand if you want to
-tune those for now. Whether camera-streamer can ALSO be told to serve
-`/snapshot` and `/stream` at genuinely independent quality/resolution
-settings (rather than one shared capture config) wasn't confirmed
-either - worth checking once it's running for real.
+## Not wired into the dashboard
+
+JPEG quality and capture rate are camera-streamer CLI flags
+(`--camera-snapshot.options=compression_quality=NN` and similar - see
+`docs/configure.md` in its repo), not dashboard settings; edit
+`systemd/camera-streamer.service`'s `ExecStart=` to tune them. Whether
+`/snapshot` and `/stream` can run at independent quality/resolution
+hasn't been checked.
