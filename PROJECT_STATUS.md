@@ -643,19 +643,33 @@ that aren't obvious from reading the code cold.
   file, producing a video truncated at that point. Because a failed compile never deletes frames (by design -
   see `compile_recording()`'s docstring), the same zero-byte file is still there on the next retry, so every
   retry fails identically at the same frame count. **Not yet determined: how a frame file ends up 0 bytes in
-  the first place** - candidates not yet ruled out: the SD card running completely out of space (not just
-  under the 200MB `CAMERA_LOW_DISK_THRESHOLD_MB` safety-net threshold - actually full) during
-  `save_camera_snapshot()`'s `f.write(jpeg_bytes)`, or something upstream in camera-streamer's `/snapshot`
-  response. **If this happens again, check on the Pi before it gets compiled again:** the exact byte size of
-  the frame file near the reported position (`ls -la` sorted by name/ts in `camera/timelapse/`), free disk
-  space now and around when that frame was captured, and the event log for a `disk_space_pruned`/
-  `disk_space_low` entry near that time.
+  the first place** - checked on the Pi: 38.2GB free, no `disk_space_pruned`/`disk_space_low` events, so the
+  low-disk safety net is ruled out. `ls -la` sorted by size found exactly two 0-byte files in `camera/
+  timelapse/` (`1791764714.jpg`, Oct 11 17:25; `1792100605.jpg`, Oct 15 14:43) - still unexplained how they
+  ended up empty, but rare enough (2 of 40,023 over about a month) and not disk-space-related that it's not
+  worth chasing further unless it recurs. **If it happens again**, the same checks (free space, event log,
+  `ls -la` sorted by size in `camera/timelapse/`) are the first move.
   **Fix:** the up-front filter now also checks `os.path.getsize(...) > 0`, so a zero-byte frame is skipped
   (logged, like a missing one) instead of derailing the whole encode - the rest of the recording still
-  compiles. **Verified off-Pi:** reproduced the exact failure (zero-byte frame at a known position ->
-  "truncated" with that position reported) against the pre-fix code; same scenario compiles clean after the
-  fix (1-byte and truncated-but-nonzero JPEG frames were already fine either way - ffmpeg only chokes on
-  genuinely empty files). Not yet run against Ryan's actual stuck recording on the Pi.
+  compiles. **Confirmed on the Pi by Ryan (2026-11-06):** compiled `'Cleaning (carried over)'` successfully -
+  "2 frame(s) ... had no image file and were left out", 40,021 of 40,023 frames encoded into a 667s/972.7MB
+  video in 2726s (45min, under the current 2-thread encode cap).
+  - **Second bug found from this same compile, FIXED same commit: `climate.py` hit `sqlite3.OperationalError:
+    database is locked` during the post-compile cleanup** (climate.log, 18:50:27, "Unexpected error in control
+    loop" - caught and retried next cycle per the control loop's existing exception handling, so climate
+    control itself only missed one ~15s cycle, not a real safety issue, but worth fixing since it's the
+    safety-critical process). **Root cause:** `delete_camera_snapshots()` (called by `compile_recording()`
+    right after a successful compile, to remove the now-redundant raw frames) looped over every frame - SELECT
+    filename, `os.remove()` the file, DELETE the row - in ONE transaction, committing only once at the very
+    end. SQLite grabs the write lock on the first DELETE and holds it for the entire loop; across 40,021
+    frames that's long enough that `climate.py`'s own unrelated `log_reading()` INSERT, on a totally separate
+    connection, waited out its full 10s busy-timeout and failed. **Fix:** commits every `DELETE_COMMIT_BATCH`
+    (25) rows instead of once at the end, so the write lock is repeatedly released and climate.py's writer
+    gets frequent small openings instead of one long wait. **Verified off-Pi:** a concurrency test simulating
+    a slow SD card (an artificial per-file delete delay) plus a competing writer polling throughout - the
+    pre-fix single-transaction code failed with "database is locked" on 3/3 runs, the batched version passed
+    5/5 clean runs; a 40,000-row run with no artificial latency confirmed the extra commits add negligible
+    overhead (~1s total). Not yet reproduced on the Pi itself (would need another very large compile).
 
 - **[2026-10-14, OPEN - TOP PRIORITY] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
   compile a video causes the device to become unresponsive." Logged only - no investigation or fix yet.

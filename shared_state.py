@@ -2656,17 +2656,39 @@ def get_recording_frames(recording_id):
     return [{"ts": r[0], "mode": r[1], "filename": r[2]} for r in rows]
 
 
+#  [2026-11-06] Batch size for delete_camera_snapshots()'s commits - see
+# its docstring. A concurrency test simulating a slow SD card (contest2.py,
+# not checked in) found 200 still let a competing writer get locked out
+# often enough to matter - a batch's total hold time needs real margin
+# under climate.py's 10s busy-timeout, not just "under it on average". 25
+# keeps each hold comfortably short (well under a second even on slow
+# storage) with negligible extra commit overhead for a 40k-frame cleanup.
+DELETE_COMMIT_BATCH = 25
+
+
 def delete_camera_snapshots(ts_list):
     """Deletes specific timelapse frames (DB row + file) by timestamp -
     used after a successful video compile, when the raw frames that went
     into it are no longer needed (the video is now the lasting record;
     see camera_service.py's compile step for why keeping both
-    indefinitely isn't worth the disk space on a Pi's SD card)."""
+    indefinitely isn't worth the disk space on a Pi's SD card).
+
+    [2026-11-06] Used to do all of this - thousands of SELECT/os.remove/
+    DELETE iterations for a big recording - in ONE transaction, committed
+    only at the very end. SQLite grabs the write lock on the first DELETE
+    and holds it the whole time; on a real 40k-frame compile this ran long
+    enough that climate.py's own log_reading() INSERT (on a completely
+    unrelated connection) waited out its full 10s busy-timeout and raised
+    "database is locked" - a real hit on the safety-critical control loop
+    from a background cleanup step. Now commits every DELETE_COMMIT_BATCH
+    rows, so the write lock is released and re-acquired repeatedly instead
+    of held for the whole loop, giving climate.py's writer regular
+    openings to get in."""
     if not ts_list:
         return 0
     conn = get_db()
     removed = 0
-    for ts in ts_list:
+    for i, ts in enumerate(ts_list, 1):
         row = conn.execute("SELECT filename FROM camera_snapshots WHERE ts = ?", (ts,)).fetchone()
         if row:
             try:
@@ -2675,6 +2697,8 @@ def delete_camera_snapshots(ts_list):
                 pass
             conn.execute("DELETE FROM camera_snapshots WHERE ts = ?", (ts,))
             removed += 1
+        if i % DELETE_COMMIT_BATCH == 0:
+            conn.commit()
     conn.commit()
     conn.close()
     return removed
