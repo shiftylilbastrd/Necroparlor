@@ -52,7 +52,8 @@ auto-summaries]**
   before the compile-hang fix attempt. It holds everything from 2026-10-12 to 2026-10-18 (critical limits,
   global out-of-range margin, Breeding mode, timelapse recordings, chart setpoint bands, mode-switch
   confirmation, branch select change, today's doc pass, light/reed-switch pins, SHT31 failure logging, the Data
-  page Timelapse column). The last three weren't yet confirmed on the Pi when merged. The Pi still tracks `dev`.
+  page Timelapse column). The Timelapse column was confirmed on the Pi right after; the pins and SHT31 logging are deployed and
+  running but can only really be exercised once something is wired / a sensor fails. The Pi still tracks `dev`.
   *(Superseded: "`main` is current and complete", then "`dev` is 15 commits ahead of `main`".)*
 - **[2026-10-12] New standing workflow: all changes go on `dev`**, per Ryan
   ("all changes will be done in the dev branch ... and then merged when
@@ -670,7 +671,7 @@ that aren't obvious from reading the code cold.
     pre-fix single-transaction code failed with "database is locked" on 3/3 runs, the batched version passed
     5/5 clean runs; a 40,000-row run with no artificial latency confirmed the extra commits add negligible
     overhead (~1s total). Not yet reproduced on the Pi itself (would need another very large compile).
-  - **[2026-11-06, `dev`, NOT YET TESTED ON THE PI] Follow-up: moved camera/timelapse data into its own
+  - **[2026-11-06, `dev`, CONFIRMED ON THE PI same evening - see the end of this entry] Follow-up: moved camera/timelapse data into its own
     `timelapse.db` file, so this whole class of lock contention structurally can't happen again.** After
     fixing the specific lock above, Ryan asked whether batched commits were "a good way to do this or would
     something like a database just for timelapse data be better," then said to go ahead ("do it now and
@@ -707,6 +708,18 @@ that aren't obvious from reading the code cold.
     in-progress capture), but he still needs to `git pull` on `dev` and restart the services (`dermestid-web`,
     `dermestid-camera`, and whatever runs `climate.py`) to pick it up - the migration runs automatically on
     next startup and creates `timelapse.db` alongside `dermestid.db` in the same directory.
+    **Confirmed on the Pi by Ryan (2026-11-06, 19:43-19:56):** the Pi's first update (19:32) landed a minute
+    before this commit was pushed (19:33), so it ran `86f5bf5`; Ryan discarded the test recording he'd started,
+    updated again, and started a new one. Migration ran once at 19:43:40 - "moved 0 frame row(s), 1
+    recording(s), 1 video(s) into a separate timelapse.db", no errors; `timelapse.db` exists next to
+    `dermestid.db`. The compiled video is still in the gallery, the new "test recording" captures at its
+    1-minute interval, the Data page's Timelapse column shows it on every row from its start (so the
+    cross-database `ATTACH` join works), and a 12-frame preview built with no errors. Not yet exercised on the
+    new layout: a large compile (the case the split exists for) and a check of climate.log for "database is
+    locked" afterwards.
+    - Unrelated, same session: the Fallback SHT31 read ~95°F/34% (BLE External 58°F) - it fell off its spot by
+      the intake hose when the box was moved back inside and is lying somewhere warm. Not a code issue; it
+      just needs putting back.
 
 - **[2026-10-14, OPEN - TOP PRIORITY] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
   compile a video causes the device to become unresponsive." Logged only - no investigation or fix yet.
@@ -778,7 +791,8 @@ that aren't obvious from reading the code cold.
   - **Verified** off-Pi: 14 checks on an old-schema DB - 6 concurrent `init_db()` (no crash, one backfill, exact
     ranges, pre-migration rows untouched, migrated spans clamped), live tagging during/after a recording, rename,
     deleted recording, `before` paging through the join, CSV header + row, `/data` renders. Headless Chromium at
-    1280/390px: header + 15 cells per row, names/"--"/"(deleted)" right, no JS errors. Not yet on the Pi.
+    1280/390px: header + 15 cells per row, names/"--"/"(deleted)" right, no JS errors. **Confirmed on the Pi
+    by Ryan (2026-10-18)** - the running recording shows in the column.
   - Noticed, pre-existing, not touched: at 390px the Data page scrolls sideways by ~7px - the fixed 180px
     Download/Clear buttons don't fit a phone-width card (Logs uses the same buttons).
 
@@ -800,8 +814,8 @@ that aren't obvious from reading the code cold.
     the code had light = GPIO26, switch = GPIO24 while the diagram still showed the 2026-09-29 layout. Ryan
     (2026-10-18): neither is connected yet, and he wants the layout "where the pins are close to each other" -
     i.e. the 2026-09-29 one (relay inputs on 11/15/16/18, reed switch on 37 + GND 39). `climate.py`, README and
-    diagram now all agree. Not hardware-tested (nothing wired); on the Pi it's just a restart of
-    `dermestid-climate` via the normal update.
+    diagram now all agree. Deployed and running on the Pi (2026-10-18, climate keeps logging readings), but
+    not hardware-tested: nothing is wired to either pin yet. Check the light and door state once they are.
   - **SHT31 failure logging - restored (separate commit, same day).** `read_internal_sht31_f()`/
     `read_external_sht31_f()` now go through a shared `_read_sht31_f(get_sensor, label)`: the failure reason
     is logged to climate.log/journalctl once per streak ("Internal/Fallback SHT31 read failed: ..."), recovery
@@ -809,7 +823,9 @@ that aren't obvious from reading the code cold.
     event naming the exact pip package (`adafruit-circuitpython-sht31d`, or `adafruit-extended-bus` for the
     fallback). Same design as 2026-09-29, adapted to the current two-getter code. **Verified** with stubbed
     GPIO/board and fake sensors: 3 cycles of a missing library -> 1 log line + 1 event; recovery logged once;
-    I/O errors and empty readings log-only; readings still converted correctly (25°C -> 77.0°F).
+    I/O errors and empty readings log-only; readings still converted correctly (25°C -> 77.0°F). Deployed on
+    the Pi 2026-10-18 with both sensors reading normally, so nothing new appears; the failure path itself only
+    shows up the next time a sensor actually fails.
   - Doc fixes, for the record: README files table (missing `timelapse_encode.py`, `compile_timelapse.py`,
     `static/`, `docs/`, five templates), page names/locations throughout (Config/Settings page -> Setpoints,
     Sensors, Camera, Notifications, System; the Data history card that moved to the Logs pages), dashboard page
