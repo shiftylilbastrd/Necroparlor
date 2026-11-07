@@ -670,6 +670,43 @@ that aren't obvious from reading the code cold.
     pre-fix single-transaction code failed with "database is locked" on 3/3 runs, the batched version passed
     5/5 clean runs; a 40,000-row run with no artificial latency confirmed the extra commits add negligible
     overhead (~1s total). Not yet reproduced on the Pi itself (would need another very large compile).
+  - **[2026-11-06, `dev`, NOT YET TESTED ON THE PI] Follow-up: moved camera/timelapse data into its own
+    `timelapse.db` file, so this whole class of lock contention structurally can't happen again.** After
+    fixing the specific lock above, Ryan asked whether batched commits were "a good way to do this or would
+    something like a database just for timelapse data be better," then said to go ahead ("do it now and
+    remember there is nothing recording now so no pending frames just to one already compiled video").
+    Batching (above) only reduces the *odds* of contention - any writer touching `camera_snapshots`,
+    `timelapse_recordings`, or `timelapse_videos` still shares one SQLite file, and thus one write lock, with
+    `climate.py`'s own `readings`/`events` writes. **Change:** those three tables now live in a separate
+    `timelapse.db` file (new `get_timelapse_db()` connection helper, also WAL mode, 10s busy-timeout), while
+    `readings`/`events`/`app_meta` stay in `dermestid.db`. The two files have independent write locks, so a
+    long-running camera/timelapse operation (a big `delete_camera_snapshots()` purge, a compile's video-row
+    write) can no longer block `climate.py`'s control loop at all, not just less often. The one place that
+    legitimately needs both - the Data page's readings table, which shows which recording was active for each
+    row - uses `ATTACH DATABASE ... AS tl` to read across the two files in one query; attaching for a read-only
+    join doesn't take `timelapse.db`'s write lock, so it can't reintroduce the problem. `log_reading()`
+    (`climate.py`'s hot path) now opens its `timelapse.db` connection only briefly to look up the active
+    recording, then closes it before opening `dermestid.db` for the actual INSERT - so the hot-path writer
+    connection never holds both locks at once. **Migration:** automatic and one-time, inside `init_db()` (which
+    every service already calls at startup, unchanged call sites) - checks whether `camera_snapshots` still
+    exists in `dermestid.db`; if so, copies all rows from the three old tables into the new `timelapse.db`
+    (`INSERT OR REPLACE`, so it's safe to re-run), and only drops the old tables after that copy commits
+    successfully. Guarded by `BEGIN IMMEDIATE` so multiple services racing `init_db()` at once (normal on a
+    fresh boot) can't double-migrate or crash into each other. **Verified off-Pi:** a synthetic copy of Ryan's
+    real data (the compiled `'Cleaning (carried over)'` recording/video, mixed tagged/untagged readings)
+    migrates cleanly with every row intact; the cross-db join still resolves `recording_name` correctly on the
+    Data page, for both a reading logged while a recording is active (tagged, name resolves) and one logged
+    after it's stopped (correctly `null` - that's not a defect, there's no active recording to tag it with); a
+    6-way concurrent `init_db()` race (simulating every service starting at once) migrates exactly once with no
+    crashes or duplicate rows; a concurrency stress test (simulated slow SD-card I/O plus a competing writer)
+    shows 0/3 lock errors post-split, vs. occasional errors with batching alone at larger batch sizes; a full
+    Flask `test_client()` run through the real HTTP routes (start recording -> capture snapshots -> stop ->
+    compile via the real ffmpeg path -> video shows up in the gallery) passes end-to-end. **Not yet run on the
+    Pi itself** - per Ryan's "nothing recording now, so no pending frames, just to one already compiled video,"
+    his current data is about as low-risk a case as this migration gets (one recording, one video, no
+    in-progress capture), but he still needs to `git pull` on `dev` and restart the services (`dermestid-web`,
+    `dermestid-camera`, and whatever runs `climate.py`) to pick it up - the migration runs automatically on
+    next startup and creates `timelapse.db` alongside `dermestid.db` in the same directory.
 
 - **[2026-10-14, OPEN - TOP PRIORITY] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
   compile a video causes the device to become unresponsive." Logged only - no investigation or fix yet.

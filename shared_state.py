@@ -35,6 +35,17 @@ from zoneinfo import ZoneInfo
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DB_PATH = os.path.join(BASE_DIR, "dermestid.db")
+# [2026-11-06] Camera/timelapse data (camera_snapshots, timelapse_recordings,
+# timelapse_videos) lives in its OWN sqlite file, separate from DB_PATH -
+# see PROJECT_STATUS.md. A heavy camera/timelapse write burst (e.g. deleting
+# tens of thousands of frame rows after a big compile) can then only ever
+# hold THIS file's write lock, never DB_PATH's - so it can't block
+# climate.py's own writes (readings/events) no matter how long it runs,
+# structurally rather than relying on keeping every such operation short
+# (the 2026-11-06 batched-commit fix to delete_camera_snapshots() is still
+# in place too, but this removes the whole class of risk, not just this
+# one instance of it).
+TIMELAPSE_DB_PATH = os.path.join(BASE_DIR, "timelapse.db")
 
 # Camera output - the timelapse frames/videos below are written by
 # camera_service.py, read by webapp.py. Not git-tracked (runtime data,
@@ -1199,6 +1210,26 @@ def get_db():
     return conn
 
 
+def get_timelapse_db():
+    """Connection to the separate camera/timelapse database - see
+    TIMELAPSE_DB_PATH above. Every camera_snapshots/timelapse_recordings/
+    timelapse_videos function below uses this instead of get_db()."""
+    conn = sqlite3.connect(TIMELAPSE_DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _attach_timelapse(conn):
+    """Attaches timelapse.db (as 'tl') to an existing main-db connection,
+    for the couple of queries that join readings against
+    timelapse_recordings to show a recording's name. Always used READ-ONLY
+    on the attached side - a read never needs that file's write lock, and
+    WAL readers aren't blocked by a writer there either, so this can't
+    reintroduce the cross-file contention the split exists to avoid."""
+    conn.execute("ATTACH DATABASE ? AS tl", (TIMELAPSE_DB_PATH,))
+    return conn
+
+
 def init_db():
     conn = get_db()
     conn.execute("""
@@ -1255,11 +1286,37 @@ def init_db():
         )
     """)
     _migrate_update_state_columns(conn)
+    # [2026-11-06] camera_snapshots/timelapse_recordings/timelapse_videos
+    # used to be created here too - they now live in their own file
+    # (init_timelapse_db() below). app_meta (one-time-migration markers)
+    # stays here: it's tiny, almost never written, and both migrations
+    # that use it need to run inside a transaction with the main db anyway
+    # (the app_meta check/write itself is on readings/the main db's own
+    # state, even when the data being migrated now lives elsewhere).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+    init_timelapse_db()
+    _migrate_timelapse_tables_to_own_db()
+    _migrate_mode_sessions_to_recordings()
+    _backfill_reading_recordings()
+
+
+def init_timelapse_db():
+    """Schema for the separate camera/timelapse database - see
+    TIMELAPSE_DB_PATH. Safe to call every startup like init_db() itself."""
+    conn = get_timelapse_db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS camera_snapshots (
             ts REAL PRIMARY KEY,
             mode TEXT,
-            filename TEXT
+            filename TEXT,
+            recording_id INTEGER
         )
     """)
     # [2026-10-16] Timelapse recordings - started/stopped from the dashboard,
@@ -1279,12 +1336,6 @@ def init_db():
         )
     """)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS app_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    conn.execute("""
         CREATE TABLE IF NOT EXISTS timelapse_videos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL,
@@ -1295,14 +1346,83 @@ def init_db():
             filename TEXT,
             poster_filename TEXT,
             duration_seconds REAL,
-            file_size_bytes INTEGER
+            file_size_bytes INTEGER,
+            recording_id INTEGER,
+            name TEXT
         )
     """)
-    _migrate_timelapse_columns(conn)
     conn.commit()
     conn.close()
-    _migrate_mode_sessions_to_recordings()
-    _backfill_reading_recordings()
+
+
+def _migrate_timelapse_tables_to_own_db():
+    """[2026-11-06] One-time move of camera_snapshots/timelapse_recordings/
+    timelapse_videos out of the main db and into timelapse.db - see
+    PROJECT_STATUS.md for why (isolating camera/timelapse write activity
+    from climate.py's own writes at the sqlite-FILE level, not just by
+    keeping individual operations short).
+
+    Triggered by those tables still existing in the main db - once copied
+    and dropped there, every later start finds nothing to migrate, so no
+    separate app_meta marker is needed. BEGIN IMMEDIATE on the main db so
+    two services starting together can't both migrate (the same race
+    every other one-time migration here guards against). The new file's
+    tables are written with their own commit first; the old tables are
+    only dropped (committing the main-db transaction) after that
+    succeeds, so a crash mid-migration just means the next start finds
+    the old tables still there and safely redoes the copy (INSERT OR
+    REPLACE by primary key - idempotent)."""
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='camera_snapshots'").fetchone()
+        if not exists:
+            conn.rollback()
+            return
+        _migrate_timelapse_columns(conn)
+        snapshots = conn.execute(
+            "SELECT ts, mode, filename, recording_id FROM camera_snapshots").fetchall()
+        recordings = conn.execute(
+            "SELECT id, name, interval_minutes, started_ts, stopped_ts, status, mode_at_start, source, "
+            "video_id FROM timelapse_recordings").fetchall()
+        videos = conn.execute(
+            "SELECT id, ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, "
+            "duration_seconds, file_size_bytes, recording_id, name FROM timelapse_videos").fetchall()
+
+        tconn = get_timelapse_db()
+        try:
+            tconn.executemany(
+                "INSERT OR REPLACE INTO camera_snapshots (ts, mode, filename, recording_id) VALUES (?,?,?,?)",
+                snapshots)
+            tconn.executemany(
+                "INSERT OR REPLACE INTO timelapse_recordings (id, name, interval_minutes, started_ts, "
+                "stopped_ts, status, mode_at_start, source, video_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                recordings)
+            tconn.executemany(
+                "INSERT OR REPLACE INTO timelapse_videos (id, ts, mode, start_ts, end_ts, frame_count, "
+                "filename, poster_filename, duration_seconds, file_size_bytes, recording_id, name) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", videos)
+            tconn.commit()
+        except Exception:
+            tconn.rollback()
+            raise
+        finally:
+            tconn.close()
+
+        conn.execute("DROP TABLE camera_snapshots")
+        conn.execute("DROP TABLE timelapse_recordings")
+        conn.execute("DROP TABLE timelapse_videos")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logging.exception("Timelapse: splitting camera/timelapse tables into their own db failed - "
+                          "will retry next start")
+        return
+    finally:
+        conn.close()
+    log_event("info", f"Timelapse: moved {len(snapshots)} frame row(s), {len(recordings)} recording(s), "
+                      f"{len(videos)} video(s) into a separate timelapse.db")
 
 
 def _add_column(conn, sql):
@@ -1349,8 +1469,19 @@ def _migrate_mode_sessions_to_recordings():
     config.json, which still has it until that mode's setpoints are next
     saved. Runs inside BEGIN IMMEDIATE with an app_meta marker checked
     INSIDE the transaction - every service calls init_db() at startup,
-    and without that two of them starting together could both migrate."""
+    and without that two of them starting together could both migrate.
+
+    [2026-11-06] camera_snapshots/timelapse_recordings now live in
+    timelapse.db - the marker itself stays in the main db's app_meta
+    (just bookkeeping), so this writes to BOTH, committing the
+    timelapse-db side first and the marker only once that's confirmed
+    good. In practice this is dead code for every install from here on:
+    the per-mode snapshot_interval_minutes config field it reads was
+    removed the same day timelapse recordings shipped, so current_interval
+    is always 0 and pending is always empty - left in place only as a
+    safety net for anyone restoring a very old config.json/db pair."""
     conn = get_db()
+    created = []
     try:
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute("SELECT 1 FROM app_meta WHERE key = 'recordings_migrated'").fetchone():
@@ -1360,33 +1491,40 @@ def _migrate_mode_sessions_to_recordings():
         current = config.get("current_mode")
         modes_cfg = config.get("modes", {})
         now = time.time()
-        rows = conn.execute(
-            "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots "
-            "WHERE recording_id IS NULL GROUP BY mode").fetchall()
-        pending = {m: (c, first, last) for m, c, first, last in rows}
-        current_interval = int(modes_cfg.get(current, {}).get("snapshot_interval_minutes", 0) or 0)
-        created = []
-        if current and current_interval > 0:
-            count, first, _ = pending.pop(current, (0, None, None))
-            label = MODE_DISPLAY_NAMES.get(current, str(current).capitalize())
-            cur = conn.execute(
-                "INSERT INTO timelapse_recordings (name, interval_minutes, started_ts, stopped_ts, status, "
-                "mode_at_start, source) VALUES (?,?,?,?,?,?,?)",
-                (f"{label} (carried over)", current_interval, first if first is not None else now,
-                 None, "recording", current, "migrated"))
-            conn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND mode = ?",
-                         (cur.lastrowid, current))
-            created.append(f"active '{label} (carried over)' ({count} frames, every {current_interval} min)")
-        for mode, (count, first, last) in pending.items():
-            label = MODE_DISPLAY_NAMES.get(mode, str(mode).capitalize())
-            interval = int(modes_cfg.get(mode, {}).get("snapshot_interval_minutes", 0) or 0)
-            cur = conn.execute(
-                "INSERT INTO timelapse_recordings (name, interval_minutes, started_ts, stopped_ts, status, "
-                "mode_at_start, source) VALUES (?,?,?,?,?,?,?)",
-                (f"{label} (before recordings)", interval or None, first, last, "stopped", mode, "migrated"))
-            conn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND mode = ?",
-                         (cur.lastrowid, mode))
-            created.append(f"stopped '{label} (before recordings)' ({count} frames)")
+        tconn = get_timelapse_db()
+        try:
+            rows = tconn.execute(
+                "SELECT mode, COUNT(*), MIN(ts), MAX(ts) FROM camera_snapshots "
+                "WHERE recording_id IS NULL GROUP BY mode").fetchall()
+            pending = {m: (c, first, last) for m, c, first, last in rows}
+            current_interval = int(modes_cfg.get(current, {}).get("snapshot_interval_minutes", 0) or 0)
+            if current and current_interval > 0:
+                count, first, _ = pending.pop(current, (0, None, None))
+                label = MODE_DISPLAY_NAMES.get(current, str(current).capitalize())
+                cur = tconn.execute(
+                    "INSERT INTO timelapse_recordings (name, interval_minutes, started_ts, stopped_ts, status, "
+                    "mode_at_start, source) VALUES (?,?,?,?,?,?,?)",
+                    (f"{label} (carried over)", current_interval, first if first is not None else now,
+                     None, "recording", current, "migrated"))
+                tconn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND mode = ?",
+                             (cur.lastrowid, current))
+                created.append(f"active '{label} (carried over)' ({count} frames, every {current_interval} min)")
+            for mode, (count, first, last) in pending.items():
+                label = MODE_DISPLAY_NAMES.get(mode, str(mode).capitalize())
+                interval = int(modes_cfg.get(mode, {}).get("snapshot_interval_minutes", 0) or 0)
+                cur = tconn.execute(
+                    "INSERT INTO timelapse_recordings (name, interval_minutes, started_ts, stopped_ts, status, "
+                    "mode_at_start, source) VALUES (?,?,?,?,?,?,?)",
+                    (f"{label} (before recordings)", interval or None, first, last, "stopped", mode, "migrated"))
+                tconn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND mode = ?",
+                             (cur.lastrowid, mode))
+                created.append(f"stopped '{label} (before recordings)' ({count} frames)")
+            tconn.commit()
+        except Exception:
+            tconn.rollback()
+            raise
+        finally:
+            tconn.close()
         conn.execute("INSERT INTO app_meta (key, value) VALUES ('recordings_migrated', ?)", (str(now),))
         conn.commit()
     except Exception:
@@ -1409,7 +1547,12 @@ def _backfill_reading_recordings():
     readings. A "(carried over)" recording is clamped the same way - from
     the migration on it really was the running recording. Same BEGIN
     IMMEDIATE + app_meta marker pattern as the recordings migration, so
-    services starting together backfill exactly once."""
+    services starting together backfill exactly once.
+
+    [2026-11-06] timelapse_recordings now lives in timelapse.db - ATTACHed
+    here (read-only) so the correlated subquery below can still reference
+    it directly. The attach/read doesn't touch that file's write lock, so
+    this can't reintroduce the cross-file contention problem."""
     conn = get_db()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1418,9 +1561,10 @@ def _backfill_reading_recordings():
             return
         row = conn.execute("SELECT value FROM app_meta WHERE key = 'recordings_migrated'").fetchone()
         migrated_at = float(row[0]) if row else 0.0
+        _attach_timelapse(conn)
         cur = conn.execute(
             "UPDATE readings SET recording_id = ("
-            "  SELECT r.id FROM timelapse_recordings r"
+            "  SELECT r.id FROM tl.timelapse_recordings r"
             "  WHERE readings.ts >= MAX(r.started_ts, CASE WHEN r.source = 'migrated' THEN ? ELSE 0 END)"
             "    AND (r.stopped_ts IS NULL OR readings.ts <= r.stopped_ts)"
             "  ORDER BY r.id DESC LIMIT 1"
@@ -1617,10 +1761,15 @@ def log_reading(mode, internal_temp, internal_humidity, external_temp, external_
     with those kwargs anyway (camera-streamer has owned live view since
     2026-09-14), so removing them here is a no-op for every real
     caller."""
-    conn = get_db()
     # The running timelapse recording, if any (at most one runs at a time).
-    rec = conn.execute("SELECT id FROM timelapse_recordings WHERE status = 'recording' "
-                       "ORDER BY id DESC LIMIT 1").fetchone()
+    # [2026-11-06] A plain read via get_active_recording() (its own short
+    # connection to the separate timelapse.db) rather than a query on this
+    # function's own connection - this is climate.py's hot write path, and
+    # keeping it from ever touching timelapse.db at all (not even an
+    # ATTACHed read) means it's never even nominally affected by whatever
+    # that file's own write activity is doing.
+    rec = get_active_recording()
+    conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO readings "
         "(ts, mode, internal_temp, internal_humidity, external_temp, external_humidity, "
@@ -1629,7 +1778,7 @@ def log_reading(mode, internal_temp, internal_humidity, external_temp, external_
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (time.time(), mode, internal_temp, internal_humidity, external_temp, external_humidity,
          int(fan), int(heater), int(dehumidifier), int(vent), ble_temp, ble_humidity, wired_temp, wired_humidity,
-         active_external_source, cpu_temp_f, cpu_load_1m, rec[0] if rec else None)
+         active_external_source, cpu_temp_f, cpu_load_1m, rec["id"] if rec else None)
     )
     conn.commit()
     conn.close()
@@ -2375,12 +2524,15 @@ READINGS_EXPORT_KEYS = ["ts", "mode", "internal_temp", "internal_humidity", "ext
                         "ble_temp", "ble_humidity", "wired_temp", "wired_humidity", "active_external_source",
                         "fan", "heater", "dehumidifier", "vent", "cpu_temp_f", "cpu_load_1m",
                         "recording_id", "recording_name"]
+# [2026-11-06] timelapse_recordings now lives in timelapse.db - both
+# callers below ATTACH it (read-only, via _attach_timelapse()) before
+# running this, so `tl.timelapse_recordings` still resolves.
 _READINGS_SELECT = (
     "SELECT rd.ts, rd.mode, rd.internal_temp, rd.internal_humidity, rd.external_temp, rd.external_humidity, "
     "rd.ble_temp, rd.ble_humidity, rd.wired_temp, rd.wired_humidity, rd.active_external_source, "
     "rd.fan, rd.heater, rd.dehumidifier, rd.vent, rd.cpu_temp_f, rd.cpu_load_1m, "
     "rd.recording_id, tr.name "
-    "FROM readings rd LEFT JOIN timelapse_recordings tr ON tr.id = rd.recording_id"
+    "FROM readings rd LEFT JOIN tl.timelapse_recordings tr ON tr.id = rd.recording_id"
 )
 
 
@@ -2398,7 +2550,7 @@ def get_readings_table(limit=50, before_ts=None):
     regardless of which was active) - useful together for diagnosing
     exactly what each sensor was reporting independent of which one was
     driving control at the time."""
-    conn = get_db()
+    conn = _attach_timelapse(get_db())
     query = _READINGS_SELECT + " WHERE 1=1"
     params = []
     if before_ts:
@@ -2457,7 +2609,7 @@ def get_all_readings():
     silently "no limit" - confirmed directly against sqlite3, not
     assumed - so this just doesn't share that code path instead of
     adding a conditional LIMIT only this one caller would ever need."""
-    conn = get_db()
+    conn = _attach_timelapse(get_db())
     rows = conn.execute(_READINGS_SELECT + " ORDER BY rd.ts ASC").fetchall()
     conn.close()
     return [dict(zip(READINGS_EXPORT_KEYS, r)) for r in rows]
@@ -2561,7 +2713,7 @@ def save_camera_snapshot(mode, jpeg_bytes, recording_id=None):
     filename = f"{ts}.jpg"
     with open(os.path.join(CAMERA_TIMELAPSE_DIR, filename), "wb") as f:
         f.write(jpeg_bytes)
-    conn = get_db()
+    conn = get_timelapse_db()
     conn.execute("INSERT OR REPLACE INTO camera_snapshots (ts, mode, filename, recording_id) VALUES (?,?,?,?)",
                  (ts, mode, filename, recording_id))
     conn.commit()
@@ -2572,7 +2724,7 @@ def save_camera_snapshot(mode, jpeg_bytes, recording_id=None):
 def get_camera_snapshots(limit=50, before_ts=None):
     """Same before_ts cursor-pagination pattern as get_recent_events/
     get_readings_table, for the Camera page's timelapse gallery."""
-    conn = get_db()
+    conn = get_timelapse_db()
     query = "SELECT ts, mode, filename FROM camera_snapshots WHERE 1=1"
     params = []
     if before_ts:
@@ -2586,7 +2738,7 @@ def get_camera_snapshots(limit=50, before_ts=None):
 
 
 def get_camera_snapshot(ts):
-    conn = get_db()
+    conn = get_timelapse_db()
     row = conn.execute("SELECT ts, mode, filename FROM camera_snapshots WHERE ts = ?", (ts,)).fetchone()
     conn.close()
     if not row:
@@ -2595,7 +2747,7 @@ def get_camera_snapshot(ts):
 
 
 def get_camera_snapshot_count():
-    conn = get_db()
+    conn = get_timelapse_db()
     count = conn.execute("SELECT COUNT(*) FROM camera_snapshots").fetchone()[0]
     conn.close()
     return count
@@ -2630,7 +2782,7 @@ def prune_oldest_camera_snapshots(n):
     philosophy as climate.py's heater/fan runtime cutoffs. Returns how
     many were actually removed (can be fewer than n if there aren't
     that many yet)."""
-    conn = get_db()
+    conn = get_timelapse_db()
     rows = conn.execute("SELECT ts, filename FROM camera_snapshots ORDER BY ts ASC LIMIT ?", (n,)).fetchall()
     removed = 0
     for ts, filename in rows:
@@ -2648,7 +2800,7 @@ def prune_oldest_camera_snapshots(n):
 def get_recording_frames(recording_id):
     """Every frame of one recording, oldest first - the exact input its
     ffmpeg encode needs, in playback order."""
-    conn = get_db()
+    conn = get_timelapse_db()
     rows = conn.execute(
         "SELECT ts, mode, filename FROM camera_snapshots WHERE recording_id = ? ORDER BY ts ASC",
         (recording_id,)).fetchall()
@@ -2686,7 +2838,7 @@ def delete_camera_snapshots(ts_list):
     openings to get in."""
     if not ts_list:
         return 0
-    conn = get_db()
+    conn = get_timelapse_db()
     removed = 0
     for i, ts in enumerate(ts_list, 1):
         row = conn.execute("SELECT filename FROM camera_snapshots WHERE ts = ?", (ts,)).fetchone()
@@ -2751,7 +2903,7 @@ def validate_recording_fields(values, require_interval=True):
 
 
 def get_active_recording():
-    conn = get_db()
+    conn = get_timelapse_db()
     row = conn.execute(f"SELECT {_RECORDING_COLS} FROM timelapse_recordings WHERE status = 'recording' "
                        "ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
@@ -2759,7 +2911,7 @@ def get_active_recording():
 
 
 def get_recording(recording_id):
-    conn = get_db()
+    conn = get_timelapse_db()
     row = conn.execute(f"SELECT {_RECORDING_COLS} FROM timelapse_recordings WHERE id = ?",
                        (recording_id,)).fetchone()
     conn.close()
@@ -2769,7 +2921,7 @@ def get_recording(recording_id):
 def get_recordings_with_frames():
     """The active recording (if any) and every stopped, not-yet-compiled
     one, each with frame count / first & last frame ts - newest first."""
-    conn = get_db()
+    conn = get_timelapse_db()
     rows = conn.execute(f"SELECT {_RECORDING_COLS} FROM timelapse_recordings "
                         "WHERE status IN ('recording', 'stopped') ORDER BY id DESC").fetchall()
     stats = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
@@ -2789,7 +2941,7 @@ def start_recording(name, interval_minutes, mode_at_start, source="dashboard"):
     """Starts a new recording. Returns (recording, None), or (None, error)
     if one is already running - only one at a time. BEGIN IMMEDIATE so two
     simultaneous Start clicks can't both succeed."""
-    conn = get_db()
+    conn = get_timelapse_db()
     try:
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute("SELECT 1 FROM timelapse_recordings WHERE status = 'recording'").fetchone():
@@ -2809,7 +2961,7 @@ def start_recording(name, interval_minutes, mode_at_start, source="dashboard"):
 def stop_recording(recording_id):
     """Marks a running recording stopped. Returns the updated row, or None
     if it wasn't running."""
-    conn = get_db()
+    conn = get_timelapse_db()
     cur = conn.execute("UPDATE timelapse_recordings SET status = 'stopped', stopped_ts = ? "
                        "WHERE id = ? AND status = 'recording'", (time.time(), recording_id))
     conn.commit()
@@ -2830,7 +2982,7 @@ def update_recording(recording_id, fields):
             sets.append(f"{key} = ?")
             params.append(fields[key])
     if sets:
-        conn = get_db()
+        conn = get_timelapse_db()
         conn.execute(f"UPDATE timelapse_recordings SET {', '.join(sets)} WHERE id = ?", params + [recording_id])
         conn.commit()
         conn.close()
@@ -2886,7 +3038,7 @@ def delete_recording(recording_id, orphan_min_age_seconds=60):
     if lock is None:
         return {"error": "A timelapse is encoding right now - try again once it finishes.", "busy": True}
     try:
-        conn = get_db()
+        conn = get_timelapse_db()
         rows = conn.execute("SELECT ts, filename FROM camera_snapshots WHERE recording_id = ?",
                             (recording_id,)).fetchall()
         removed, freed = 0, 0
@@ -2917,7 +3069,7 @@ def adopt_orphan_frames():
     rec = get_active_recording()
     if not rec:
         return 0
-    conn = get_db()
+    conn = get_timelapse_db()
     cur = conn.execute("UPDATE camera_snapshots SET recording_id = ? WHERE recording_id IS NULL AND ts >= ?",
                        (rec["id"], rec["started_ts"]))
     conn.commit()
@@ -2926,7 +3078,7 @@ def adopt_orphan_frames():
 
 
 def mark_recording_compiled(recording_id, video_id):
-    conn = get_db()
+    conn = get_timelapse_db()
     conn.execute("UPDATE timelapse_recordings SET status = 'compiled', video_id = ? WHERE id = ?",
                  (video_id, recording_id))
     conn.commit()
@@ -2992,7 +3144,7 @@ def save_timelapse_video(mode, start_ts, end_ts, frame_count, filename, poster_f
     new row's id, which is what the download/poster/delete routes
     actually address a video by."""
     os.makedirs(CAMERA_TIMELAPSE_VIDEOS_DIR, exist_ok=True)
-    conn = get_db()
+    conn = get_timelapse_db()
     ts = time.time()
     cursor = conn.execute(
         "INSERT INTO timelapse_videos "
@@ -3013,7 +3165,7 @@ def get_timelapse_videos(limit=50, before_ts=None):
     paginates by `ts` (compile time), not `id` - either works since they
     sort identically, but ts is the one already meaningful to a caller
     building a "load older" cursor."""
-    conn = get_db()
+    conn = get_timelapse_db()
     query = ("SELECT id, ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, "
               "duration_seconds, file_size_bytes, recording_id, name FROM timelapse_videos WHERE 1=1")
     params = []
@@ -3033,7 +3185,7 @@ def get_timelapse_videos(limit=50, before_ts=None):
 
 
 def get_timelapse_video(video_id):
-    conn = get_db()
+    conn = get_timelapse_db()
     row = conn.execute(
         "SELECT id, ts, mode, start_ts, end_ts, frame_count, filename, poster_filename, "
         "duration_seconds, file_size_bytes, recording_id, name FROM timelapse_videos WHERE id = ?",
@@ -3050,7 +3202,7 @@ def get_timelapse_video(video_id):
 def delete_timelapse_video(video_id):
     """Deletes one compiled video (DB row + the .mp4 and its poster .jpg).
     Returns True if a row was actually found and removed."""
-    conn = get_db()
+    conn = get_timelapse_db()
     row = conn.execute("SELECT filename, poster_filename FROM timelapse_videos WHERE id = ?", (video_id,)).fetchone()
     if not row:
         conn.close()
