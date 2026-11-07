@@ -15,9 +15,8 @@ rather than just editing it silently.
 
 ## Current state (as of this writing)
 
-**[TOP PRIORITY, set by Ryan 2026-10-14] Timelapse compile makes the Pi unresponsive.** This comes before any
-other open work. Full details, suspects and diagnostics are in the 2026-10-14 entry at the top of "Open
-threads / known issues". Remove this banner only when that entry is resolved and verified on the Pi.
+*(The 2026-10-14 TOP PRIORITY banner - "Timelapse compile makes the Pi unresponsive" - was removed 2026-11-06:
+resolved and verified on the Pi, see that entry in Open threads. Reopen it if a compile ever hangs the Pi again.)*
 
 **[STANDING CONTEXT, stated by Ryan 2026-09-14, items 1-2 UPDATED by Ryan
 2026-10-06 - re-read this every session, it keeps getting lost across
@@ -721,7 +720,8 @@ that aren't obvious from reading the code cold.
       the intake hose when the box was moved back inside and is lying somewhere warm. Not a code issue; it
       just needs putting back.
 
-- **[2026-10-14, OPEN - TOP PRIORITY] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
+- **[RESOLVED 2026-11-06 - verified on the Pi, see the last sub-bullet] [was: 2026-10-14, OPEN - TOP PRIORITY]
+  Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
   compile a video causes the device to become unresponsive." Logged only - no investigation or fix yet.
   **Still unknown (fill in on the next occurrence):** which path triggered it - the Timelapse page's
   "Build preview" (`webapp.py` -> `_build_preview()`, runs inside the dashboard process), the automatic
@@ -773,6 +773,14 @@ that aren't obvious from reading the code cold.
     **Remote-shell notes from the same day:** computer use can't type into PuTTY (terminals are click-only),
     and `ttyd` isn't in the Trixie repositories - a web terminal would need the upstream `ttyd.aarch64` binary,
     which wasn't worth downloading over that link.
+  - **[2026-11-06] Verified fixed on the Pi.** The 40,021-frame `'Cleaning (carried over)'` compile (see the
+    2026-11-06 zero-byte entry at the top of Open threads) ran 45 min (2726s) under the 2-thread + `ionice`
+    encode from `f6c962e`, and Ryan reports the dashboard stayed responsive **the whole time, with it open on two
+    devices and one of them playing the preview**. That's a far bigger job than anything that hung before. The
+    thread cap is the most likely reason (whether `ionice` did anything depends on the SD card's I/O scheduler,
+    never checked). The Wi-Fi's condition during the original hang was never captured, so suspect 4 can't be
+    fully ruled out as a contributor to it. Banner removed. **Reopen this if a compile ever hangs the Pi
+    again** - the diagnostics list above is still the place to start.
 
 - **[2026-10-18, `dev`] Data page: new "Timelapse" column** (Ryan: "add a timelapse column to the log table" -
   read as Logs -> Data, the readings table). Shows the name of the timelapse recording that was running when each
