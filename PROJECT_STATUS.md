@@ -651,6 +651,11 @@ that aren't obvious from reading the code cold.
     three; installed line renders; no JS errors, no sideways scroll. The 5-minute timeout path wasn't run.
     **Not yet on the Pi** - the first real test is the update that installs it, but that run still uses the
     OLD page's code (the old 8s reload); the new screen shows from the update after this one.
+  - *(Same evening, Ryan: "get rid of all the extra verbiage... make the dev and restart descriptions short.")*
+    Removed the page subtitle and both section titles (the two cards now share one row on desktop); the
+    testing-branch warning is now "⚠ Testing branch - switch back to main when done."; Restart reads "Reboots
+    the Pi. Everything is offline for about a minute." (same wording in its confirm box); a few status
+    messages shortened. No behaviour change. Checked in headless Chromium at 1280/390px.
 
 - **[2026-11-06, `dev`, FIXED] Timelapse compile failing every retry: "video came out truncated (8637 of
   40023 frames) - a frame file went missing during the encode."** Ryan reported this on `'Cleaning (carried

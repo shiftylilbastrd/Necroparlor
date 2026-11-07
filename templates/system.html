@@ -39,9 +39,6 @@
   .update-actions .save-btn { margin-top: 0; }
 </style>
 
-<div class="subtitle">Software updates and the Pi itself - things you set up once and rarely touch</div>
-
-<div class="section-title">Software updates</div>
 <div class="grid">
   <div class="card" style="max-width:420px;">
     <h2>Software updates</h2>
@@ -51,20 +48,16 @@
         on <code>{{ build.branch }}</code><br>
         <span class="stat-sub">"{{ build.subject }}" · <span id="installedBuildDate"></span></span>
       {% else %}
-        <span class="stat-sub">Installed build unknown - git couldn't be read (see the web service's log).</span>
+        <span class="stat-sub">Installed build unknown.</span>
       {% endif %}
     </div>
     <div class="field">
       <label>Branch to track</label>
-      <!-- Auto-saves on change (see onBranchSelectManualChange below) - no
-           separate click needed, same as the Internal source select on
-           the Settings page. [2026-10-16] The old "Save branch" button
-           was removed as redundant (Ryan): a failed save now snaps the
-           select back to the last saved branch, so picking it again IS
-           the retry, and "Check now" below re-runs the check. -->
+      <!-- Auto-saves on change; a failed save snaps back to the saved branch
+           (onBranchSelectManualChange). -->
       <select id="updateBranchSelect" onchange="onBranchSelectManualChange()"></select>
       <div class="stat-sub" id="updateBranchWarning" style="margin-top:6px; display:none; color:var(--warn);">
-        ⚠ Non-main branches are for deliberate testing - running code that hasn't gone through the same scrutiny as main. Switching back to main after testing is recommended, not something to leave changed long-term. A branch switch also can't automatically handle deeper structural changes (like a renamed systemd service) - check that branch's own notes for any manual steps.
+        ⚠ Testing branch - switch back to main when done.
       </div>
     </div>
     <div class="save-msg" id="updateBranchMsg"></div>
@@ -81,13 +74,9 @@
     <button class="save-btn" id="applyUpdateBtn" onclick="applyUpdate()" style="margin-top:10px; display:none;">Update now</button>
     <div class="save-msg" id="applyUpdateMsg"></div>
   </div>
-</div>
-
-<div class="section-title">System</div>
-<div class="grid">
-  <div class="card" style="max-width:420px;">
+  <div class="card" style="max-width:420px; align-self:start;">
     <h2>Restart</h2>
-    <div class="stat-sub" style="margin-bottom:10px;">Reboots the Raspberry Pi itself, not just one service. Climate control, the camera, and this dashboard will all be briefly unreachable (typically under a minute) while it comes back up.</div>
+    <div class="stat-sub" style="margin-bottom:10px;">Reboots the Pi. Everything is offline for about a minute.</div>
     <button class="danger-btn" id="restartPiBtn" onclick="restartPi()">Restart Pi</button>
     <div class="save-msg" id="restartPiMsg"></div>
   </div>
@@ -180,7 +169,7 @@ async function saveUpdateBranch() {
     const select = document.getElementById('updateBranchSelect');
     select.value = savedUpdateBranch;
     onBranchSelectChange();
-    msg.textContent = `${data.error || 'Save failed'} - still tracking ${savedUpdateBranch}. Pick the branch again to retry.`;
+    msg.textContent = `${data.error || 'Save failed'} - still on ${savedUpdateBranch}.`;
     msg.className = 'save-msg err';
   } else {
     savedUpdateBranch = branch;
@@ -196,7 +185,7 @@ function renderUpdateStatus(status) {
   const text = document.getElementById('updateStatusText');
   const btn = document.getElementById('applyUpdateBtn');
   if (!status || !status.checked_at) {
-    text.textContent = 'No check has run yet - first check happens shortly after the web service starts.';
+    text.textContent = 'Not checked yet.';
     btn.style.display = 'none';
     return;
   }
@@ -379,7 +368,7 @@ async function checkForUpdateNow() {
     renderUpdateStatus(data.status);
   } catch (e) {
     const text = document.getElementById('updateStatusText');
-    text.textContent = 'Check failed - see the Logs page or try again in a moment.';
+    text.textContent = 'Check failed - try again.';
   }
   btn.disabled = false;
   btn.textContent = originalText;
@@ -396,13 +385,13 @@ async function checkForUpdateNow() {
 // tells you to check back, since guessing a reload delay that's right
 // for both a Pi 3 and a Pi 4/5 isn't realistic.
 async function restartPi() {
-  if (!confirm('Restart the Raspberry Pi? Climate control, the camera, and this dashboard will all be briefly unreachable while it reboots.')) {
+  if (!confirm('Restart the Pi? Everything will be offline for about a minute.')) {
     return;
   }
   const btn = document.getElementById('restartPiBtn');
   const msg = document.getElementById('restartPiMsg');
   btn.disabled = true;
-  msg.textContent = 'Restarting - this page (and everything else) will go unreachable shortly, then come back on its own in a minute or two.';
+  msg.textContent = 'Restarting - back in about a minute.';
   msg.className = 'save-msg';
   try {
     await fetch('/api/restart-pi', { method: 'POST' });
