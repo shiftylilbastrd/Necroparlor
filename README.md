@@ -348,7 +348,7 @@ pi ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 chmod +x auto_update.sh
 ```
 
-That's it — "Update now" runs `auto_update.sh` as a detached background process so it survives `dermestid-web.service` restarting itself partway through.
+That's it — "Update now" runs `auto_update.sh` as a detached background process so it survives `dermestid-web.service` restarting itself partway through. While it runs, the page is covered by an **Updating – please wait** screen (nothing behind it can be clicked); once the dashboard is back on the new code it goes to the Home page. If the script finishes without restarting anything — nothing to update, or it failed partway — the screen says so and shows the script's output. The top of the Software updates card shows the **installed build**: a build number (the commit count, so it only goes up), the commit hash, branch, and commit message.
 
 **Fully automatic** (no button, checks/applies every 5 minutes on its own):
 ```bash

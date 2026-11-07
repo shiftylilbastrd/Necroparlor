@@ -631,6 +631,27 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-11-06, `dev`] System page: installed build + "Updating - please wait" screen.** Ryan's two requests.
+  - **Installed build**, top of the Software updates card: "Build N · <hash> on <branch>", the commit message
+    and date. N is `git rev-list --count HEAD` - a plain number that only goes up. Read ONCE when
+    `webapp.py` starts (`BUILD_INFO`), so it shows the code actually running, not something pulled but not
+    yet restarted. Also served by the new `GET /api/version` (plus `started_at`, the process start time).
+  - **Update overlay:** "Update now" covers the page (z-index 2000, everything else `inert`), then polls
+    `/api/version` every 2s. Done = `started_at` changed, i.e. a new dashboard process - and since
+    `auto_update.sh` restarts the dashboard LAST, every service is already restarted by then; it shows the new
+    build and goes to `/`. `api_apply_update()` now keeps the `Popen` handle (and refuses a second concurrent
+    run with 409); if the script has exited while the OLD process still answers, `/api/version` returns its
+    exit code and this run's log output (from a marker line written to `logs/apply_update.log`), and the
+    overlay shows "Nothing to update" or "Update didn't finish" + the output, with a Go to Home button. After
+    5 min with no restart it offers Keep waiting / Go to Home (slow `git pull` over the in-box Wi-Fi).
+  - **Verified** off-Pi against a real git clone with the dashboard under a restart-on-exit supervisor
+    (standing in for systemd) and three stand-in `auto_update.sh` scripts, in headless Chromium at 390px:
+    success (overlay -> "Restarting the dashboard" -> "Update complete, Build N" -> lands on `/`), nothing to
+    update, and a failing script (exit 1, output shown). Nav behind the overlay is inert and unclickable in all
+    three; installed line renders; no JS errors, no sideways scroll. The 5-minute timeout path wasn't run.
+    **Not yet on the Pi** - the first real test is the update that installs it, but that run still uses the
+    OLD page's code (the old 8s reload); the new screen shows from the update after this one.
+
 - **[2026-11-06, `dev`, FIXED] Timelapse compile failing every retry: "video came out truncated (8637 of
   40023 frames) - a frame file went missing during the encode."** Ryan reported this on `'Cleaning (carried
   over)'` (40,023 frames), identical on three separate attempts (same frame count every time). A different

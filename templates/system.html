@@ -1,6 +1,43 @@
 {% extends "base.html" %}
 {% block title %}System - Necroparlor{% endblock %}
 {% block content %}
+<style>
+  .installed-build { font-size: 0.85rem; margin: 0 0 14px 0; line-height: 1.45; }
+  .installed-build .build-num { font-weight: 700; }
+  .installed-build code { font-size: 0.8rem; }
+  /* Full-screen "Updating" overlay - covers everything (nav included, above
+     the confirm modal's z-index 1000), and the page behind it is made inert,
+     so nothing can be clicked or tabbed to while services restart underneath. */
+  .update-overlay {
+    position: fixed; inset: 0; z-index: 2000; display: none;
+    align-items: center; justify-content: center; padding: 16px;
+    background: rgba(0,0,0,0.75);
+  }
+  .update-overlay.show { display: flex; }
+  .update-box {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+    padding: 24px 20px; max-width: 440px; width: 100%; text-align: center;
+  }
+  .update-box:focus { outline: none; }  /* focused only so keyboard focus leaves the inert page */
+  .update-box h3 { margin: 12px 0 6px 0; font-size: 1.05rem; }
+  .update-box p { margin: 0; font-size: 0.85rem; color: var(--text-dim); }
+  .update-spinner {
+    width: 34px; height: 34px; margin: 0 auto; border-radius: 50%;
+    border: 3px solid var(--panel-border); border-top-color: var(--accent);
+    animation: update-spin 0.9s linear infinite;
+  }
+  .update-box.done .update-spinner, .update-box.failed .update-spinner { display: none; }
+  @keyframes update-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .update-spinner { animation-duration: 3s; } }
+  .update-box pre {
+    text-align: left; max-height: 180px; overflow: auto; font-size: 0.72rem; margin: 12px 0 0 0;
+    padding: 8px; background: var(--bg); border: 1px solid var(--panel-border); border-radius: 6px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .update-actions { display: none; justify-content: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .update-box.failed .update-actions { display: flex; }
+  .update-actions .save-btn { margin-top: 0; }
+</style>
 
 <div class="subtitle">Software updates and the Pi itself - things you set up once and rarely touch</div>
 
@@ -8,6 +45,15 @@
 <div class="grid">
   <div class="card" style="max-width:420px;">
     <h2>Software updates</h2>
+    <div class="installed-build" id="installedBuild">
+      {% if build.build %}
+        Installed: <span class="build-num">Build {{ build.build }}</span> · <code>{{ build.commit }}</code>
+        on <code>{{ build.branch }}</code><br>
+        <span class="stat-sub">"{{ build.subject }}" · <span id="installedBuildDate"></span></span>
+      {% else %}
+        <span class="stat-sub">Installed build unknown - git couldn't be read (see the web service's log).</span>
+      {% endif %}
+    </div>
     <div class="field">
       <label>Branch to track</label>
       <!-- Auto-saves on change (see onBranchSelectManualChange below) - no
@@ -44,6 +90,20 @@
     <div class="stat-sub" style="margin-bottom:10px;">Reboots the Raspberry Pi itself, not just one service. Climate control, the camera, and this dashboard will all be briefly unreachable (typically under a minute) while it comes back up.</div>
     <button class="danger-btn" id="restartPiBtn" onclick="restartPi()">Restart Pi</button>
     <div class="save-msg" id="restartPiMsg"></div>
+  </div>
+</div>
+
+<div class="update-overlay" id="updateOverlay" role="alertdialog" aria-modal="true"
+     aria-labelledby="updateTitle" aria-describedby="updateDetail">
+  <div class="update-box" id="updateBox">
+    <div class="update-spinner" aria-hidden="true"></div>
+    <h3 id="updateTitle">Updating - please wait</h3>
+    <p id="updateDetail" aria-live="polite">Pulling the new code.</p>
+    <pre id="updateOutput" hidden></pre>
+    <div class="update-actions">
+      <button class="save-btn" id="updateKeepWaitingBtn" onclick="keepWaitingForUpdate()">Keep waiting</button>
+      <button class="save-btn" onclick="window.location.href='/'">Go to Home</button>
+    </div>
   </div>
 </div>
 
@@ -173,21 +233,139 @@ async function saveUpdateInterval() {
   }
 }
 
-async function applyUpdate() {
-  const btn = document.getElementById('applyUpdateBtn');
-  const msg = document.getElementById('applyUpdateMsg');
-  btn.disabled = true;
-  msg.textContent = 'Applying update - this page will stop responding for a few seconds while services restart, then reload automatically.';
-  msg.className = 'save-msg';
-  try {
-    await fetch('/api/apply-update', { method: 'POST' });
-  } catch (e) {
-    // The web service can restart before this request's response makes
-    // it back - that looks like a network error in the browser but
-    // isn't actually a failure, so it's deliberately not surfaced as one.
-  }
-  setTimeout(() => { window.location.reload(); }, 8000);
+// --- Update overlay ---
+// [2026-11-06] "Update now" covers the whole page with an "Updating - please
+// wait" box (everything behind it is made inert, so nothing else can be
+// clicked or tabbed to mid-update) and polls /api/version until the
+// dashboard answers from a NEW process (started_at changed), then goes to
+// the Home page. auto_update.sh restarts the dashboard LAST, so a new
+// process means every service has already been restarted. If the update
+// script exits while the OLD process is still answering, nothing restarted
+// (no update to apply, or it failed partway) - say so and show the
+// script's output instead of spinning forever.
+const UPDATE_POLL_MS = 2000;
+const UPDATE_GIVE_UP_MS = 5 * 60 * 1000;  // a slow `git pull` over bad Wi-Fi can take minutes
+const PAGE_STARTED_AT = {{ build_started_at if build_started_at else "null" }};
+let updateWatch = null;
+
+function setUpdateOverlay(state, title, detail, output) {
+  const box = document.getElementById('updateBox');
+  box.classList.toggle('done', state === 'done');
+  box.classList.toggle('failed', state === 'failed');
+  document.getElementById('updateTitle').textContent = title;
+  document.getElementById('updateDetail').textContent = detail;
+  const pre = document.getElementById('updateOutput');
+  pre.hidden = !output;
+  pre.textContent = output || '';
 }
+
+function showUpdateOverlay() {
+  const overlay = document.getElementById('updateOverlay');
+  overlay.classList.add('show');
+  // Make everything that isn't (and doesn't contain) the overlay inert, at
+  // every level down to the overlay - no clicks, no keyboard focus.
+  let node = overlay;
+  while (node && node !== document.body) {
+    for (const sib of node.parentElement.children) {
+      if (sib !== node && sib.tagName !== 'SCRIPT' && sib.tagName !== 'STYLE') sib.inert = true;
+    }
+    node = node.parentElement;
+  }
+  document.body.style.overflow = 'hidden';
+  overlay.querySelector('.update-box').setAttribute('tabindex', '-1');
+  overlay.querySelector('.update-box').focus();
+}
+
+async function fetchVersion() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch('/api/version', { cache: 'no-store', signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function applyUpdate() {
+  document.getElementById('applyUpdateBtn').disabled = true;
+  showUpdateOverlay();
+  setUpdateOverlay('busy', 'Updating - please wait',
+    "Pulling the new code and restarting services. Don't close this page.");
+  let startedAt = PAGE_STARTED_AT;
+  try {
+    startedAt = (await fetchVersion()).started_at;  // freshest value, in case the page is stale
+  } catch (e) { /* keep the page-load value */ }
+  try {
+    const res = await fetch('/api/apply-update', { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setUpdateOverlay('failed', "Update didn't start", data.error || `The Pi answered ${res.status}.`);
+      document.getElementById('updateKeepWaitingBtn').style.display = 'none';
+      return;
+    }
+  } catch (e) {
+    // The dashboard can restart before this response arrives - not a failure.
+  }
+  updateWatch = { startedAt, since: Date.now(), sawDown: false };
+  pollUpdate();
+}
+
+async function pollUpdate() {
+  const w = updateWatch;
+  if (!w) return;
+  let v = null;
+  try { v = await fetchVersion(); } catch (e) { v = null; }
+  if (v && w.startedAt !== null && v.started_at !== w.startedAt) {
+    const label = v.build ? `Build ${v.build} (${v.commit})` : 'the new version';
+    setUpdateOverlay('done', 'Update complete', `Now running ${label}. Going to the Home page...`);
+    updateWatch = null;
+    setTimeout(() => { window.location.href = '/'; }, 1500);
+    return;
+  }
+  if (v && v.update && !v.update.running) {
+    // The script has exited but this is still the old dashboard process.
+    const nothing = /No update available/.test(v.update.output || '');
+    setUpdateOverlay('failed',
+      nothing ? 'Nothing to update' : "Update didn't finish",
+      nothing ? 'The Pi is already on the latest commit - nothing was restarted.'
+              : `The update script stopped (exit code ${v.update.exit_code}) without restarting the dashboard. Its output:`,
+      nothing ? '' : (v.update.output || '(no output)'));
+    document.getElementById('updateKeepWaitingBtn').style.display = 'none';
+    updateWatch = null;
+    return;
+  }
+  if (!v) {
+    w.sawDown = true;
+    setUpdateOverlay('busy', 'Updating - please wait',
+      'Restarting the dashboard - it will be unreachable for a few seconds.');
+  }
+  if (Date.now() - w.since > UPDATE_GIVE_UP_MS) {
+    setUpdateOverlay('failed', 'Still waiting',
+      w.sawDown ? "The dashboard went down and hasn't come back after 5 minutes. Check the Pi is reachable, or see logs/apply_update.log on it."
+                : 'No restart after 5 minutes - the download may just be very slow. See logs/apply_update.log on the Pi.');
+    document.getElementById('updateKeepWaitingBtn').style.display = '';
+    return;  // paused until "Keep waiting"
+  }
+  setTimeout(pollUpdate, UPDATE_POLL_MS);
+}
+
+function keepWaitingForUpdate() {
+  if (!updateWatch) return;
+  updateWatch.since = Date.now();
+  setUpdateOverlay('busy', 'Updating - please wait', 'Still waiting for the dashboard to restart.');
+  pollUpdate();
+}
+
+(function showInstalledDate() {
+  const el = document.getElementById('installedBuildDate');
+  const ts = {{ build.committed_at if build.committed_at else "null" }};
+  if (el && ts) {
+    el.textContent = 'committed ' + new Date(ts * 1000).toLocaleString([], {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+})();
 
 async function checkForUpdateNow() {
   const btn = document.getElementById('checkNowBtn');

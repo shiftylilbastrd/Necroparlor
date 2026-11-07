@@ -30,6 +30,39 @@ import timelapse_encode
 
 app = Flask(__name__)
 
+
+def _read_build_info():
+    """The git commit this dashboard process was started from - read ONCE at
+    startup, so it describes the code actually running, not whatever a later
+    `git pull` put on disk without a restart. "build" is the commit count on
+    HEAD: a plain number that goes up with every commit, easier to compare at
+    a glance than a hash. [2026-11-06] For the System page's "Installed"
+    line and the update overlay (which watches started_at change to know the
+    dashboard really restarted)."""
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=state.BASE_DIR, capture_output=True,
+                              text=True, timeout=10, check=True).stdout.strip()
+    try:
+        return {"build": int(git("rev-list", "--count", "HEAD")),
+                "commit": git("rev-parse", "--short", "HEAD"),
+                "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+                "subject": git("log", "-1", "--format=%s"),
+                "committed_at": float(git("log", "-1", "--format=%ct"))}
+    except Exception:
+        logging.exception("Could not read the installed build from git")
+        return {"build": None, "commit": None, "branch": None, "subject": None, "committed_at": None}
+
+
+BUILD_INFO = _read_build_info()
+WEB_STARTED_AT = time.time()
+
+# The auto_update.sh run started from the dashboard, if any - lets
+# /api/version say "the update script finished but the dashboard never
+# restarted" (a failed or no-op update) instead of the overlay waiting forever.
+_update_proc = None
+_update_log_offset = 0
+APPLY_UPDATE_LOG = os.path.join(state.BASE_DIR, "logs", "apply_update.log")
+
 # [2026-09-14] Live view switched to camera-streamer (see
 # docs/camera-streamer-setup.md and PROJECT_STATUS.md) - webapp.py no
 # longer relays live frames itself (the dashboard's <img> points
@@ -85,7 +118,8 @@ def camera_page():
 
 @app.route("/system")
 def system_page():
-    return render_template("system.html", active_page="system")
+    return render_template("system.html", active_page="system", build=BUILD_INFO,
+                           build_started_at=WEB_STARTED_AT)
 
 
 @app.route("/timelapse")
@@ -1188,12 +1222,17 @@ def api_apply_update():
     message and reload rather than wait for a response that may never
     come if the restart happens first.
     """
+    global _update_proc, _update_log_offset
+    if _update_proc is not None and _update_proc.poll() is None:
+        return jsonify({"error": "An update is already running."}), 409
     script_path = os.path.join(state.BASE_DIR, "auto_update.sh")
-    log_dir = os.path.join(state.BASE_DIR, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "apply_update.log")
-    log_file = open(log_path, "a")
-    subprocess.Popen(
+    os.makedirs(os.path.dirname(APPLY_UPDATE_LOG), exist_ok=True)
+    log_file = open(APPLY_UPDATE_LOG, "a")
+    log_file.write(f"\n=== update started from the dashboard "
+                   f"{datetime.datetime.now(state.LOCAL_TZ):%Y-%m-%d %H:%M:%S} ===\n")
+    log_file.flush()
+    _update_log_offset = log_file.tell()  # this run's output starts here
+    _update_proc = subprocess.Popen(
         ["bash", script_path],
         cwd=state.BASE_DIR,
         stdout=log_file, stderr=subprocess.STDOUT,
@@ -1201,6 +1240,31 @@ def api_apply_update():
     )
     state.log_event("info", "Update triggered manually from the dashboard")
     return jsonify({"status": "started"})
+
+
+@app.route("/api/version")
+def api_version():
+    """The build this dashboard process is running and when it started - the
+    update overlay polls this until started_at changes (the dashboard really
+    restarted on the new code). If an update this process launched has
+    already exited while the process is still alive, auto_update.sh finished
+    WITHOUT restarting the dashboard - nothing to apply, or it failed partway -
+    so its exit code and output are returned for the overlay to show."""
+    body = {**BUILD_INFO, "started_at": WEB_STARTED_AT, "update": None}
+    if _update_proc is not None:
+        code = _update_proc.poll()
+        update = {"running": code is None, "exit_code": code, "output": None}
+        if code is not None:
+            try:
+                with open(APPLY_UPDATE_LOG, "r", errors="replace") as f:
+                    f.seek(_update_log_offset)
+                    update["output"] = f.read()[-3000:]
+            except OSError:
+                pass
+        body["update"] = update
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/api/restart-pi", methods=["POST"])
