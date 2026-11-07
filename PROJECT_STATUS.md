@@ -631,6 +631,32 @@ that aren't obvious from reading the code cold.
 
 ## Open threads / known issues
 
+- **[2026-11-06, `dev`, FIXED] Timelapse compile failing every retry: "video came out truncated (8637 of
+  40023 frames) - a frame file went missing during the encode."** Ryan reported this on `'Cleaning (carried
+  over)'` (40,023 frames), identical on three separate attempts (same frame count every time). A different
+  issue from the TOP PRIORITY "Pi becomes unresponsive" entry below - this one fails fast and cleanly, it just
+  fails the SAME way every retry.
+  **Root cause:** `encode()`'s up-front "skip frames whose file is already missing" filter (added 2026-09-30,
+  see the compile-lock entry further down) only checked `os.path.exists()`. A frame file that EXISTS on disk
+  but is 0 bytes passes that check, gets fed to ffmpeg's concat demuxer, which can't open it either - and hits
+  the exact same "Impossible to open" / stops-reading-the-rest-of-the-list behavior as a genuinely missing
+  file, producing a video truncated at that point. Because a failed compile never deletes frames (by design -
+  see `compile_recording()`'s docstring), the same zero-byte file is still there on the next retry, so every
+  retry fails identically at the same frame count. **Not yet determined: how a frame file ends up 0 bytes in
+  the first place** - candidates not yet ruled out: the SD card running completely out of space (not just
+  under the 200MB `CAMERA_LOW_DISK_THRESHOLD_MB` safety-net threshold - actually full) during
+  `save_camera_snapshot()`'s `f.write(jpeg_bytes)`, or something upstream in camera-streamer's `/snapshot`
+  response. **If this happens again, check on the Pi before it gets compiled again:** the exact byte size of
+  the frame file near the reported position (`ls -la` sorted by name/ts in `camera/timelapse/`), free disk
+  space now and around when that frame was captured, and the event log for a `disk_space_pruned`/
+  `disk_space_low` entry near that time.
+  **Fix:** the up-front filter now also checks `os.path.getsize(...) > 0`, so a zero-byte frame is skipped
+  (logged, like a missing one) instead of derailing the whole encode - the rest of the recording still
+  compiles. **Verified off-Pi:** reproduced the exact failure (zero-byte frame at a known position ->
+  "truncated" with that position reported) against the pre-fix code; same scenario compiles clean after the
+  fix (1-byte and truncated-but-nonzero JPEG frames were already fine either way - ffmpeg only chokes on
+  genuinely empty files). Not yet run against Ryan's actual stuck recording on the Pi.
+
 - **[2026-10-14, OPEN - TOP PRIORITY] Compiling a timelapse video makes the Pi unresponsive.** Reported by Ryan: "trying to
   compile a video causes the device to become unresponsive." Logged only - no investigation or fix yet.
   **Still unknown (fill in on the next occurrence):** which path triggered it - the Timelapse page's

@@ -197,6 +197,16 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
     frames that went in; a short video is a failure (result "error" says
     so), so the caller keeps the frames.
 
+    [2026-11-06] A frame file that EXISTS but is 0 bytes hits the exact
+    same "Impossible to open"/stops-reading-the-list behavior as a
+    genuinely missing one (confirmed by reproducing it directly) - but
+    the up-front filter below used to only check os.path.exists(), so a
+    single zero-byte frame anywhere in a session silently truncated every
+    compile of it, forever (a failed compile never deletes frames, so the
+    same bad file keeps failing every retry identically). Now checked by
+    size too, so a zero-byte frame is skipped like a missing one instead
+    of derailing the whole encode.
+
     timeout_seconds: "auto" scales with frame count (timeout_for), None
     means no limit. overlay: None = use the config setting.
     If an overlay encode fails for a reason other than a timeout, it's
@@ -221,8 +231,18 @@ def encode(mode, frames, video_path, timeout_seconds="auto", overlay=None,
         return {"ok": False, "timed_out": False, "elapsed": 0, "overlay": False, "fps": fps,
                 "error": "ffmpeg not installed (sudo apt install ffmpeg)"}
 
-    present = [f for f in frames
-               if os.path.exists(os.path.join(state.CAMERA_TIMELAPSE_DIR, f["filename"]))]
+    def _frame_file_ok(filename):
+        # A 0-byte file still passes os.path.exists() - but ffmpeg's
+        # concat demuxer can't open it either, with the exact same
+        # list-reading-stops-here effect as a missing file (see the
+        # 2026-11-06 docstring note above). Treat it the same way: not
+        # present, so it's skipped instead of derailing the encode.
+        try:
+            return os.path.getsize(os.path.join(state.CAMERA_TIMELAPSE_DIR, filename)) > 0
+        except OSError:
+            return False
+
+    present = [f for f in frames if _frame_file_ok(f["filename"])]
     skipped = len(frames) - len(present)
     if len(present) < 2:
         return {"ok": False, "timed_out": False, "elapsed": 0, "overlay": False, "skipped": skipped,
